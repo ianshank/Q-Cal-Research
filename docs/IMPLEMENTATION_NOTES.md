@@ -31,21 +31,31 @@ read-only mode. CI: `.github/workflows/ci.yml` and `.github/workflows/integrity.
 Hooks are feedback; signed commits plus CI are the control (plan v2 §1.2).
 
 1. **Signed commits.** `qcal ci verify-signatures` lists every commit in `base..head`, finds the
-   ones touching `ian_only` or `enforcement_surface` paths, and requires a good SSH signature
-   from a key in `allowed_signers`. Merge commits are judged only on files that differ from
-   every parent, so merging the base branch does not demand a new signature.
+   ones touching `ian_only`, `enforcement_surface` or `registry_only` paths, and requires a good
+   SSH signature from a key in `allowed_signers` whose principal equals the committer email.
+   Run records are signed too, so a result enters the record only through Ian's signed commit:
+   a pull request cannot add a fabricated run or supersede an inconvenient one. Verification
+   pins `gpg.ssh.program` so the machine's git configuration cannot change the outcome. Merge
+   commits are judged only on files that differ from every parent, so merging the base branch
+   does not demand a new signature.
 2. **Base-branch judge.** `integrity.yml` runs on `pull_request_target`: the workflow, the
    `qcal` code, `qcal.toml` and `allowed_signers` all come from the base commit. The PR head
    is fetched as git data and never executed, so a PR cannot relax the rules that judge it.
 3. **Immutable records.** `qcal ci registry-immutable` allows only added files under
    `runs/registry/`, each a valid record named after its run id.
 4. **Head-side consistency.** `ci.yml` regenerates the index and tables and fails if the
-   committed copies differ, and runs the claims, leakage, license and agent-layer checks.
+   committed copies differ, and runs the claims, leakage, license and agent-layer checks with
+   `python -I`, so a stray top-level module cannot shadow the package. Files that could shadow
+   or reconfigure that code (`qcal/`, `setup.py`, `conftest.py`, `*.pth`, tool configs,
+   requirement files) are part of the enforcement surface.
 5. **Hooks.** `guard-paths` blocks edit tools on protected and clean-room paths (after
    resolving symlinks); `guard-bash` blocks force-pushes and pushes to protected branches;
    the Stop hook runs the claims check. The wrapper converts every crash into exit 2, because
    Claude Code treats any other non-zero exit as "allow". The Stop hook fails open and does
    not block twice in a row, so it cannot trap a session.
+   The Bash guard is deliberately conservative: it also analyses quoted text, so a
+   heredoc or `echo` that merely *contains* a push command to a protected branch is
+   refused. Write such text to a file with an edit tool and run the file instead.
 6. **Human switch.** `QCAL_GUARD_MODE=enforce|warn|off` comes from the environment Claude Code
    was launched with, which an agent cannot change.
 
@@ -59,6 +69,8 @@ Hooks are feedback; signed commits plus CI are the control (plan v2 §1.2).
 | `qcal-registry` subcommands | `qcal registry ...`, with `qcal-registry` kept as an alias | one entry point for all checks |
 | Bash hooks with `jq` | Python hooks (stdlib only) behind a bash wrapper | no `jq` dependency, unit-testable, and a crash cannot fail open |
 | `CODEOWNERS` | not added | GitHub forbids self-approval, so it cannot gate a solo repository (plan §1.2) |
+| Claims escape hatches | `qcal:ignore` and `\qcalfixed{}` work only in Ian-only files; whole numbers written as results (`7 points`, `3\%`) are flagged | red-team: agents could otherwise hide numbers in files they may edit |
+| Records unsigned, append-only | records are signed *and* append-only | red-team: an unsigned added record could fabricate or hide a result |
 | `X-MCP-Readonly` header | used, unverified | verify with a label write before relying on it; otherwise run the local server with `--read-only` |
 
 ## Commands
@@ -104,6 +116,16 @@ All values come from `src/qcal/resources/defaults.toml`, overridden by the repos
 - **Executor command.** `executor.command` is empty until Phase 1 provides an experiment
   program; `qcal registry run` explains this instead of guessing.
 
+## How the integrity layer was checked
+
+- Unit, property-based (hypothesis) and integration tests, including real SSH-signed commits,
+  the real hook wrapper, a stdlib-only import check and an end-to-end pre-register, run, index,
+  audit, tabulate, verify and tamper loop.
+- Two test suites were written by independent subagents against the documented contracts;
+  their strict-xfail bug reports were fixed in the source.
+- A `code-review` pass and a red-team agent attacked the guards and the CI controls; every
+  reproduced finding was fixed and has a regression test (`tests/unit/test_regressions.py`).
+
 ## Ian's next steps
 
 1. Decide repository visibility before G0.
@@ -113,3 +135,5 @@ All values come from `src/qcal/resources/defaults.toml`, overridden by the repos
 4. Add a branch ruleset on the default branch: require the `integrity` and `ci` checks,
    linear history, no force-push.
 5. Run `qcal init`, then write `EXPERIMENTS.yaml` and `DECISIONS.md` by hand.
+6. Commit run records (`runs/registry/`, `runs/index.csv`) in signed commits; in enforce
+   mode CI rejects unsigned ones.

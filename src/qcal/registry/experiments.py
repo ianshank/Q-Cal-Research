@@ -144,7 +144,8 @@ def find_placeholders(data: Any, marker: str, prefix: str = "") -> list[str]:
         for key, value in data.items():
             dotted = f"{prefix}.{key}" if prefix else str(key)
             if str(key) == key_name:
-                found.append(dotted)
+                found.append(dotted)  # the whole value is the placeholder; do not descend
+                continue
             found.extend(find_placeholders(value, marker, dotted))
     elif isinstance(data, list):
         for i, value in enumerate(data):

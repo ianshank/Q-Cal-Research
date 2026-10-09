@@ -19,7 +19,7 @@ from typing import Any
 from qcal.config import Config, ConfigError
 from qcal.integrity.aggregates import aggregate, format_value
 from qcal.log import get_logger
-from qcal.registry.index import read_index, render_value
+from qcal.registry.index import read_index, render_value, superseded_ids
 
 _log = get_logger("registry.tables")
 _LATEX_ESCAPES = {
@@ -128,7 +128,7 @@ def _column_name(config: Config, group: str, name: str) -> str:
     return name if any(name.startswith(p) for p in known) else f"{prefix}{name}"
 
 
-def _selected(row: Mapping[str, str], spec: TableSpec, superseded: set[str]) -> bool:
+def _selected(row: Mapping[str, str], spec: TableSpec, superseded: frozenset[str]) -> bool:
     if row["run_id"] in superseded or row.get("status") not in spec.statuses:
         return False
     for key, wanted in spec.filters.items():
@@ -142,7 +142,7 @@ def render_table(config: Config, spec: TableSpec, index: Sequence[Mapping[str, s
     macro = config.str_value("tables.macro")
     metric_prefix = str(config.get("registry.column_prefixes.metrics"))
     missing = config.str_value("tables.missing_cell")
-    superseded = {r["supersedes"] for r in index if r.get("supersedes")}
+    superseded = superseded_ids(index)
     groups: dict[tuple[str, ...], list[Mapping[str, str]]] = {}
     for row in index:
         if _selected(row, spec, superseded):

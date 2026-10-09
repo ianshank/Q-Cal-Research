@@ -9,9 +9,9 @@ from dataclasses import dataclass, field
 from typing import Any, Final
 
 RUN_ID_PATTERN: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-#: Metric names appear inside claim references (``run:<id>:<metric>``), so they may not
-#: contain the reference separators ``:`` and ``+``, braces, commas or whitespace.
-METRIC_NAME_PATTERN: Final = re.compile(r"^[^\s:+{},]+$")
+#: Metric names appear inside claim references (``run:<id>:<metric>``) and inside LaTeX
+#: macro arguments, so they are limited to letters, digits and ``_ . @ -``.
+METRIC_NAME_PATTERN: Final = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.@-]*$")
 _REQUIRED: Final = ("run_id", "cell_id", "seed", "status", "started_at", "finished_at")
 
 
@@ -108,6 +108,16 @@ class RunRecord:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> RunRecord:
+        """Build a record from JSON data; every type problem is a :class:`RecordError`."""
+        try:
+            return cls._from_dict(data)
+        except RecordError:
+            raise
+        except (TypeError, ValueError, AttributeError) as exc:
+            raise RecordError(f"malformed record: {exc}") from exc
+
+    @classmethod
+    def _from_dict(cls, data: Mapping[str, Any]) -> RunRecord:
         missing = [k for k in _REQUIRED if k not in data]
         if missing:
             raise RecordError(f"record is missing {', '.join(missing)}")
@@ -118,8 +128,14 @@ class RunRecord:
             if not isinstance(data.get(key, {}), Mapping):
                 raise RecordError(f"{key} must be an object")
         artifacts = data.get("artifacts", [])
-        if not isinstance(artifacts, list):
-            raise RecordError("artifacts must be a list")
+        if not isinstance(artifacts, list) or not all(isinstance(a, Mapping) for a in artifacts):
+            raise RecordError("artifacts must be a list of objects")
+        supersedes = data.get("supersedes")
+        if supersedes is not None and not isinstance(supersedes, str):
+            raise RecordError("supersedes must be a run id string or null")
+        version = data.get("schema_version", 1)
+        if isinstance(version, bool) or not isinstance(version, int):
+            raise RecordError("schema_version must be an integer")
         known = set(cls.__dataclass_fields__) - {"extra"}
         duration = data.get("duration_s")
         return cls(
@@ -130,7 +146,7 @@ class RunRecord:
             started_at=str(data["started_at"]),
             finished_at=str(data["finished_at"]),
             seed_role=str(data.get("seed_role") or ""),
-            supersedes=data.get("supersedes") or None,
+            supersedes=supersedes or None,
             duration_s=float(duration) if isinstance(duration, int | float) else None,
             provenance=dict(data.get("provenance", {})),
             factors=dict(data.get("factors", {})),
@@ -139,7 +155,7 @@ class RunRecord:
             artifacts=tuple(ArtifactRef.from_dict(a) for a in artifacts),
             log_path=data.get("log_path"),
             error=data.get("error"),
-            schema_version=int(data.get("schema_version", 1)),
+            schema_version=version,
             extra={k: v for k, v in data.items() if k not in known},
         )
 

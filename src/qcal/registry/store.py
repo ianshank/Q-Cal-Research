@@ -48,8 +48,13 @@ class RegistryStore:
                     f"record {record.run_id} already exists at {target}"
                 ) from None
             except OSError:  # filesystem without hard links: exclusive create instead
-                with target.open("x", encoding="utf-8") as handle:
-                    handle.write(text)
+                try:
+                    with target.open("x", encoding="utf-8") as handle:
+                        handle.write(text)
+                except FileExistsError:
+                    raise RecordExistsError(
+                        f"record {record.run_id} already exists at {target}"
+                    ) from None
         finally:
             tmp.unlink(missing_ok=True)
         _log.info("registered run %s (%s) -> %s", record.run_id, record.status, target)

@@ -68,6 +68,24 @@ enforcement_surface = [
   "src/qcal/ci/**",
   "src/qcal/resources/**",
   "review/gemini-*",
+  # Files that could shadow or reconfigure the code CI runs on a pull request's head.
+  "qcal/**",
+  "setup.py",
+  "setup.cfg",
+  "conftest.py",
+  "sitecustomize.py",
+  "usercustomize.py",
+  "*.pth",
+  "ruff.toml",
+  ".ruff.toml",
+  "mypy.ini",
+  ".mypy.ini",
+  "pytest.ini",
+  "tox.ini",
+  "noxfile.py",
+  "requirements*.txt",
+  "constraints*.txt",
+  "uv.lock",
 ]
 
 [policy.messages]
@@ -79,7 +97,13 @@ clean_room = "violates the clean-room rule recorded in DECISIONS.md."
 [signing]
 mode = "bootstrap"         # bootstrap (report only) | enforce (fail CI)
 allowed_signers = "allowed_signers"
-signed_categories = ["ian_only", "enforcement_surface"]
+# Run records are signed too: a result enters the record only through Ian's signed commit,
+# so a pull request cannot add a fabricated run or supersede an inconvenient one.
+signed_categories = ["ian_only", "enforcement_surface", "registry_only"]
+# The signing principal in allowed_signers must equal the committer email.
+require_committer_match = true
+# Verify with this program regardless of the machine's git configuration.
+ssh_program = "ssh-keygen"
 immutable_categories = ["registry_only"]
 immutable_dirs = ["runs/registry"]
 
@@ -155,15 +179,22 @@ strict_tex_globs = ["paper/sections/**/*.tex", "paper/tables/**/*.tex"]
 markdown_globs = ["README.md", "CLAIMS.md"]
 strict_markdown_globs = ["CLAIMS.md"]
 markdown_ref_pattern = '(?P<value>-?\d+(?:\.\d+)?)\s*\((?P<ref>(?:run|agg):[^)\s]+)\)'
-number_pattern = '(?<![\w.:/-])-?\d+\.\d+(?![\w.])'
+number_pattern = '(?<![\w.:/-])-?\d+\.\d+(?!\w|\.\d)'
+# Whole numbers are flagged only when written as a result (percent, points, pp).
+integer_result_pattern = '(?<![\w.:/-])-?\d+\s*(?:\\?%|points?\b|pp\b|percentage points?\b)'
+# Escape hatches (the ignore marker and \qcalfixed{...}) work only in files of these policy
+# categories, so an agent cannot use them to hide a number in a file it may edit.
+escape_hatch_categories = ["ian_only"]
+escape_patterns = ['\\qcalfixed\{[^}]*\}']
 tex_ignore_patterns = [
   '(?<!\\)%.*$',
-  '\\(?:cite[tp]?|ref|eqref|label|url|href|includegraphics|input|include|usepackage|documentclass|bibliography(?:style)?|vspace\*?|hspace\*?|setlength|addtolength|resizebox|scalebox|definecolor)\s*(?:\[[^\]]*\])?\s*\{[^}]*\}',
-  '-?\d+(?:\.\d+)?\s*(?:em|ex|pt|pc|cm|mm|in|bp|mu)\b',
+  '\\(?:cite[tp]?|ref|eqref|label|url|href|includegraphics|input|include|usepackage|documentclass|bibliography(?:style)?|vspace\*?|hspace\*?|resizebox|scalebox)\s*(?:\[[^\]]*\])?\s*\{[^}]*\}',
+  '\\definecolor\s*\{[^}]*\}\s*\{[^}]*\}\s*\{[^}]*\}',
+  '\\(?:setlength|addtolength)\s*\{[^}]*\}\s*\{[^}]*\}',
+  '-?\d+(?:\.\d+)?(?:em|ex|pt|pc|cm|mm|in|bp|mu)\b',
   '-?\d*\.\d+\s*\\(?:linewidth|textwidth|columnwidth|hsize|paperwidth|textheight)',
   'arXiv:\s*\d{4}\.\d{4,5}(?:v\d+)?',
   '\bv?\d+\.\d+\.\d+\b',
-  '\\qcalfixed\{[^}]*\}',
 ]
 markdown_ignore_patterns = [
   '`[^`]*`',
@@ -194,6 +225,8 @@ forbidden_imports = [
 ]
 
 [agent_layer]
+settings_file = ".claude/settings.json"
+mcp_file = ".mcp.json"
 agents_glob = ".claude/agents/*.md"
 skills_glob = ".claude/skills/*/SKILL.md"
 agent_required_keys = ["name", "description"]

@@ -113,7 +113,14 @@ def verify_signatures(
             if not protected:
                 report.verdicts.append(CommitVerdict(sha, [], True, "no protected paths"))
                 continue
-            signed, detail = _verify_commit(repo, sha, signers_file, report.keys)
+            signed, detail = _verify_commit(
+                repo,
+                sha,
+                signers_file,
+                report.keys,
+                require_match=config.bool_value("signing.require_committer_match"),
+                ssh_program=config.str_value("signing.ssh_program"),
+            )
             report.verdicts.append(CommitVerdict(sha, protected, signed, detail))
     for violation in report.violations:
         _log.warning(
@@ -125,14 +132,31 @@ def verify_signatures(
     return report
 
 
-def _verify_commit(repo: Path, sha: str, signers_file: Path, keys: int) -> tuple[bool, str]:
+def _verify_commit(
+    repo: Path, sha: str, signers_file: Path, keys: int, *, require_match: bool, ssh_program: str
+) -> tuple[bool, str]:
     if keys == 0:
         return False, "allowed_signers has no keys on the base ref"
-    env_args = ["-c", "gpg.format=ssh", "-c", f"gpg.ssh.allowedSignersFile={signers_file}"]
+    env_args = [
+        "-c",
+        "gpg.format=ssh",
+        "-c",
+        f"gpg.ssh.program={ssh_program}",
+        "-c",
+        f"gpg.ssh.allowedSignersFile={signers_file}",
+    ]
     try:
         git([*env_args, "verify-commit", sha], repo)
     except GitError as exc:
         return False, exc.stderr.strip().splitlines()[-1] if exc.stderr.strip() else "unsigned"
+    if require_match:
+        signer, _, committer = (
+            git([*env_args, "log", "-1", "--format=%GS%x00%ce", sha], repo)
+            .strip()
+            .partition("\x00")
+        )
+        if signer.lower() != committer.lower():
+            return False, f"signed by {signer!r} but committed as {committer!r}"
     return True, "good signature"
 
 

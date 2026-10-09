@@ -7,8 +7,11 @@ Two kinds of finding:
 * an untagged decimal in a *strict* file (paper sections and tables, CLAIMS.md),
   after removing configured layout, citation and version contexts.
 
-Lines carrying the configured ignore marker (``qcal:ignore``) are skipped, and
-``\\qcalfixed{...}`` declares a non-result constant explicitly.
+Whole numbers are flagged only when written as results (``7 points``, ``3\\%``).
+The escape hatches, a line carrying the ignore marker (``qcal:ignore``) and
+``\\qcalfixed{...}`` for declared constants, work only in files of the policy
+categories named by ``claims.escape_hatch_categories`` (Ian-only by default), so an
+agent cannot use them to hide a number. Tagged values are verified on every line.
 
 Stdlib-only: imported by the Claude Code Stop hook.
 """
@@ -24,7 +27,8 @@ from qcal.config import Config
 from qcal.globs import first_match, iter_files
 from qcal.integrity.aggregates import aggregate, format_value
 from qcal.log import get_logger
-from qcal.registry.index import read_index
+from qcal.policy import Policy
+from qcal.registry.index import read_index, superseded_ids
 
 _log = get_logger("integrity.claims")
 _NUMBER = re.compile(r"-?\d+(?:\.\d+)?")
@@ -100,68 +104,104 @@ def verify_reference(ref: str, displayed: str, ctx: _Context) -> str | None:
     return None
 
 
+@dataclass(frozen=True)
+class _Rules:
+    ref: re.Pattern[str]
+    ignore: tuple[re.Pattern[str], ...]
+    escapes: tuple[re.Pattern[str], ...]
+    numbers: tuple[re.Pattern[str], ...]
+    marker: str
+
+
 def check_claims(config: Config) -> list[Finding]:
     root = config.root
     index = read_index(config.path("index_csv"))
     ctx = _Context(
         rows={row["run_id"]: row for row in index},
-        superseded=frozenset(r["supersedes"] for r in index if r.get("supersedes")),
+        superseded=superseded_ids(index),
         metric_prefix=str(config.get("registry.column_prefixes.metrics")),
         tolerance=config.float_value("claims.abs_tolerance"),
         superseded_is_error=config.bool_value("claims.superseded_is_error"),
     )
+    policy = Policy.from_config(config)
+    hatch_categories = config.str_list("claims.escape_hatch_categories")
+    numbers = tuple(
+        re.compile(config.str_value(k))
+        for k in ("claims.number_pattern", "claims.integer_result_pattern")
+    )
+    escapes = tuple(re.compile(p) for p in config.str_list("claims.escape_patterns"))
     marker = config.str_value("claims.ignore_line_marker")
-    number = re.compile(config.str_value("claims.number_pattern"))
-    findings: list[Finding] = []
-
     macro = re.escape(config.str_value("tables.macro"))
-    tex_ref = re.compile(rf"\\{macro}\{{(?P<ref>[^{{}}]*)\}}\{{(?P<value>[^{{}}]*)\}}")
-    tex_ignore = [
-        re.compile(p, re.MULTILINE) for p in config.str_list("claims.tex_ignore_patterns")
+    groups = [
+        (
+            config.str_list("claims.tex_globs"),
+            config.str_list("claims.strict_tex_globs"),
+            _Rules(
+                re.compile(rf"\\{macro}\{{(?P<ref>[^{{}}]*)\}}\{{(?P<value>[^{{}}]*)\}}"),
+                tuple(
+                    re.compile(p, re.MULTILINE)
+                    for p in config.str_list("claims.tex_ignore_patterns")
+                ),
+                escapes,
+                numbers,
+                marker,
+            ),
+        ),
+        (
+            config.str_list("claims.markdown_globs"),
+            config.str_list("claims.strict_markdown_globs"),
+            _Rules(
+                re.compile(config.str_value("claims.markdown_ref_pattern")),
+                tuple(re.compile(p) for p in config.str_list("claims.markdown_ignore_patterns")),
+                escapes,
+                numbers,
+                marker,
+            ),
+        ),
     ]
-    strict_tex = config.str_list("claims.strict_tex_globs")
-    for path in iter_files(root, config.str_list("claims.tex_globs")):
-        strict = first_match(path.relative_to(root).as_posix(), strict_tex) is not None
-        findings += _scan(path, tex_ref, tex_ignore, number, ctx, strict=strict, marker=marker)
-
-    md_ref = re.compile(config.str_value("claims.markdown_ref_pattern"))
-    md_ignore = [re.compile(p) for p in config.str_list("claims.markdown_ignore_patterns")]
-    strict_md = config.str_list("claims.strict_markdown_globs")
-    for path in iter_files(root, config.str_list("claims.markdown_globs")):
-        strict = first_match(path.relative_to(root).as_posix(), strict_md) is not None
-        findings += _scan(path, md_ref, md_ignore, number, ctx, strict=strict, marker=marker)
-
+    findings: list[Finding] = []
+    for globs, strict_globs, rules in groups:
+        for path in iter_files(root, globs):
+            relative = path.relative_to(root).as_posix()
+            findings += _scan(
+                path,
+                rules,
+                ctx,
+                strict=first_match(relative, strict_globs) is not None,
+                escapes_allowed=policy.in_categories(relative, hatch_categories),
+            )
     _log.debug("claims check: %d finding(s)", len(findings))
     return findings
 
 
 def _scan(
-    path: Path,
-    ref_pattern: re.Pattern[str],
-    ignore: Sequence[re.Pattern[str]],
-    number: re.Pattern[str],
-    ctx: _Context,
-    *,
-    strict: bool,
-    marker: str,
+    path: Path, rules: _Rules, ctx: _Context, *, strict: bool, escapes_allowed: bool
 ) -> list[Finding]:
     findings: list[Finding] = []
     for lineno, line in enumerate(path.read_text("utf-8").splitlines(), start=1):
-        if marker and marker in line:
-            continue
-        for match in ref_pattern.finditer(line):
+        for match in rules.ref.finditer(line):
             error = verify_reference(match.group("ref"), match.group("value"), ctx)
             if error:
                 findings.append(Finding(path, lineno, "mismatch", error))
-        if not strict:
+        if not strict or (escapes_allowed and rules.marker and rules.marker in line):
             continue
-        residue = ref_pattern.sub(" ", line)
-        for pattern in ignore:
+        residue = rules.ref.sub(" ", line)
+        for pattern in (*rules.ignore, *(rules.escapes if escapes_allowed else ())):
             residue = pattern.sub(" ", residue)
-        for match in number.finditer(residue):
-            findings.append(
-                Finding(path, lineno, "untagged", f"number {match.group(0)} has no run reference")
-            )
+        seen: set[tuple[int, int]] = set()
+        for number in rules.numbers:
+            for match in number.finditer(residue):
+                if any(match.start() < e and s < match.end() for s, e in seen):
+                    continue
+                seen.add(match.span())
+                findings.append(
+                    Finding(
+                        path,
+                        lineno,
+                        "untagged",
+                        f"number {match.group(0).strip()} has no run reference",
+                    )
+                )
     return findings
 
 

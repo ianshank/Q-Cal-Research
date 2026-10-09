@@ -86,11 +86,21 @@ ExecutorFactory = Callable[[Config], Executor]
 EXECUTORS: ComponentRegistry[ExecutorFactory] = ComponentRegistry("executor")
 
 
+def _placeholder_names(text: str) -> list[str]:
+    """Every replacement-field name in ``text``, including fields nested in format specs."""
+    names: list[str] = []
+    for _, name, spec, _ in string.Formatter().parse(text):
+        if name is not None:
+            names.append(name)
+        if spec:
+            names.extend(_placeholder_names(spec))
+    return names
+
+
 def validate_template(command: Sequence[str]) -> None:
-    formatter = string.Formatter()
     for part in command:
-        for _, name, _, _ in formatter.parse(part):
-            if name is not None and name not in PLACEHOLDERS:
+        for name in _placeholder_names(part):
+            if name not in PLACEHOLDERS:
                 raise ConfigError(
                     f"executor.command uses unknown placeholder {{{name}}}; "
                     f"allowed: {sorted(PLACEHOLDERS)}"
@@ -175,6 +185,8 @@ def _parse_result_document(path: Path) -> Mapping[str, Any]:
         raise _ResultError(f"experiment wrote no result file at {path}")
     try:
         data = json.loads(path.read_text("utf-8"))
+    except UnicodeDecodeError as exc:
+        raise _ResultError(f"result file is not UTF-8: {exc}") from exc
     except json.JSONDecodeError as exc:
         raise _ResultError(f"result file is not JSON: {exc}") from exc
     if not isinstance(data, Mapping):

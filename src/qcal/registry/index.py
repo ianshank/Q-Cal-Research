@@ -88,13 +88,17 @@ def write_index(config: Config, store: RegistryStore, *, check: bool = False) ->
         if changed:
             _log.error("%s is stale; run `qcal registry index`", target)
         return IndexResult(target, count, changed)
-    parquet: Path | None = None
     if changed:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(text, encoding="utf-8")
         _log.info("wrote %s (%d rows)", target, count)
-    parquet = _maybe_parquet(config, text)
+    parquet = _maybe_parquet(config, text) if changed or count else None
     return IndexResult(target, count, changed, parquet)
+
+
+def superseded_ids(rows: Iterable[Mapping[str, str]]) -> frozenset[str]:
+    """Run ids that a later row supersedes (the index view of ``records.effective``)."""
+    return frozenset(r["supersedes"] for r in rows if r.get("supersedes"))
 
 
 def read_index(path: Path) -> list[dict[str, str]]:
@@ -119,6 +123,9 @@ def _maybe_parquet(config: Config, csv_text: str) -> Path | None:
     import pyarrow.parquet as pq
 
     target = config.path("index_parquet")
+    if target.is_file() and target.stat().st_mtime >= config.path("index_csv").stat().st_mtime:
+        _log.debug("%s is newer than the CSV; not rewriting", target)
+        return target
     table = pacsv.read_csv(io.BytesIO(csv_text.encode("utf-8")))
     target.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(table, target)

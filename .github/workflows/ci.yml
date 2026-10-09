@@ -3,7 +3,8 @@ name: ci
 # Head code checks: lint, strict types, the full test suite, and integrity checks that
 # need the PR's own code (claims, index and table consistency, licenses, agent layer).
 # The trust-sensitive checks (signatures, registry immutability) live in integrity.yml,
-# which runs the *base* branch's code under pull_request_target.
+# which runs the *base* branch's code under pull_request_target. Head-side checks run
+# with `python -I` so a stray top-level module cannot shadow the installed package.
 
 on:
   pull_request:
@@ -75,14 +76,14 @@ jobs:
           cache-dependency-path: pyproject.toml
       - run: python -m pip install -e .
       - name: agent layer is valid
-        run: python -m qcal agent-layer
+        run: python -I -m qcal agent-layer
       - name: run index matches the records
-        run: python -m qcal registry index --check
+        run: python -I -m qcal registry index --check
       - name: tables match the index
-        run: python -m qcal registry tables --check
+        run: python -I -m qcal registry tables --check
       - name: every number traces to a run
-        run: python -m qcal claims
+        run: python -I -m qcal claims
       - name: split manifests are disjoint
-        run: python -m qcal leakage --if-present
+        run: python -I -m qcal leakage --if-present
       - name: licenses and forbidden imports
-        run: python -m qcal licenses
+        run: python -I -m qcal licenses

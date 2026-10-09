@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -97,6 +97,13 @@ class Runner:
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
         return hashlib.sha256(canonical.encode()).hexdigest()
 
+    def _output_paths(self) -> list[str]:
+        """Registry outputs, which a run itself creates, never count as a dirty tree."""
+        root = self.config.root
+        keys = ("registry_dir", "index_csv", "index_parquet", "logs_dir", "results_dir")
+        paths = [self.config.path(k) for k in keys]
+        return [p.relative_to(root).as_posix() for p in paths if p.is_relative_to(root)]
+
     # -- single run ---------------------------------------------------------------
     def run(self, cell_id: str, seed: int, *, supersedes: str | None = None) -> RunRecord:
         cell = self.experiments.cell(cell_id)
@@ -106,7 +113,7 @@ class Runner:
                 f"seed {seed} is not pre-registered for {cell_id} (allowed: {list(allowed)})"
             )
         root = self.config.root
-        dirty = gitutil.is_dirty(root)
+        dirty = gitutil.is_dirty(root, self._output_paths())
         if dirty and self.config.bool_value("registry.require_clean_tree"):
             raise RunRefusedError("working tree is dirty and registry.require_clean_tree is set")
         if dirty:
@@ -130,11 +137,22 @@ class Runner:
             / self.config.str_value("executor.log_filename").format_map(names),
             root=root,
         )
+        provenance = {
+            "git_sha": gitutil.head_sha(root),
+            "git_dirty": dirty,
+            "config_hash": self.config_hash(cell, seed),
+            "experiments_sha256": self.experiments.sha256,
+            "executor": type(self.executor).__name__,
+        }
         _log.info("starting %s (cell=%s seed=%s)", run_id, cell.id, seed)
         result = self.executor.execute(spec)
         finished = self.clock()
-        environment: dict[str, Any] = collect_environment(self.collectors, root)
-        environment.update(result.environment)
+        environment = merge_environment(
+            collect_environment(self.collectors, root), result.environment
+        )
+        if supersedes and not result.ok:
+            _log.warning("rerun %s failed; it does not supersede %s", run_id, supersedes)
+            supersedes = None
         status_key = "registry.ok_status" if result.ok else "registry.failed_status"
         record = RunRecord(
             run_id=run_id,
@@ -146,13 +164,7 @@ class Runner:
             started_at=started.isoformat(),
             finished_at=finished.isoformat(),
             duration_s=round((finished - started).total_seconds(), 3),
-            provenance={
-                "git_sha": gitutil.head_sha(root),
-                "git_dirty": dirty,
-                "config_hash": self.config_hash(cell, seed),
-                "experiments_sha256": self.experiments.sha256,
-                "executor": type(self.executor).__name__,
-            },
+            provenance=provenance,
             factors=dict(cell.factors),
             metrics=result.metrics if result.ok else {},
             environment=environment,
@@ -228,6 +240,20 @@ class Runner:
                 _log.error("stopping batch after first failure (%s)", record.run_id)
                 break
         return batch
+
+
+def merge_environment(collected: Mapping[str, Any], reported: Mapping[str, Any]) -> dict[str, Any]:
+    """Experiment-reported values never overwrite what qcal collected itself."""
+    merged = dict(collected)
+    for key, value in reported.items():
+        if key in collected and collected[key] != value:
+            _log.warning(
+                "experiment reported %s=%r; keeping collected %r", key, value, collected[key]
+            )
+            merged[f"reported_{key}"] = value
+        else:
+            merged[key] = value
+    return merged
 
 
 def _relative(path: Path, root: Path) -> str:

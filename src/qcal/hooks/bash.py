@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import re
 import shlex
-import subprocess
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
+from qcal.gitutil import try_git
 from qcal.log import get_logger
 
 _log = get_logger("hooks.bash")
@@ -24,6 +24,10 @@ _GIT_OPTS_WITH_VALUE = frozenset(
 )
 _PUSH_OPTS_WITH_VALUE = frozenset({"-o", "--push-option", "--repo", "--receive-pack", "--exec"})
 _REFS_HEADS = "refs/heads/"
+_HEAD_ALIASES = frozenset({"HEAD", "@"})
+_REF_SUFFIX = re.compile(r"[~^@{].*$")
+_REDIRECT_CHARS = frozenset("<>&")
+_MIN_ABBREVIATION = 3  # "--x": git accepts unambiguous prefixes of long options
 _UNPARSEABLE_PUSH = re.compile(r"\bgit\b.*\bpush\b", re.DOTALL)
 
 BranchResolver = Callable[[str | None], str | None]
@@ -37,33 +41,47 @@ class PushFinding:
 
 def current_branch(cwd: str | None) -> str | None:
     """Best-effort name of the checked-out branch in ``cwd``."""
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=cwd or None,
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        _log.debug("cannot resolve current branch: %s", exc)
-        return None
-    branch = result.stdout.strip()
-    return branch if result.returncode == 0 and branch and branch != "HEAD" else None
+    branch = try_git(["rev-parse", "--abbrev-ref", "HEAD"], Path(cwd or "."))
+    return branch if branch and branch != "HEAD" else None
 
 
 def tokenize(command: str) -> list[list[str]]:
-    """Split a command line into simple commands; raises ``ValueError`` if unbalanced."""
-    lexer = shlex.shlex(command.replace("\n", " ; "), posix=True, punctuation_chars=";&|()")
+    """Split a command line into simple commands; raises ``ValueError`` if unbalanced.
+
+    Comment handling is disabled on purpose: bash treats ``#`` inside a word as a
+    literal, and a lexer that drops the rest of the line would hide later commands.
+    Redirections are removed so their targets are never mistaken for refspecs.
+    """
+    lexer = shlex.shlex(command.replace("\n", " ; "), posix=True, punctuation_chars=";&|()<>")
     lexer.whitespace_split = True
+    lexer.commenters = ""
     segments: list[list[str]] = [[]]
     for token in lexer:
         if token in _SEPARATORS:
             segments.append([])
         else:
             segments[-1].append(token)
-    return [s for s in segments if s]
+    return [_strip_redirections(s) for s in segments if s]
+
+
+def _is_redirect(token: str) -> bool:
+    return bool(token) and set(token) <= _REDIRECT_CHARS and bool({"<", ">"} & set(token))
+
+
+def _strip_redirections(tokens: list[str]) -> list[str]:
+    kept: list[str] = []
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if _is_redirect(token):
+            i += 2  # the operator and its target
+            continue
+        if token.isdigit() and i + 1 < len(tokens) and _is_redirect(tokens[i + 1]):
+            i += 1  # file-descriptor number before an operator
+            continue
+        kept.append(token)
+        i += 1
+    return kept
 
 
 def analyze(
@@ -160,7 +178,9 @@ def _scan_push_args(
             break
         if arg.startswith("--"):
             name = arg.split("=", 1)[0]
-            if name in long_flags:
+            if name in long_flags or (
+                len(name) >= _MIN_ABBREVIATION and any(f.startswith(name) for f in long_flags)
+            ):
                 return positionals, PushFinding(
                     f"git push with {name} is not allowed for agents", "bash.push_flag"
                 )
@@ -189,9 +209,9 @@ def _check_refspec(
         return PushFinding(f"forced refspec {refspec!r} is not allowed", "bash.push_force_refspec")
     source, colon, destination = refspec.partition(":")
     target = destination if colon else source
-    if target.upper() == "HEAD":
+    if target.upper() in _HEAD_ALIASES or target.startswith(("@", "HEAD")):
         target = resolve_branch(cwd) or target
-    name = target.removeprefix(_REFS_HEADS)
+    name = _REF_SUFFIX.sub("", target.removeprefix(_REFS_HEADS)) or target
     if name.lower() not in protected:
         return None
     action = "delete" if colon and not source else "push to"

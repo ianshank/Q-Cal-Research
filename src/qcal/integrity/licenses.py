@@ -83,7 +83,8 @@ def check_packages(
             report.warnings.append(f"package {name} license needs review: {text}")
 
 
-def imported_modules(source: str) -> set[str]:
+def imported_modules(source: str | bytes) -> set[str]:
+    """Top-level absolute imports. Bytes are decoded per PEP 263 (``# -*- coding: ... -*-``)."""
     tree = ast.parse(source)
     modules: set[str] = set()
     for node in ast.walk(tree):
@@ -101,9 +102,10 @@ def check_imports(config: Config, report: LicenseReport) -> None:
         relative = path.relative_to(root).as_posix()
         report.checked_files += 1
         try:
-            modules = imported_modules(path.read_text("utf-8"))
-        except SyntaxError as exc:
-            report.warnings.append(f"{relative}: cannot parse ({exc.msg})")
+            modules = imported_modules(path.read_bytes())
+        except (SyntaxError, ValueError) as exc:
+            detail = exc.msg if isinstance(exc, SyntaxError) else str(exc)
+            report.warnings.append(f"{relative}: cannot parse ({detail})")
             continue
         for rule in rules:
             module = rule.get("module")
@@ -115,7 +117,12 @@ def check_imports(config: Config, report: LicenseReport) -> None:
                 report.errors.append(f"{relative} imports {module}, which policy forbids here")
 
 
+class FrontmatterError(ValueError):
+    """YAML frontmatter exists but cannot be parsed."""
+
+
 def read_frontmatter(text: str) -> dict[str, Any]:
+    """Parse a leading ``---``-delimited YAML block; ``{}`` when there is none."""
     import yaml
 
     lines = text.splitlines()
@@ -125,7 +132,10 @@ def read_frontmatter(text: str) -> dict[str, Any]:
         end = next(i for i, line in enumerate(lines[1:], start=1) if line.strip() == _FRONTMATTER)
     except StopIteration:
         return {}
-    data = yaml.safe_load("\n".join(lines[1:end])) or {}
+    try:
+        data = yaml.safe_load("\n".join(lines[1:end])) or {}
+    except yaml.YAMLError as exc:
+        raise FrontmatterError(f"invalid YAML frontmatter: {exc}") from exc
     return data if isinstance(data, dict) else {}
 
 
@@ -138,8 +148,12 @@ def check_dataset_cards(config: Config, report: LicenseReport) -> None:
     denied = {d.lower() for d in config.str_list("licenses.dataset_denied")}
     for card in sorted(directory.glob("*.md")):
         report.checked_cards += 1
-        license_value = read_frontmatter(card.read_text("utf-8")).get(key)
         name = card.name
+        try:
+            license_value = read_frontmatter(card.read_text("utf-8")).get(key)
+        except FrontmatterError as exc:
+            report.errors.append(f"dataset card {name}: {exc}")
+            continue
         if not isinstance(license_value, str) or not license_value:
             report.errors.append(f"dataset card {name} has no {key!r} in its frontmatter")
         elif license_value.lower() in denied:

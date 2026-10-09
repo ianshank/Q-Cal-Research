@@ -41,8 +41,12 @@ def head_sha(cwd: Path) -> str | None:
     return try_git(["rev-parse", "HEAD"], cwd)
 
 
-def is_dirty(cwd: Path) -> bool | None:
-    status = try_git(["status", "--porcelain"], cwd)
+def is_dirty(cwd: Path, exclude: Sequence[str] = ()) -> bool | None:
+    """Whether the work tree has changes, ignoring the repo-relative paths in ``exclude``."""
+    pathspec = [".", *(f":(exclude){p}" for p in exclude)] if exclude else []
+    status = try_git(
+        ["status", "--porcelain", "--", *pathspec] if pathspec else ["status", "--porcelain"], cwd
+    )
     return None if status is None else bool(status)
 
 

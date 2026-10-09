@@ -46,6 +46,8 @@ def expand_design(design: Mapping[str, Any], *, prefix: str, length: int) -> lis
     rules = design.get("rules", []) or []
     if not isinstance(rules, list):
         raise ExperimentsError("design.rules must be a list")
+    for rule in rules:
+        _validate_rule(rule)
 
     names = list(axes)
     seen: dict[str, Cell] = {}
@@ -60,23 +62,32 @@ def expand_design(design: Mapping[str, Any], *, prefix: str, length: int) -> lis
     return sorted(seen.values(), key=lambda c: c.id)
 
 
-def _apply(rule: Any, factors: dict[str, Any]) -> dict[str, Any] | None:
+def _validate_rule(rule: Any) -> None:
     if not isinstance(rule, Mapping):
         raise ExperimentsError("each design rule must be a mapping")
     if "exclude" in rule:
-        return None if _matches(factors, rule["exclude"]) else factors
-    when = rule.get("when")
-    if not isinstance(when, Mapping):
+        if not isinstance(rule["exclude"], Mapping):
+            raise ExperimentsError(f"rule {dict(rule)!r}: 'exclude' must be a mapping")
+        return
+    if not isinstance(rule.get("when"), Mapping):
         raise ExperimentsError(f"rule {dict(rule)!r} needs 'exclude' or a 'when' mapping")
-    if not _matches(factors, when):
-        return factors
-    updated = dict(factors)
-    if "fix" in rule:
-        updated.update(rule["fix"])
-    for key in rule.get("drop", []) or []:
-        updated.pop(key, None)
     if "fix" not in rule and "drop" not in rule:
         raise ExperimentsError(f"rule {dict(rule)!r} needs 'fix' or 'drop'")
+    if "fix" in rule and not isinstance(rule["fix"], Mapping):
+        raise ExperimentsError(f"rule {dict(rule)!r}: 'fix' must be a mapping")
+    if not isinstance(rule.get("drop", []) or [], list):
+        raise ExperimentsError(f"rule {dict(rule)!r}: 'drop' must be a list")
+
+
+def _apply(rule: Mapping[str, Any], factors: dict[str, Any]) -> dict[str, Any] | None:
+    if "exclude" in rule:
+        return None if _matches(factors, rule["exclude"]) else factors
+    if not _matches(factors, rule["when"]):
+        return factors
+    updated = dict(factors)
+    updated.update(rule.get("fix", {}) or {})
+    for key in rule.get("drop", []) or []:
+        updated.pop(key, None)
     return updated
 
 

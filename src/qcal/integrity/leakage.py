@@ -44,10 +44,9 @@ class LeakageReport:
 
 
 def read_manifest(text: str, comment_prefix: str) -> list[str]:
+    lines = (line.strip() for line in text.splitlines())
     return [
-        line.strip()
-        for line in text.splitlines()
-        if line.strip() and not line.strip().startswith(comment_prefix)
+        line for line in lines if line and not (comment_prefix and line.startswith(comment_prefix))
     ]
 
 
