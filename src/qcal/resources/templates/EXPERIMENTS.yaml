@@ -1,0 +1,44 @@
+# EXPERIMENTS.yaml: the Q-Cal pre-registration. IAN-ONLY.
+#
+# Created from the qcal template by `qcal init`. Agents never edit this file
+# (guard hook + signed-commit CI check); they propose changes in AMENDMENTS.md.
+# Every `ian:` entry is a decision only Ian makes. `qcal registry audit` lists
+# the ones still open, and `qcal registry run` refuses cells that are not below.
+#
+# Plan v2 items to settle here before G0 (docs/SDLC_IMPLEMENTATION_PLAN.md §1.1, §10.1):
+#   evaluation target for headline INT8 numbers, threshold regimes, OCE as co-primary,
+#   statistical unit, the gap between H1's minimum effect and the falsifier,
+#   H3 scope, and two distinct calibration sets.
+version: 2
+
+question:
+  ian: "state the research question in your own words"
+
+hypotheses:
+  H1:
+    ian: "statement, primary metric(s), minimum effect, test"
+  H2:
+    ian: "statement and success threshold"
+  H3:
+    ian: "statement, detectors, comparison, AP cost limit, named surrogate loss"
+
+falsifier:
+  ian: "define relative to H1's minimum effect"
+
+statistics:
+  ian: "resampling unit, fixed effects, primary contrast per detector, multiple-comparison correction"
+
+splits:
+  ian: "trt_calib_images, calibrator_fit_split, val, test definitions"
+
+# What a seed means in this study (for example a calibrator-fit draw).
+seed_role: "ian: name the seed role"
+seeds: []
+
+# Optional generator input for `qcal registry cells --emit`. The emitted list is
+# pasted into `cells` below and frozen; the generator never edits this file.
+design:
+  axes: {}
+  rules: []
+
+cells: []

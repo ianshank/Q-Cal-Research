@@ -1,0 +1,10 @@
+# SSH keys allowed to sign commits that touch protected paths (git "allowed signers" format).
+# One line per key:  <principal> namespaces="git" <key-type> <base64-key>
+#
+# Ian: generate a dedicated signing key (ideally hardware-backed or loaded with `ssh-add -c`
+# so every signature needs a confirmation), add its public half below, and configure git:
+#   git config gpg.format ssh
+#   git config user.signingkey ~/.ssh/<key>.pub
+#   git config gpg.ssh.allowedSignersFile "$(git rev-parse --show-toplevel)/allowed_signers"
+#   git config commit.gpgsign true
+# Commit this file and the switch to signing.mode = "enforce" in qcal.toml in a signed commit.

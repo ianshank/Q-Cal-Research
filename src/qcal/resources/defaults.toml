@@ -1,0 +1,213 @@
+# Packaged defaults for qcal.
+#
+# A repository's `qcal.toml` overrides any key here. Tables merge recursively;
+# arrays and scalars replace. Environment variables of the form
+# QCAL__<SECTION>__<KEY>=<toml value> override both, for example
+#   QCAL__LOGGING__LEVEL='"DEBUG"'   or   QCAL__REGISTRY__MAX_RUNS_PER_BATCH=5
+# Glob patterns are anchored at the repository root; use "**/" to match at any depth.
+
+[paths]
+experiments = "EXPERIMENTS.yaml"
+amendments = "AMENDMENTS.md"
+decisions = "DECISIONS.md"
+claims = "CLAIMS.md"
+research_log = "RESEARCH_LOG.md"
+registry_dir = "runs/registry"
+index_csv = "runs/index.csv"
+index_parquet = "runs/index.parquet"
+logs_dir = "runs/logs"
+results_dir = "runs/results"
+tables_dir = "paper/tables"
+table_specs_dir = "configs/tables"
+manifests_dir = "data/manifests"
+dataset_cards_dir = "docs/data"
+
+[logging]
+level = "INFO"
+format = "text"            # text | json
+level_env = "QCAL_LOG_LEVEL"
+format_env = "QCAL_LOG_FORMAT"
+debug_env = "QCAL_DEBUG"
+
+[git]
+protected_branches = ["main"]
+
+[policy]
+case_insensitive = true
+clean_room_substrings = ["nbcu", "edge-dit", "edge_dit", "edgedit"]
+
+[policy.categories]
+ian_only = [
+  "EXPERIMENTS.yaml",
+  "CLAIMS.md",
+  "RESEARCH_LOG.md",
+  "DECISIONS.md",
+  "**/handwritten/**",
+  "paper/sections/abstract*",
+  "paper/sections/claims*",
+  "paper/sections/limitations*",
+  "paper/sections/conclusion*",
+]
+registry_only = ["runs/index.csv", "runs/index.parquet", "runs/registry/**"]
+enforcement_surface = [
+  ".claude/**",
+  ".github/**",
+  ".agents/**",
+  ".mcp.json",
+  ".pre-commit-config.yaml",
+  "CLAUDE.md",
+  "AGENTS.md",
+  "Makefile",
+  "pyproject.toml",
+  "qcal.toml",
+  "allowed_signers",
+  "src/qcal/*.py",
+  "src/qcal/hooks/**",
+  "src/qcal/registry/**",
+  "src/qcal/integrity/**",
+  "src/qcal/ci/**",
+  "src/qcal/resources/**",
+  "review/gemini-*",
+]
+
+[policy.messages]
+ian_only = "is Ian-only. Propose the change in AMENDMENTS.md or review/ instead."
+registry_only = "is written only by the qcal registry CLI."
+enforcement_surface = "is part of the enforcement surface; it needs a change proposal and Ian's signed commit."
+clean_room = "violates the clean-room rule recorded in DECISIONS.md."
+
+[signing]
+mode = "bootstrap"         # bootstrap (report only) | enforce (fail CI)
+allowed_signers = "allowed_signers"
+signed_categories = ["ian_only", "enforcement_surface"]
+immutable_categories = ["registry_only"]
+immutable_dirs = ["runs/registry"]
+
+[hooks]
+mode_env = "QCAL_GUARD_MODE"          # enforce | warn | off, set by the human who launches Claude Code
+default_mode = "enforce"
+log_file_env = "QCAL_HOOK_LOG"        # JSONL decision log; empty disables
+log_file = ""
+project_dir_env = "CLAUDE_PROJECT_DIR"
+edit_tools = ["Edit", "Write", "MultiEdit", "NotebookEdit"]
+path_fields = ["file_path", "path", "notebook_path"]
+deny_categories = ["ian_only", "registry_only", "enforcement_surface"]
+push_deny_flags = [
+  "--force", "-f", "--force-with-lease", "--force-if-includes",
+  "--mirror", "--all", "--delete", "-d", "--prune",
+]
+extra_bash_deny = []                  # [{ pattern = "<regex>", reason = "<text>" }]
+
+[registry]
+schema_version = 1
+run_id_template = "R{timestamp}-{cell_id}-s{seed}-{nonce}"
+timestamp_format = "%Y%m%dT%H%M%SZ"
+nonce_bytes = 3
+env_collectors = ["python", "host", "git", "packages", "nvidia", "torch", "tensorrt", "jetson"]
+config_hash_inputs = ["configs/**/*.yaml", "configs/**/*.yml", "configs/**/*.toml"]
+max_runs_per_batch = 50
+require_clean_tree = false
+ok_status = "ok"
+failed_status = "failed"
+write_parquet = "auto"                # auto | always | never
+core_columns = [
+  "run_id", "cell_id", "seed", "seed_role", "status", "supersedes",
+  "started_at", "finished_at", "duration_s", "git_sha", "git_dirty", "config_hash",
+]
+
+[registry.column_prefixes]
+factors = "factor."
+metrics = "metric."
+environment = "env."
+
+[executor]
+command = []                          # argv template; placeholders: {run_id} {cell_id} {seed} {seed_role} {result_path} {log_path} {root}
+timeout_s = 0                         # 0 disables the timeout
+result_filename = "{run_id}.json"
+log_filename = "{run_id}.log"
+env_prefix = "QCAL_RUN_"
+
+[experiments]
+cells_key = "cells"
+design_key = "design"
+seeds_key = "seeds"
+seed_role_key = "seed_role"
+default_seed_role = "seed"
+cell_id_key = "id"
+cell_id_prefix = "C-"
+cell_id_hash_length = 10
+max_cells_warning = 2000
+placeholder_marker = "ian:"
+amendment_heading_pattern = '^##\s+\d{4}-\d{2}-\d{2}'
+
+[tables]
+macro = "qcalval"
+default_digits = 2
+default_agg = "mean"
+missing_cell = "--"
+spec_glob = "*.toml"
+rule = "\\hline"
+float_placement = "t"
+
+[claims]
+tex_globs = ["paper/**/*.tex"]
+strict_tex_globs = ["paper/sections/**/*.tex", "paper/tables/**/*.tex"]
+markdown_globs = ["README.md", "CLAIMS.md"]
+strict_markdown_globs = ["CLAIMS.md"]
+markdown_ref_pattern = '(?P<value>-?\d+(?:\.\d+)?)\s*\((?P<ref>(?:run|agg):[^)\s]+)\)'
+number_pattern = '(?<![\w.:/-])-?\d+\.\d+(?![\w.])'
+tex_ignore_patterns = [
+  '(?<!\\)%.*$',
+  '\\(?:cite[tp]?|ref|eqref|label|url|href|includegraphics|input|include|usepackage|documentclass|bibliography(?:style)?|vspace\*?|hspace\*?|setlength|addtolength|resizebox|scalebox|definecolor)\s*(?:\[[^\]]*\])?\s*\{[^}]*\}',
+  '-?\d+(?:\.\d+)?\s*(?:em|ex|pt|pc|cm|mm|in|bp|mu)\b',
+  '-?\d*\.\d+\s*\\(?:linewidth|textwidth|columnwidth|hsize|paperwidth|textheight)',
+  'arXiv:\s*\d{4}\.\d{4,5}(?:v\d+)?',
+  '\bv?\d+\.\d+\.\d+\b',
+  '\\qcalfixed\{[^}]*\}',
+]
+markdown_ignore_patterns = [
+  '`[^`]*`',
+  'arXiv:\s*\d{4}\.\d{4,5}(?:v\d+)?',
+  '\bv?\d+\.\d+\.\d+\b',
+  '\]\([^)]*\)',
+]
+abs_tolerance = 1e-9
+ignore_line_marker = "qcal:ignore"
+superseded_is_error = true
+
+[data]
+splits = ["trt_calib_images", "calibrator_fit_split", "val", "test"]
+manifest_pattern = "{split}.txt"
+comment_prefix = "#"
+
+[licenses]
+deny_license_substrings = ["AGPL", "SSPL", "Commons Clause"]
+warn_license_substrings = ["GPL", "CC-BY-NC", "NonCommercial"]
+deny_packages = ["ultralytics"]
+import_scan_globs = ["src/**/*.py", "scripts/**/*.py"]
+dataset_license_key = "license"
+dataset_allowed = []
+dataset_denied = []
+forbidden_imports = [
+  { module = "ultralytics", allowed_globs = [] },
+  { module = "detection_calibration", allowed_globs = ["tests/parity/**"] },
+]
+
+[agent_layer]
+agents_glob = ".claude/agents/*.md"
+skills_glob = ".claude/skills/*/SKILL.md"
+agent_required_keys = ["name", "description"]
+agent_allowed_keys = [
+  "name", "description", "tools", "disallowedTools", "model", "permissionMode", "maxTurns",
+  "skills", "mcpServers", "hooks", "memory", "background", "effort", "isolation", "color",
+  "initialPrompt", "omitClaudeMd",
+]
+skill_allowed_keys = [
+  "name", "description", "when_to_use", "argument-hint", "arguments", "disable-model-invocation",
+  "user-invocable", "allowed-tools", "disallowed-tools", "model", "effort", "context", "agent",
+  "background", "hooks", "paths", "shell", "metadata", "license", "compatibility",
+]
+forbidden_permission_modes = ["bypassPermissions"]
+
+[init]
+files = ["experiments", "decisions", "amendments", "claims", "research_log"]

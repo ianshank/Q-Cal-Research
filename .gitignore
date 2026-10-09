@@ -1,0 +1,35 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Tool caches and reports
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Run outputs: immutable records and the derived index are committed; logs,
+# results and binary artifacts stay local or go to DVC.
+runs/*
+!runs/registry/
+!runs/index.csv
+
+# Data and large artifacts (DVC-tracked, never committed)
+data/raw/
+data/derived/
+*.onnx
+*.engine
+*.plan
+*.hef
+*.trt
+
+# Secrets
+.env
+.env.*

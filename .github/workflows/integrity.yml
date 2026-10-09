@@ -1,0 +1,51 @@
+name: integrity
+
+# Trust-sensitive checks. pull_request_target runs this workflow *as defined on the
+# base branch*, with the base branch's code and policy (qcal.toml, allowed_signers).
+# The pull request head is fetched only as git data and is never executed, so a
+# pull request cannot weaken the checks that judge it. Require this check in the
+# branch ruleset. It starts running for pull requests once it exists on the base branch.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: integrity-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  signed-and-immutable:
+    name: signed protected paths, immutable registry
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+    steps:
+      - name: Check out the base commit (trusted code and policy)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+      - name: Fetch the pull request head as data only
+        run: git fetch --no-tags origin "+refs/pull/${PR_NUMBER}/head:refs/remotes/pr/head"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install qcal from the base commit
+        run: python -m pip install --disable-pip-version-check .
+      - name: Commits touching protected paths are signed by an allowed key
+        run: python -m qcal ci verify-signatures --base "$BASE_SHA" --head "$HEAD_SHA" --github --json-out signatures.json
+      - name: Run records are append-only
+        run: python -m qcal ci registry-immutable --base "$BASE_SHA" --head "$HEAD_SHA"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: signature-report
+          path: signatures.json
+          if-no-files-found: ignore

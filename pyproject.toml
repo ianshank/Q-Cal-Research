@@ -1,0 +1,88 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qcal"
+version = "0.1.0"
+description = "Q-Cal research integrity tooling: run registry, claims checking, agent guards and CI integrity checks."
+readme = "docs/IMPLEMENTATION_NOTES.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Ian Cruickshank" }]
+dependencies = ["PyYAML>=6.0"]
+
+[project.optional-dependencies]
+parquet = ["pyarrow>=14"]
+dev = [
+  "pytest>=8",
+  "pytest-cov>=5",
+  "hypothesis>=6.100",
+  "ruff>=0.6",
+  "mypy>=1.10",
+  "types-PyYAML>=6.0",
+]
+
+[project.scripts]
+qcal = "qcal.cli:main"
+qcal-registry = "qcal.cli:registry_main"
+qcal-claims = "qcal.cli:claims_main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+qcal = ["resources/*.toml", "resources/templates/*", "py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
+markers = [
+  "integration: exercises real subprocesses, git, or the hook wrapper",
+  "requires_ssh_keygen: needs ssh-keygen for commit signing",
+]
+filterwarnings = ["error"]
+
+[tool.coverage.run]
+source = ["qcal"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true
+skip_covered = true
+exclude_also = [
+  "if TYPE_CHECKING:",
+  "raise NotImplementedError",
+  "if __name__ == .__main__.:",
+  "\\.\\.\\.",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "PL", "PT", "S", "C4", "RET", "TID"]
+ignore = [
+  "PLR0913",  # explicit DI constructors take many collaborators by design
+  "PLR2004",  # magic values in comparisons are tested constants
+  "S603",     # subprocess calls use argument lists, never a shell
+  "S607",     # git/ssh-keygen are resolved from PATH on purpose
+  "PLC0415",  # lazy imports keep hook start-up stdlib-only and CLI start-up fast
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S105", "S106", "S108", "PLR0915", "PLC0415"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unreachable = true
+mypy_path = "src"
+packages = ["qcal"]
+
+[[tool.mypy.overrides]]
+module = ["pyarrow", "pyarrow.*"]
+ignore_missing_imports = true
