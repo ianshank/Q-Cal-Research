@@ -7,7 +7,7 @@ import os
 import subprocess
 import sys
 import textwrap
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +19,36 @@ from qcal.registry.records import RunRecord
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 _ENV_PREFIXES = ("QCAL_", "QCAL__", "CLAUDE_")
+# Each top-level test directory is a suite with a marker of the same name: `pytest -m security`.
+SUITES = ("unit", "integration", "regression", "security", "e2e")
+# On CI a missing tool must fail, never skip: a silently skipped signing test proves nothing.
+REQUIRE_TOOLS_ENV = "CI"
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    tests_dir = Path(__file__).resolve().parent
+    for item in items:
+        try:
+            suite = item.path.resolve().relative_to(tests_dir).parts[0]
+        except ValueError:
+            continue
+        if suite in SUITES:
+            item.add_marker(getattr(pytest.mark, suite))
+
+
+def require_tool(name: str) -> str:
+    """Path of ``name``; skip locally when it is missing, fail on CI."""
+    import shutil
+
+    path = shutil.which(name)
+    if path is None:
+        message = f"{name} not available"
+        if os.environ.get(REQUIRE_TOOLS_ENV, "").lower() in {"1", "true", "yes"}:
+            pytest.fail(
+                f"{message}, and {REQUIRE_TOOLS_ENV} requires every tool-backed test to run"
+            )
+        pytest.skip(message)
+    return path
 
 
 @pytest.fixture(autouse=True)
@@ -179,10 +209,55 @@ def chdir(monkeypatch: pytest.MonkeyPatch) -> Callable[[Path], None]:
 
 
 @pytest.fixture
-def ssh_keygen() -> Iterator[str]:
-    import shutil
+def ssh_keygen() -> str:
+    return require_tool("ssh-keygen")
 
-    path = shutil.which("ssh-keygen")
-    if path is None:
-        pytest.skip("ssh-keygen not available")
-    return path
+
+# --- SSH-signed repositories (security and regression suites) -------------------------------
+
+PRINCIPAL = "ian@example.invalid"
+
+
+@pytest.fixture
+def signed_repo(
+    repo: Path, ssh_keygen: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Path, Path, str, str]:
+    """A repo whose first commit is pre-policy history, then a signed commit adding the policy."""
+    for variable in ("GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"):
+        monkeypatch.setenv(variable, PRINCIPAL)  # committer must equal the signing principal
+    key = tmp_path / "ian"
+    subprocess.run([ssh_keygen, "-q", "-t", "ed25519", "-N", "", "-f", str(key)], check=True)
+    run_git(repo, "init", "-q", "-b", "main")
+    run_git(repo, "config", "user.email", PRINCIPAL)
+    run_git(repo, "config", "commit.gpgsign", "false")
+    (repo / "qcal.toml").unlink()
+    write(repo, "README.md", "old history\n")
+    run_git(repo, "add", "-A")
+    run_git(repo, "commit", "-q", "-m", "old history without a policy")
+    old = run_git(repo, "rev-parse", "HEAD")
+    pub = (tmp_path / "ian.pub").read_text().strip()
+    write(repo, "allowed_signers", f'{PRINCIPAL} namespaces="git" {pub}\n')
+    write(repo, "qcal.toml", '[signing]\nmode = "enforce"\n')
+    write(repo, "EXPERIMENTS.yaml", "version: 2\n")
+    run_git(repo, "add", "-A")
+    sign(repo, key, "signed policy")
+    base = run_git(repo, "rev-parse", "HEAD")
+    return repo, key, old, base
+
+
+def sign(repo: Path, key: Path, message: str) -> None:
+    """Commit the staged changes with an SSH signature from ``key``."""
+    run_git(
+        repo,
+        "-c",
+        "gpg.format=ssh",
+        "-c",
+        "gpg.ssh.program=ssh-keygen",
+        "-c",
+        f"user.signingkey={key}",
+        "commit",
+        "-q",
+        "-S",
+        "-m",
+        message,
+    )

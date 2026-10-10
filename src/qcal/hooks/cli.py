@@ -14,6 +14,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import IO
 
+from qcal import gitutil
 from qcal.config import Config, find_root, load_config
 from qcal.hooks import guards
 from qcal.hooks.decision import BLOCK_EXIT_CODE, Decision, Mode, emit, resolve_mode
@@ -25,6 +26,9 @@ _log = get_logger("hooks.cli")
 
 GUARD_HOOKS = ("guard-paths", "guard-bash", "scope-write", "deny-read", "allow-only")
 STOP_HOOKS = ("claims",)
+# Set by run_hook.sh: "1" when the wrapper runs the hook fail-open (the Stop hook). The hook
+# applies the same mode to its own argument errors, so a typo cannot trap a session.
+FAIL_OPEN_ENV = "QCAL_HOOK_FAIL_OPEN"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -51,7 +55,15 @@ def main(
 ) -> int:
     env = os.environ if environ is None else environ
     err = stderr if stderr is not None else sys.stderr
-    args = build_parser().parse_args(argv)
+    try:
+        args = build_parser().parse_args(argv)
+    except SystemExit as exc:  # argparse: usage error (2) or --help (0)
+        if exc.code in (0, None):
+            return 0
+        fail_open = env.get(FAIL_OPEN_ENV, "") == "1"
+        label = "WARNING" if fail_open else "BLOCKED"
+        err.write(f"{label}: qcal hook arguments are invalid: {list(argv or sys.argv[1:])}\n")
+        return 0 if fail_open else BLOCK_EXIT_CODE
     text = (stdin if stdin is not None else sys.stdin).read()
     fail_closed = args.hook in GUARD_HOOKS
 
@@ -60,12 +72,13 @@ def main(
         config = _load(payload, env)
         configure_logging(config, level=None, stream=err, environ=_quiet_env(config, env))
         mode = resolve_mode(config, env)
-    except Exception as exc:  # any setup failure: fail closed for guards
-        return _setup_failure(args.hook, exc, err, fail_closed)
+    except Exception as exc:  # noqa: BLE001 - any setup failure must fail closed for guards
+        return _setup_failure(args.hook, exc, err, fail_closed=fail_closed)
 
     try:
-        decision = _dispatch(args, payload, config, env, err)
-    except Exception as exc:
+        with gitutil.timeout_scope(config.float_value("git.timeout_s")):
+            decision = _dispatch(args, payload, config, env, err)
+    except Exception as exc:  # noqa: BLE001 - a crashing guard blocks; it never allows
         _log.debug("hook %s raised", args.hook, exc_info=True)
         if not fail_closed:
             err.write(f"WARNING: qcal {args.hook} hook error (not blocking): {exc}\n")
@@ -140,7 +153,7 @@ def _quiet_env(config: Config, env: Mapping[str, str]) -> Mapping[str, str]:
     return {**env, level_env: "WARNING"}
 
 
-def _setup_failure(hook: str, exc: Exception, err: IO[str], fail_closed: bool) -> int:
+def _setup_failure(hook: str, exc: Exception, err: IO[str], *, fail_closed: bool) -> int:
     detail = str(exc) if isinstance(exc, PayloadError) else f"{type(exc).__name__}: {exc}"
     if fail_closed:
         err.write(f"BLOCKED: qcal {hook} guard could not start ({detail}); failing closed\n")
@@ -149,4 +162,4 @@ def _setup_failure(hook: str, exc: Exception, err: IO[str], fail_closed: bool) -
     return 0
 
 
-__all__ = ["GUARD_HOOKS", "STOP_HOOKS", "Mode", "build_parser", "main"]
+__all__ = ["FAIL_OPEN_ENV", "GUARD_HOOKS", "STOP_HOOKS", "Mode", "build_parser", "main"]

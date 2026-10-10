@@ -2,61 +2,13 @@
 
 from __future__ import annotations
 
-import subprocess
-from pathlib import Path
-
 import pytest
 
 from qcal.ci.immutability import check_registry_immutable
 from qcal.ci.signatures import signature_kind, verify_signatures
-from tests.conftest import run_git, write
+from tests.conftest import run_git, sign, write
 
 pytestmark = [pytest.mark.integration, pytest.mark.requires_ssh_keygen]
-PRINCIPAL = "ian@example.invalid"
-
-
-@pytest.fixture
-def signed_repo(
-    repo: Path, ssh_keygen: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> tuple[Path, Path, str, str]:
-    """A repo whose first commit is pre-policy history, then a signed commit adding the policy."""
-    for variable in ("GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"):
-        monkeypatch.setenv(variable, PRINCIPAL)  # committer must equal the signing principal
-    key = tmp_path / "ian"
-    subprocess.run([ssh_keygen, "-q", "-t", "ed25519", "-N", "", "-f", str(key)], check=True)
-    run_git(repo, "init", "-q", "-b", "main")
-    run_git(repo, "config", "user.email", PRINCIPAL)
-    run_git(repo, "config", "commit.gpgsign", "false")
-    (repo / "qcal.toml").unlink()
-    write(repo, "README.md", "old history\n")
-    run_git(repo, "add", "-A")
-    run_git(repo, "commit", "-q", "-m", "old history without a policy")
-    old = run_git(repo, "rev-parse", "HEAD")
-    pub = (tmp_path / "ian.pub").read_text().strip()
-    write(repo, "allowed_signers", f'{PRINCIPAL} namespaces="git" {pub}\n')
-    write(repo, "qcal.toml", '[signing]\nmode = "enforce"\n')
-    write(repo, "EXPERIMENTS.yaml", "version: 2\n")
-    run_git(repo, "add", "-A")
-    sign(repo, key, "signed policy")
-    base = run_git(repo, "rev-parse", "HEAD")
-    return repo, key, old, base
-
-
-def sign(repo: Path, key: Path, message: str) -> None:
-    run_git(
-        repo,
-        "-c",
-        "gpg.format=ssh",
-        "-c",
-        "gpg.ssh.program=ssh-keygen",
-        "-c",
-        f"user.signingkey={key}",
-        "commit",
-        "-q",
-        "-S",
-        "-m",
-        message,
-    )
 
 
 def test_crafted_merge_cannot_delete_protected_files(signed_repo) -> None:

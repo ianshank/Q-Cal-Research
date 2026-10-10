@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
@@ -52,7 +51,7 @@ def test_evaluate_absolute_and_relative_paths(policy: Policy, repo: Path) -> Non
 
 def test_symlink_to_a_protected_file_is_protected(policy: Policy, repo: Path) -> None:
     (repo / "EXPERIMENTS.yaml").write_text("x")
-    os.symlink(repo / "EXPERIMENTS.yaml", repo / "innocent.yaml")
+    (repo / "innocent.yaml").symlink_to(repo / "EXPERIMENTS.yaml")
     verdict = policy.evaluate(repo / "innocent.yaml", repo)
     assert verdict.relative == "innocent.yaml"
     assert verdict.resolved_relative == "EXPERIMENTS.yaml"
@@ -61,7 +60,7 @@ def test_symlink_to_a_protected_file_is_protected(policy: Policy, repo: Path) ->
 
 def test_symlinked_directory_is_resolved(policy: Policy, repo: Path) -> None:
     (repo / ".claude").mkdir()
-    os.symlink(repo / ".claude", repo / "notes")
+    (repo / "notes").symlink_to(repo / ".claude")
     assert policy.evaluate(repo / "notes" / "settings.json", repo).categories == (
         "enforcement_surface",
     )

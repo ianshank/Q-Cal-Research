@@ -7,7 +7,6 @@ ref's ``qcal.toml``.
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
@@ -25,7 +24,7 @@ from qcal.ci.signatures import (
     policy_config,
     verify_signatures,
 )
-from tests.conftest import run_git, write
+from tests.conftest import require_tool, run_git, write
 
 pytestmark = pytest.mark.integration
 signing = pytest.mark.requires_ssh_keygen
@@ -598,8 +597,10 @@ def test_annotations_for_an_enforced_violation(project: Path) -> None:
     lines = github_annotations(verify(project))
 
     assert lines == [
-        f"::error::commit {sha[:12]} changes protected paths (CLAIMS.md, qcal.toml) "
-        "without an allowed signature: unsigned"
+        (
+            f"::error::commit {sha[:12]} changes protected paths (CLAIMS.md, qcal.toml) "
+            "without an allowed signature: unsigned"
+        )
     ]
 
 
@@ -608,10 +609,14 @@ def test_bootstrap_annotations_warn_and_explain_how_to_enforce() -> None:
     report = SignatureReport("bootstrap", 0, [CommitVerdict(sha, ["CLAIMS.md"], False, NO_KEYS)])
 
     assert github_annotations(report) == [
-        f"::warning::commit 0123456789ab changes protected paths (CLAIMS.md) "
-        f"without an allowed signature: {NO_KEYS}",
-        "::notice::signing.mode is 'bootstrap'; set it to 'enforce' in qcal.toml "
-        "(in a signed commit) to make this check blocking.",
+        (
+            f"::warning::commit 0123456789ab changes protected paths (CLAIMS.md) "
+            f"without an allowed signature: {NO_KEYS}"
+        ),
+        (
+            "::notice::signing.mode is 'bootstrap'; set it to 'enforce' in qcal.toml "
+            "(in a signed commit) to make this check blocking."
+        ),
     ]
 
 
@@ -651,9 +656,7 @@ def test_bootstrap_report_with_violations_still_passes() -> None:
 @pytest.fixture
 def gpg_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
     """A throwaway OpenPGP key whose UID is the committer email, trusted in a private keyring."""
-    gpg, gpgconf = shutil.which("gpg"), shutil.which("gpgconf")
-    if gpg is None or gpgconf is None:
-        pytest.skip("gpg not available")
+    gpg, gpgconf = require_tool("gpg"), require_tool("gpgconf")
     home = tmp_path / "gpg"
     home.mkdir(mode=0o700)
     monkeypatch.setenv("GNUPGHOME", str(home))

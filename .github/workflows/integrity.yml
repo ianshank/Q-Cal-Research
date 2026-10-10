@@ -26,6 +26,8 @@ jobs:
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
+      # Passed through the environment, never interpolated into a script (injection-safe).
+      HEAD_REF: ${{ github.event.pull_request.head.ref }}
     steps:
       - name: Check out the base commit (trusted code and policy)
         uses: actions/checkout@v4
@@ -42,10 +44,14 @@ jobs:
       - name: Commits touching protected paths are signed by an allowed key
         run: python -m qcal ci verify-signatures --base "$BASE_SHA" --head "$HEAD_SHA" --github --json-out signatures.json
       - name: Run records are append-only
-        run: python -m qcal ci registry-immutable --base "$BASE_SHA" --head "$HEAD_SHA"
+        run: python -m qcal ci registry-immutable --base "$BASE_SHA" --head "$HEAD_SHA" --github
+      - name: The other model's current review is committed
+        run: python -m qcal ci review-check --base "$BASE_SHA" --head "$HEAD_SHA" --branch "$HEAD_REF" --github --json-out review.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: signature-report
-          path: signatures.json
+          name: integrity-reports
+          path: |
+            signatures.json
+            review.json
           if-no-files-found: ignore

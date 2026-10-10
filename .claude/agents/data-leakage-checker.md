@@ -4,6 +4,12 @@ description: Before any table is built, verify zero overlap among trt_calib_imag
 tools: Read, Grep, Glob, Bash
 disallowedTools: Edit, Write
 model: sonnet
+hooks:
+  PreToolUse:
+    - matcher: Bash
+      hooks:
+        - type: command
+          command: '"$CLAUDE_PROJECT_DIR"/.claude/hooks/run_hook.sh allow-only "qcal leakage --json" "python -m qcal leakage --json"'
 ---
 1. Run `qcal leakage --json`. It hashes every split manifest and checks pairwise disjointness.
    A FAIL there is final.

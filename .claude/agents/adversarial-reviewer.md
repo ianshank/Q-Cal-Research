@@ -15,4 +15,5 @@ hardcoded values; Protocol violations; edits to the enforcement surface.
 
 Rank findings, mark each blocking or non-blocking, and cite file:line. Return the review as text
 in the schema of review/TEMPLATE.md (reviewer, reviewed_sha, verdict, blocking[]). You cannot
-write files; the caller saves your review to review/claude-<branch>.md.
+write files; the caller saves your review to review/claude/<branch-slug>.md, where the slug is
+the branch name with `/` replaced by `-`.

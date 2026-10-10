@@ -46,4 +46,5 @@ own CUDA 11.8 environment. Jetson Orin Nano Super produces headline INT8 numbers
 ## Workflow
 Branch `claude/<slug>` from the default branch; one worktree per agent. A PR merges with green
 CI, a signed-commit check for protected paths, a RESEARCH_LOG.md entry, CLAIMS.md updated when
-numbers change, and the other model's review in `review/<branch>.md`.
+numbers change, and the other model's review in `review/<reviewer>/<branch-slug>.md`
+(`qcal ci review-check` verifies it is approving and current).

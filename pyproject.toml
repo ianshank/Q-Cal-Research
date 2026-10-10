@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "qcal"
-version = "0.1.0"
+dynamic = ["version"]  # single source: qcal.__version__
 description = "Q-Cal research integrity tooling: run registry, claims checking, agent guards and CI integrity checks."
 readme = "docs/IMPLEMENTATION_NOTES.md"
 requires-python = ">=3.11"
@@ -28,6 +28,9 @@ qcal = "qcal.cli:main"
 qcal-registry = "qcal.cli:registry_main"
 qcal-claims = "qcal.cli:claims_main"
 
+[tool.setuptools.dynamic]
+version = { attr = "qcal.__version__" }
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
@@ -38,7 +41,11 @@ qcal = ["resources/*.toml", "resources/templates/*", "py.typed"]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers --strict-config"
 markers = [
+  "unit: fast, in-process tests of one module (tests/unit)",
   "integration: exercises real subprocesses, git, or the hook wrapper",
+  "regression: one test per fixed review or red-team finding (tests/regression)",
+  "security: attacks on the guards and the signed-commit control (tests/security)",
+  "e2e: the documented workflow through the real CLI (tests/e2e)",
   "requires_ssh_keygen: needs ssh-keygen for commit signing",
 ]
 filterwarnings = ["error"]
@@ -48,7 +55,7 @@ source = ["qcal"]
 branch = true
 
 [tool.coverage.report]
-fail_under = 90
+fail_under = 95  # measured 99% (98.9% without the parquet extra) when raised
 show_missing = true
 skip_covered = true
 exclude_also = [
@@ -64,7 +71,11 @@ target-version = "py311"
 src = ["src", "tests"]
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "PL", "PT", "S", "C4", "RET", "TID"]
+select = [
+  "E", "F", "W", "I", "B", "UP", "SIM", "RUF", "PL", "PT", "S", "C4", "RET", "TID",
+  "NPY", "PERF", "FURB", "ERA", "T20", "PTH", "ARG", "BLE", "FBT", "PIE", "G", "LOG",
+  "FLY", "ISC",
+]
 ignore = [
   "PLR0913",  # explicit DI constructors take many collaborators by design
   "PLR2004",  # magic values in comparisons are tested constants
@@ -74,7 +85,11 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101", "S105", "S106", "S108", "PLR0915", "PLR0917", "PLC0415"]
+"tests/**" = [
+  "S101", "S105", "S106", "S108", "PLR0915", "PLR0917", "PLC0415",
+  "FBT",     # parametrized expectations are positional booleans
+  "ARG",     # fixtures are often requested only for their side effects
+]
 
 [tool.mypy]
 python_version = "3.11"

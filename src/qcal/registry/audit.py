@@ -25,10 +25,17 @@ class AuditReport:
     unregistered_seeds: list[str] = field(default_factory=list)
     superseded: list[str] = field(default_factory=list)
     placeholders: list[str] = field(default_factory=list)
+    duplicates: list[str] = field(default_factory=list)
+    bad_supersedes: list[str] = field(default_factory=list)
     amendments: int = 0
 
     def ok(self, *, strict: bool = False) -> bool:
-        problems = bool(self.unregistered_cells or self.unregistered_seeds)
+        problems = bool(
+            self.unregistered_cells
+            or self.unregistered_seeds
+            or self.duplicates
+            or self.bad_supersedes
+        )
         if strict:
             problems = problems or bool(self.missing or self.failed_only or self.placeholders)
         return not problems
@@ -44,6 +51,8 @@ class AuditReport:
             "unregistered_seeds": self.unregistered_seeds,
             "superseded": self.superseded,
             "placeholders": self.placeholders,
+            "duplicates": self.duplicates,
+            "bad_supersedes": self.bad_supersedes,
             "amendments": self.amendments,
         }
 
@@ -57,6 +66,8 @@ class AuditReport:
             "unregistered_seeds",
             "superseded",
             "placeholders",
+            "duplicates",
+            "bad_supersedes",
         ):
             values = data[key]
             lines.append(f"{key}: {len(values)}")
@@ -71,6 +82,37 @@ def count_amendments(config: Config) -> int:
         return 0
     pattern = re.compile(config.str_value("experiments.amendment_heading_pattern"), re.MULTILINE)
     return len(pattern.findall(path.read_text("utf-8")))
+
+
+def duplicate_pairs(current: Sequence[RunRecord], ok_status: str) -> list[str]:
+    """(cell, seed) pairs with more than one current ok run; tables would average them."""
+    by_pair: dict[tuple[str, int], list[str]] = {}
+    for record in current:
+        if record.status == ok_status:
+            by_pair.setdefault((record.cell_id, record.seed), []).append(record.run_id)
+    return [
+        f"{cell}@{seed}: {', '.join(sorted(ids))}"
+        for (cell, seed), ids in sorted(by_pair.items())
+        if len(ids) > 1
+    ]
+
+
+def bad_supersedes(records: Sequence[RunRecord]) -> list[str]:
+    """Supersede links to unknown runs or to a different cell or seed (a typo hides a result)."""
+    by_id = {r.run_id: r for r in records}
+    problems: list[str] = []
+    for record in records:
+        if not record.supersedes:
+            continue
+        old = by_id.get(record.supersedes)
+        if old is None:
+            problems.append(f"{record.run_id} supersedes unknown {record.supersedes}")
+        elif (old.cell_id, old.seed) != (record.cell_id, record.seed):
+            problems.append(
+                f"{record.run_id} ({record.cell_id}@{record.seed}) supersedes "
+                f"{old.run_id} ({old.cell_id}@{old.seed})"
+            )
+    return problems
 
 
 def audit(config: Config, experiments: Experiments, records: Sequence[RunRecord]) -> AuditReport:
@@ -94,6 +136,8 @@ def audit(config: Config, experiments: Experiments, records: Sequence[RunRecord]
                 report.failed_only.append((cell.id, seed))
             else:
                 report.missing.append((cell.id, seed))
+    report.duplicates = duplicate_pairs(current, ok_status)
+    report.bad_supersedes = bad_supersedes(records)
     for record in current:
         registered = known.get(record.cell_id)
         if registered is None:

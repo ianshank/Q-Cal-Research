@@ -257,3 +257,17 @@ def test_version_flag(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit):
         cli.main(["--version"])
     assert capsys.readouterr().out.startswith("qcal ")
+
+
+@pytest.mark.parametrize(
+    ("seeds", "message"),
+    [("0,x", "comma-separated integers"), ("0,1,0", "duplicate seeds")],
+)
+def test_run_batch_seed_errors_are_usage_errors(
+    repo: Path, capsys: pytest.CaptureFixture[str], seeds: str, message: str
+) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(["--root", str(repo), "registry", "run-batch", "C-*", "--seeds", seeds])
+
+    assert excinfo.value.code == 2
+    assert message in capsys.readouterr().err

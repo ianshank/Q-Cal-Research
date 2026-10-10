@@ -383,16 +383,20 @@ def test_merge_environment_does_not_mutate_its_inputs() -> None:
 
 
 def test_run_records_supersession(config: Config, fake_executor: FakeExecutor) -> None:
-    assert make_runner(config, fake_executor).run("C-a", 0, supersedes="R0").supersedes == "R0"
+    runner = make_runner(config, fake_executor)
+    first = runner.run("C-a", 0)
+    assert runner.run("C-a", 0, supersedes=first.run_id).supersedes == first.run_id
 
 
 def test_failed_rerun_does_not_supersede_the_previous_run(
     config: Config, caplog: pytest.LogCaptureFixture
 ) -> None:
+    runner = make_runner(config, FakeExecutor([ExecutionResult(0, metrics={"AP": 1.0}), FAILED]))
+    first = runner.run("C-a", 0)
     with caplog.at_level(logging.WARNING, logger="qcal"):
-        record = make_runner(config, FakeExecutor([FAILED])).run("C-a", 0, supersedes="R0")
+        record = runner.run("C-a", 0, supersedes=first.run_id)
     assert (record.status, record.supersedes) == ("failed", None)
-    assert "does not supersede R0" in caplog.text
+    assert f"does not supersede {first.run_id}" in caplog.text
 
 
 def test_run_captures_the_config_hash_before_execution(config: Config) -> None:

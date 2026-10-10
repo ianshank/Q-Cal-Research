@@ -43,9 +43,11 @@ class JsonFormatter(logging.Formatter):
             "logger": record.name,
             "msg": record.getMessage(),
         }
-        for key, value in vars(record).items():
-            if key not in _STANDARD_ATTRS and not key.startswith("_"):
-                payload[key] = value
+        payload.update(
+            (key, value)
+            for key, value in vars(record).items()
+            if key not in _STANDARD_ATTRS and not key.startswith("_")
+        )
         if record.exc_info:
             payload["exc"] = self.formatException(record.exc_info)
         return json.dumps(payload, default=str, sort_keys=True)

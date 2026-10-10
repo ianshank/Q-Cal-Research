@@ -23,12 +23,23 @@ _GIT_OPTS_WITH_VALUE = frozenset(
     {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix"}
 )
 _PUSH_OPTS_WITH_VALUE = frozenset({"-o", "--push-option", "--repo", "--receive-pack", "--exec"})
-_REFS_HEADS = "refs/heads/"
+# Ways to spell a branch as a push destination; git resolves "heads/main" to refs/heads/main.
+_BRANCH_PREFIXES = ("refs/heads/", "heads/")
+# A directory argument the guard cannot resolve statically (variables, home, substitution).
+_UNRESOLVABLE_DIR = re.compile(r"[$`~*?\[]")
+_REPO_LOCATION_OPTS = frozenset({"--git-dir", "--work-tree"})
+DEFAULT_MAX_DEPTH = 3  # mirrors hooks.max_nesting_depth in defaults.toml
 _HEAD_ALIASES = frozenset({"HEAD", "@"})
 _REF_SUFFIX = re.compile(r"[~^@{].*$")
 _REDIRECT_CHARS = frozenset("<>&")
 _MIN_ABBREVIATION = 3  # "--x": git accepts unambiguous prefixes of long options
 _UNPARSEABLE_PUSH = re.compile(r"\bgit\b.*\bpush\b", re.DOTALL)
+# Command substitution splits a command into pieces a static reader cannot reassemble.
+_SUBSTITUTION = re.compile(r"\$\(|`|<\(|>\(")
+# Characters in a refspec that make its destination unknowable or plural.
+_DYNAMIC_REF = re.compile(r"[$`]")
+# Runners that feed a command arguments the guard cannot see.
+_ARGUMENT_FEEDERS = frozenset({"xargs", "parallel"})
 
 BranchResolver = Callable[[str | None], str | None]
 
@@ -91,9 +102,20 @@ def analyze(
     deny_flags: Sequence[str],
     cwd: str | None,
     resolve_branch: BranchResolver = current_branch,
+    max_depth: int = DEFAULT_MAX_DEPTH,
     _depth: int = 0,
 ) -> PushFinding | None:
-    """Return a finding if ``command`` pushes to a protected branch or force-pushes."""
+    """Return a finding if ``command`` pushes to a protected branch or force-pushes.
+
+    ``cd <dir>`` earlier in the command and ``git -C <dir>`` change the directory whose
+    checked-out branch an implicit ``git push`` would push.
+    """
+    if _UNPARSEABLE_PUSH.search(command) and _SUBSTITUTION.search(command):
+        return PushFinding(
+            "command substitution in a command that runs git push; write the push out "
+            "literally (git push origin claude/<slug>)",
+            "bash.push_substitution",
+        )
     try:
         segments = tokenize(command)
     except ValueError:
@@ -103,36 +125,120 @@ def analyze(
             )
         return None
     protected = {b.lower() for b in protected_branches}
+    here: str | None = cwd
     for segment in segments:
-        for args in _git_push_invocations(segment):
-            finding = _check_push(args, protected, deny_flags, cwd, resolve_branch)
-            if finding:
-                return finding
-        if _depth < 3:
-            for token in segment:
-                if "git" in token and "push" in token and (" " in token or "\t" in token):
-                    nested = analyze(
-                        token,
-                        protected_branches=protected_branches,
-                        deny_flags=deny_flags,
-                        cwd=cwd,
-                        resolve_branch=resolve_branch,
-                        _depth=_depth + 1,
-                    )
-                    if nested:
-                        return nested
+        if segment[0] == "cd":
+            here = _change_dir(here, segment[1] if len(segment) > 1 else "~")
+            continue
+        finding = _check_segment(segment, protected, deny_flags, here, resolve_branch)
+        if finding is None and _depth < max_depth:
+            finding = _check_nested(
+                segment,
+                protected_branches=protected_branches,
+                deny_flags=deny_flags,
+                cwd=here,
+                resolve_branch=resolve_branch,
+                max_depth=max_depth,
+                depth=_depth + 1,
+            )
+        if finding:
+            return finding
     return None
 
 
-def _git_push_invocations(segment: list[str]) -> Iterator[list[str]]:
+def _check_segment(
+    segment: list[str],
+    protected: set[str],
+    deny_flags: Sequence[str],
+    here: str | None,
+    resolve_branch: BranchResolver,
+) -> PushFinding | None:
+    for invocation in _git_push_invocations(segment):
+        if invocation.fed:
+            return PushFinding(
+                "git push run by xargs or a similar runner gets arguments the guard "
+                "cannot see; run the push directly",
+                "bash.push_unresolved",
+            )
+        finding = _check_push(
+            invocation.args,
+            protected,
+            deny_flags,
+            _apply_dirs(here, invocation.dirs) if invocation.dirs else here,
+            resolve_branch,
+            elsewhere=invocation.elsewhere,
+        )
+        if finding:
+            return finding
+    return None
+
+
+def _check_nested(
+    segment: list[str],
+    *,
+    protected_branches: Sequence[str],
+    deny_flags: Sequence[str],
+    cwd: str | None,
+    resolve_branch: BranchResolver,
+    max_depth: int,
+    depth: int,
+) -> PushFinding | None:
+    """Look inside quoted arguments such as ``bash -c "git push ..."``."""
+    for token in segment:
+        if "git" in token and "push" in token and (" " in token or "\t" in token):
+            nested = analyze(
+                token,
+                protected_branches=protected_branches,
+                deny_flags=deny_flags,
+                cwd=cwd,
+                resolve_branch=resolve_branch,
+                max_depth=max_depth,
+                _depth=depth,
+            )
+            if nested:
+                return nested
+    return None
+
+
+@dataclass(frozen=True)
+class _PushInvocation:
+    args: list[str]
+    dirs: tuple[str, ...] = ()  # -C values, applied in order
+    elsewhere: bool = False  # --git-dir/--work-tree name another repository
+    fed: bool = False  # xargs and friends append arguments the guard never sees
+
+
+_UNRESOLVED = "\0unresolved"  # sentinel cwd: the directory cannot be known statically
+
+
+def _change_dir(here: str | None, target: str) -> str:
+    if here == _UNRESOLVED or _UNRESOLVABLE_DIR.search(target) or target == "-":
+        return _UNRESOLVED
+    return str(Path(here or ".") / target)
+
+
+def _apply_dirs(here: str | None, dirs: Sequence[str]) -> str | None:
+    for directory in dirs:
+        here = _change_dir(here, directory)
+    return here
+
+
+def _git_push_invocations(segment: list[str]) -> Iterator[_PushInvocation]:
     indexes = [i for i, token in enumerate(segment) if PurePosixPath(token).name == "git"]
     for n, start in enumerate(indexes):
         end = indexes[n + 1] if n + 1 < len(indexes) else len(segment)
         i = start + 1
+        dirs: list[str] = []
+        elsewhere = False
         while i < end and segment[i].startswith("-"):
+            option = segment[i].split("=", 1)[0]
+            elsewhere = elsewhere or option in _REPO_LOCATION_OPTS
+            if segment[i] == "-C" and i + 1 < end:
+                dirs.append(segment[i + 1])
             i += 2 if segment[i] in _GIT_OPTS_WITH_VALUE else 1
         if i < end and segment[i] == "push":
-            yield segment[i + 1 : end]
+            fed = any(PurePosixPath(t).name in _ARGUMENT_FEEDERS for t in segment[:start])
+            yield _PushInvocation(segment[i + 1 : end], tuple(dirs), elsewhere, fed)
 
 
 def _check_push(
@@ -141,6 +247,8 @@ def _check_push(
     deny_flags: Sequence[str],
     cwd: str | None,
     resolve_branch: BranchResolver,
+    *,
+    elsewhere: bool = False,
 ) -> PushFinding | None:
     positionals, finding = _scan_push_args(args, deny_flags)
     if finding:
@@ -150,6 +258,12 @@ def _check_push(
     names_repo = any(a == "--repo" or a.startswith("--repo=") for a in args)
     refspecs = positionals if names_repo else positionals[1:]
     if not refspecs:
+        if elsewhere or cwd == _UNRESOLVED:
+            return PushFinding(
+                "git push without a refspec from a directory the guard cannot resolve; "
+                "name the branch explicitly (git push origin claude/<slug>)",
+                "bash.push_unresolved",
+            )
         branch = resolve_branch(cwd)
         if branch and branch.lower() in protected:
             return PushFinding(
@@ -202,16 +316,38 @@ def _scan_push_args(
     return positionals, None
 
 
+def _strip_branch_prefix(target: str) -> str:
+    lowered = target.lower()
+    for prefix in _BRANCH_PREFIXES:
+        if lowered.startswith(prefix):
+            return target[len(prefix) :]
+    return target
+
+
 def _check_refspec(
     refspec: str, protected: set[str], cwd: str | None, resolve_branch: BranchResolver
 ) -> PushFinding | None:
     if refspec.startswith("+"):
         return PushFinding(f"forced refspec {refspec!r} is not allowed", "bash.push_force_refspec")
+    if _DYNAMIC_REF.search(refspec):
+        return PushFinding(
+            f"refspec {refspec!r} depends on a variable; name the branch literally",
+            "bash.push_unresolved",
+        )
     source, colon, destination = refspec.partition(":")
     target = destination if colon else source
+    if "*" in target:
+        return PushFinding(
+            f"wildcard refspec {refspec!r} can push protected branches", "bash.push_wildcard"
+        )
     if target.upper() in _HEAD_ALIASES or target.startswith(("@", "HEAD")):
+        if cwd == _UNRESOLVED:
+            return PushFinding(
+                f"cannot tell which branch {target!r} names here; push an explicit branch",
+                "bash.push_unresolved",
+            )
         target = resolve_branch(cwd) or target
-    name = _REF_SUFFIX.sub("", target.removeprefix(_REFS_HEADS)) or target
+    name = _REF_SUFFIX.sub("", _strip_branch_prefix(target)) or target
     if name.lower() not in protected:
         return None
     action = "delete" if colon and not source else "push to"

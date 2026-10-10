@@ -21,18 +21,69 @@ def project_root(config: Config, environ: Mapping[str, str]) -> Path:
     return Path(value).resolve() if value else config.root
 
 
+def _gitdir_of(marker: Path) -> Path | None:
+    """The git directory a ``.git`` file or directory stands for."""
+    if marker.is_dir():
+        return marker.resolve()
+    try:
+        first = marker.read_text("utf-8").splitlines()[0]
+    except (OSError, UnicodeDecodeError, IndexError):
+        return None
+    if not first.startswith("gitdir:"):
+        return None
+    target = Path(first.removeprefix("gitdir:").strip())
+    return (marker.parent / target).resolve() if not target.is_absolute() else target.resolve()
+
+
+def _common_dir(gitdir: Path) -> Path:
+    commondir = gitdir / "commondir"
+    try:
+        return (gitdir / commondir.read_text("utf-8").strip()).resolve()
+    except OSError:
+        return gitdir
+
+
+def _is_worktree_of(directory: Path, project: Path) -> bool:
+    """``directory`` is a linked worktree of the project's repository.
+
+    Its ``.git`` file must point at ``<common>/worktrees/<name>``, and that entry must
+    point back at this ``.git`` file, so a hand-made ``.git`` marker does not qualify.
+    """
+    marker = directory / ".git"
+    if not marker.is_file():
+        return False
+    project_gitdir = _gitdir_of(project / ".git")
+    gitdir = _gitdir_of(marker)
+    if project_gitdir is None or gitdir is None:
+        return False
+    if gitdir.parent != _common_dir(project_gitdir) / "worktrees":
+        return False
+    try:
+        back = Path((gitdir / "gitdir").read_text("utf-8").strip())
+    except OSError:
+        return False
+    return back.resolve() == marker.resolve()
+
+
 def root_for(path: str, default_root: Path) -> Path:
-    """The git work tree containing ``path`` (a linked worktree has a ``.git`` file).
+    """The verified git work tree containing ``path``: the project, or a linked worktree.
 
     Agents run in their own worktrees (``isolation: worktree``), which may live inside
     the project (``.claude/worktrees/x``) or beside it. Policy paths are relative to the
-    work tree that holds the file, so protection follows the file, not the session.
+    work tree that holds the file, so protection follows the file, not the session. Only
+    real linked worktrees count; any other ``.git`` marker is ignored.
     """
     candidate = Path(path) if Path(path).is_absolute() else default_root / path
     for directory in (candidate, *candidate.parents):
-        if (directory / ".git").exists():
+        if directory == default_root:
+            return default_root
+        if _is_worktree_of(directory, default_root):
             return directory
     return default_root
+
+
+def _absolute(path: str, root: Path) -> str:
+    return path if Path(path).is_absolute() else str(root / path)
 
 
 def guard_paths(payload: HookPayload, *, config: Config, policy: Policy, root: Path) -> Decision:
@@ -51,7 +102,7 @@ def guard_paths(payload: HookPayload, *, config: Config, policy: Policy, root: P
         )
     deny = config.str_list("hooks.deny_categories")
     for path in paths:
-        verdict = policy.evaluate(path, root_for(path, root))
+        verdict = policy.evaluate(_absolute(path, root), root_for(path, root))
         if verdict.clean_room_hits:
             return Decision.denied(f"{path} {policy.message_for('clean_room')}", "paths.clean_room")
         blocked = verdict.blocked_by(deny)
@@ -91,6 +142,7 @@ def guard_bash(
         deny_flags=config.str_list("hooks.push_deny_flags"),
         cwd=payload.cwd,
         resolve_branch=resolve_branch,
+        max_depth=config.int_value("hooks.max_nesting_depth"),
     )
     if finding:
         return Decision.denied(finding.reason, finding.rule)
@@ -134,22 +186,45 @@ def deny_read(
     globs = [t for t in targets if t not in policy.category_names]
     patterns = globs + [p for c in categories for p in policy.patterns(c)]
     for path in paths:
-        tree = root_for(path, root)
-        verdict = policy.evaluate(path, tree)
-        if verdict.blocked_by(categories):
-            return Decision.denied(f"{path} is private for this agent", "read.category")
-        for rel in (verdict.relative, verdict.resolved_relative):
-            if rel is None:
-                continue
-            if first_match(rel, globs, case_insensitive=True):
-                return Decision.denied(f"{path} is private for this agent", "read.glob")
-            target = tree / rel if rel else tree
-            if target.is_dir() and _may_contain(rel, patterns):
-                return Decision.denied(
-                    f"{path} is a directory that may contain private files; narrow the path",
-                    "read.directory",
-                )
+        decision = _deny_read_in(
+            path,
+            root_for(path, root),
+            root=root,
+            categories=categories,
+            globs=globs,
+            patterns=patterns,
+            policy=policy,
+        )
+        if decision is not None:
+            return decision
     return Decision.allowed("read.ok")
+
+
+def _deny_read_in(
+    path: str,
+    tree: Path,
+    *,
+    root: Path,
+    categories: Sequence[str],
+    globs: Sequence[str],
+    patterns: Sequence[str],
+    policy: Policy,
+) -> Decision | None:
+    verdict = policy.evaluate(_absolute(path, root), tree)
+    if verdict.blocked_by(categories):
+        return Decision.denied(f"{path} is private for this agent", "read.category")
+    for rel in (verdict.relative, verdict.resolved_relative):
+        if rel is None:
+            continue
+        if first_match(rel, globs, case_insensitive=True):
+            return Decision.denied(f"{path} is private for this agent", "read.glob")
+        target = tree / rel if rel else tree
+        if target.is_dir() and _may_contain(rel, patterns):
+            return Decision.denied(
+                f"{path} is a directory that may contain private files; narrow the path",
+                "read.directory",
+            )
+    return None
 
 
 def _may_contain(directory: str, patterns: Sequence[str]) -> bool:

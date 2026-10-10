@@ -64,7 +64,9 @@
       "Bash(git push --force:*)",
       "Bash(git push -f:*)",
       "Bash(rm -rf runs:*)",
-      "Bash(dvc remove:*)"
+      "Bash(dvc remove:*)",
+      "Bash(qcal init --force:*)",
+      "Bash(python -m qcal init --force:*)"
     ]
   }
 }

@@ -73,7 +73,7 @@ class Policy:
         return tuple(
             name
             for name, patterns in self._categories.items()
-            if first_match(relative, patterns, self._ci) is not None
+            if first_match(relative, patterns, case_insensitive=self._ci) is not None
         )
 
     def in_categories(self, relative: str, categories: Iterable[str]) -> bool:

@@ -250,3 +250,39 @@ def test_show_file_returns_none_when_ref_or_path_is_absent(
     git_repo: Path, ref: str, path: str
 ) -> None:
     assert show_file(ref, path, git_repo) is None
+
+
+# --- commit resolution, merge base, timeouts ------------------------------------------------
+
+
+def test_resolve_commit_accepts_refs_and_rejects_non_commits(git_repo: Path) -> None:
+    head = run_git(git_repo, "rev-parse", "HEAD")
+    assert gitutil.resolve_commit("HEAD", git_repo) == head
+    tree = run_git(git_repo, "rev-parse", "HEAD^{tree}")
+    for bad in ("nope", tree, "--all"):
+        with pytest.raises(GitError):
+            gitutil.resolve_commit(bad, git_repo)
+
+
+def test_merge_base_of_unrelated_histories_is_none(git_repo: Path) -> None:
+    head = run_git(git_repo, "rev-parse", "HEAD")
+    run_git(git_repo, "checkout", "-q", "--orphan", "other")
+    write(git_repo, "o.txt", "o\n")
+    run_git(git_repo, "add", "-A")
+    run_git(git_repo, "commit", "-q", "-m", "orphan")
+    other = run_git(git_repo, "rev-parse", "HEAD")
+
+    assert gitutil.merge_base(head, other, git_repo) is None
+    assert gitutil.merge_base(head, head, git_repo) == head
+
+
+def test_timeout_scope_restores_the_previous_value() -> None:
+    before = gitutil._timeout.get()
+    with gitutil.timeout_scope(3):
+        assert gitutil._timeout.get() == 3
+    assert gitutil._timeout.get() == before
+
+
+def test_set_timeout_rejects_non_positive_values() -> None:
+    with pytest.raises(ValueError, match="must be positive"):
+        gitutil.set_timeout(-1)

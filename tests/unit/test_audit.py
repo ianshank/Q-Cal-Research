@@ -247,6 +247,8 @@ def test_to_dict_formats_pairs_and_coverage(config: Config, experiments: Experim
         "unregistered_seeds": [],
         "superseded": [],
         "placeholders": [],
+        "duplicates": [],
+        "bad_supersedes": [],
         "amendments": 0,
     }
 
@@ -277,5 +279,7 @@ def test_render_text_lists_every_section() -> None:
         "  - R0",
         "placeholders: 1",
         "  - seed_role",
+        "duplicates: 0",
+        "bad_supersedes: 0",
         "amendments: 2",
     ]

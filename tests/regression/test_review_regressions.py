@@ -138,7 +138,7 @@ def test_clean_tree_requirement_ignores_registry_outputs(git_repo: Path) -> None
     assert len(batch.completed) == 2
     write(git_repo, "src/x.py", "x = 1\n")
     with pytest.raises(RunRefusedError, match="dirty"):
-        _runner(git_repo, FakeExecutor()).run("C-a", 0)
+        _runner(git_repo, FakeExecutor()).run("C-a", 0, supersedes=batch.completed[0].run_id)
 
 
 # --- red-team findings -------------------------------------------------------------------

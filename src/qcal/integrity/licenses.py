@@ -16,6 +16,7 @@ from typing import Any
 from qcal.config import Config, ConfigError
 from qcal.globs import first_match, iter_files
 from qcal.log import get_logger
+from qcal.reports import verdict
 
 _log = get_logger("integrity.licenses")
 _FRONTMATTER = "---"
@@ -35,7 +36,7 @@ class LicenseReport:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "verdict": "PASS" if self.passed else "FAIL",
+            "verdict": verdict(self.passed),
             "errors": self.errors,
             "warnings": self.warnings,
             "checked": {
@@ -44,6 +45,15 @@ class LicenseReport:
                 "dataset_cards": self.checked_cards,
             },
         }
+
+    def render_text(self) -> str:
+        return "\n".join(
+            [
+                f"licenses: {verdict(self.passed)}",
+                *(f"  error: {e}" for e in self.errors),
+                *(f"  warning: {w}" for w in self.warnings),
+            ]
+        )
 
 
 def metadata_value(dist: importlib.metadata.Distribution, key: str) -> str:
@@ -178,7 +188,7 @@ def check_licenses(config: Config, *, packages: bool = True) -> LicenseReport:
     check_dataset_cards(config, report)
     _log.info(
         "license check: %s (%d errors, %d warnings)",
-        "PASS" if report.passed else "FAIL",
+        verdict(report.passed),
         len(report.errors),
         len(report.warnings),
     )

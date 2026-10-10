@@ -9,8 +9,10 @@ Gather evidence first, then judge. Read:
 - RESEARCH_LOG.md for planned versus actual hours this week and last week;
 - DECISIONS.md for gates, kill criteria and the WIP limit;
 - AMENDMENTS.md for open amendments;
-- `git log --since='7 days ago' --format='%G? %h %s'` for what changed and whether protected
-  changes were signed (G = good signature);
+- `git log --since='7 days ago' --oneline` for what changed, and
+  `qcal ci verify-signatures --base <last commit before the week> --head HEAD` for whether
+  protected changes were signed (it pins the verifier and allowed_signers, so the answer does
+  not depend on this machine's git configuration);
 - `qcal registry audit --json` for pre-registered coverage and placeholders (run it; if
   EXPERIMENTS.yaml does not exist yet, say so).
 

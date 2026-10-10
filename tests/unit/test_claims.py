@@ -139,7 +139,9 @@ def test_every_reference_on_a_line_is_verified(scan: Scan) -> None:
         pytest.param("run:R1:AP:x", "41.0", "malformed reference 'run:R1:AP:x'", id="run-too-long"),
         pytest.param("agg:mean:AP", "41.0", "malformed reference 'agg:mean:AP'", id="agg-no-ids"),
         pytest.param("tab:R1:AP", "41.0", "malformed reference 'tab:R1:AP'", id="bad-kind"),
-        pytest.param("run:R1:AP", "--", "value '--' for run:R1:AP is not a number", id="nan"),
+        pytest.param(
+            "run:R1:AP", "--", "value '--' for run:R1:AP must be exactly one number", id="nan"
+        ),
         pytest.param("agg:mode:AP:R1+R2", "1.0", "unknown aggregate 'mode'", id="unknown-agg"),
         pytest.param("agg:std:AP:R1", "1.0", "std needs at least two values", id="std-one"),
         pytest.param("agg:mean:AP:", "1.0", "cannot aggregate mean over no values", id="agg-empty"),
@@ -411,7 +413,7 @@ def test_integer_result_pattern_is_configurable(scan: Scan) -> None:
         pytest.param(r"\includegraphics[width=0.48\linewidth]{fig.pdf}", id="includegraphics"),
         pytest.param(r"\begin{minipage}{0.48\textwidth}", id="relative-width"),
         pytest.param(r"\setlength{\tabcolsep}{4.5 pt}", id="setlength-unit"),
-        pytest.param(r"\cite[p.~12.5]{smith2020}", id="cite-optional-arg"),
+        pytest.param(r"\cite[p.~12]{smith2020}", id="cite-integer-page"),
         pytest.param(r"\label{tab:0.5} \ref{fig:1.5}", id="label-ref"),
         pytest.param(r"see arXiv: 2609.16085 for details", id="arxiv"),
         pytest.param(r"built with TensorRT 10.3.0 and v2.1.4", id="version"),

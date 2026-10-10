@@ -44,10 +44,14 @@ def row(
     precision: str = "fp32",
     status: str = "ok",
     supersedes: str = "",
+    cell_id: str = "C-a",
+    seed: str | None = None,
     **metrics: Any,
 ) -> dict[str, str]:
     data = {
         "run_id": run_id,
+        "cell_id": cell_id,
+        "seed": run_id if seed is None else seed,  # distinct by default: one run per seed
         "status": status,
         "supersedes": supersedes,
         "factor.detector": detector,
@@ -237,12 +241,7 @@ def test_default_status_follows_configured_ok_status(
 
 @pytest.mark.parametrize(
     ("name", "expected"),
-    [
-        ("detector", "factor.detector"),
-        ("factor.detector", "factor.detector"),
-        ("env.gpu", "env.gpu"),
-        ("metric.AP", "metric.AP"),
-    ],
+    [("detector", "factor.detector"), ("factor.detector", "factor.detector")],
 )
 def test_row_and_filter_keys_get_the_factor_prefix_unless_already_prefixed(
     config: Config, name: str, expected: str
@@ -576,7 +575,7 @@ def test_build_tables_writes_one_file_per_spec(config: Config) -> None:
     build_index(
         config,
         make_record("R1", metrics={"LaECE0": 12.0}),
-        make_record("R2", metrics={"LaECE0": 13.0}),
+        make_record("R2", seed=1, metrics={"LaECE0": 13.0}),
         make_record("R3", factors={"detector": "detr"}, metrics={"LaECE0": 20.0}),
     )
     write(config.root, "configs/tables/main.toml", SPEC)

@@ -52,7 +52,13 @@ def test_project_without_agent_layer_passes_and_checks_nothing(config: Config) -
     report = check_agent_layer(config)
 
     assert report.passed
-    assert report.checked == {"agents": 0, "skills": 0, "hook_commands": 0, "mcp_servers": 0}
+    assert report.checked == {
+        "agents": 0,
+        "skills": 0,
+        "hook_commands": 0,
+        "mcp_servers": 0,
+        "command_refs": 0,
+    }
 
 
 def test_report_dict(config: Config, repo: Path) -> None:
@@ -83,7 +89,8 @@ def test_valid_agent_passes(config: Config, repo: Path) -> None:
 
 def test_every_documented_agent_key_is_accepted(config: Config, repo: Path) -> None:
     keys = config.str_list("agent_layer.agent_allowed_keys")
-    extra = "".join(f"{k}: x\n" for k in keys if k not in {"name", "description"})
+    typed = {"model": "sonnet", "background": "false", "skills": "[]", "hooks": "{}"}
+    extra = "".join(f"{k}: {typed.get(k, 'x')}\n" for k in keys if k not in {"name", "description"})
     frontmatter_file(repo, AGENT, VALID_AGENT.replace("tools: Read, Grep\n", "") + extra)
 
     assert check_agent_layer(config).errors == []
@@ -113,8 +120,10 @@ def test_unknown_agent_keys_are_listed_sorted(config: Config, repo: Path) -> Non
     frontmatter_file(repo, AGENT, VALID_AGENT + "tool: Read\npermisionMode: plan\n")
 
     assert check_agent_layer(config).errors == [
-        f"{AGENT}: unknown frontmatter keys ['permisionMode', 'tool'] "
-        "(Claude Code would ignore them)"
+        (
+            f"{AGENT}: unknown frontmatter keys ['permisionMode', 'tool'] "
+            "(Claude Code would ignore them)"
+        )
     ]
 
 

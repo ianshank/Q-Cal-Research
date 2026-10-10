@@ -10,7 +10,7 @@ Proposal: docs/changes/<slug>.md
 - [ ] No enforcement-surface edits, or they are in Ian's signed commits
 - [ ] RESEARCH_LOG.md entry for this work
 - [ ] CLAIMS.md updated if any number changed
-- [ ] Cross-review attached at review/<branch>.md with reviewed_sha equal to the head
+- [ ] Other model's review at review/<reviewer>/<branch-slug>.md (`qcal ci review-check`): approve, reviewed_sha in this PR, only review/ changed since
 
 ## Provenance
 Authored-By-Human: <files Ian wrote by hand, or "none">

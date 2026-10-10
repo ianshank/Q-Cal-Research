@@ -1,7 +1,7 @@
 """Pluggable environment collectors recorded with every run.
 
-Each collector returns a flat dict and must never raise; failures are logged at
-DEBUG and the collector contributes nothing. Configuration chooses which run
+Each collector returns a flat dict and should not raise; a failure is logged as a
+WARNING and the collector contributes nothing. Configuration chooses which run
 (``registry.env_collectors``); new collectors register by name.
 """
 
@@ -17,6 +17,7 @@ import socket
 import subprocess
 import sys
 from collections.abc import Callable, Sequence
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
@@ -29,17 +30,35 @@ _log = get_logger("registry.environment")
 Collector = Callable[[Path], dict[str, Any]]
 COLLECTORS: ComponentRegistry[Collector] = ComponentRegistry("environment collector")
 _TEGRA_RELEASE = Path("/etc/nv_tegra_release")
-_COMMAND_TIMEOUT_S = 10
+DEFAULT_COMMAND_TIMEOUT_S = 10.0  # mirrors registry.env_command_timeout_s in defaults.toml
+_command_timeout: ContextVar[float] = ContextVar(
+    "qcal_env_command_timeout", default=DEFAULT_COMMAND_TIMEOUT_S
+)
 
 
-def collect_environment(names: Sequence[str], root: Path) -> dict[str, Any]:
+def collect_environment(
+    names: Sequence[str], root: Path, *, command_timeout_s: float | None = None
+) -> dict[str, Any]:
+    """Run the named collectors; external probes (``nvidia-smi``...) get ``command_timeout_s``."""
+    token = _command_timeout.set(
+        DEFAULT_COMMAND_TIMEOUT_S if command_timeout_s is None else command_timeout_s
+    )
+    try:
+        return _collect(names, root)
+    finally:
+        _command_timeout.reset(token)
+
+
+def _collect(names: Sequence[str], root: Path) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for name in names:
         collector = COLLECTORS.get(name)
         try:
             values = collector(root)
-        except Exception as exc:  # collectors are best-effort by contract
-            _log.debug("collector %s failed: %s", name, exc, exc_info=True)
+        except Exception as exc:  # noqa: BLE001 - collectors are best-effort by contract
+            # WARNING, not DEBUG: a broken collector silently drops versions from the record.
+            _log.warning("environment collector %s failed: %s", name, exc)
+            _log.debug("collector %s traceback", name, exc_info=True)
             continue
         overlap = set(values) & set(result)
         if overlap:
@@ -53,7 +72,7 @@ def _run(argv: Sequence[str]) -> str | None:
         return None
     try:
         out = subprocess.run(
-            list(argv), capture_output=True, text=True, timeout=_COMMAND_TIMEOUT_S, check=False
+            list(argv), capture_output=True, text=True, timeout=_command_timeout.get(), check=False
         )
     except (OSError, subprocess.SubprocessError) as exc:
         _log.debug("%s failed: %s", argv[0], exc)

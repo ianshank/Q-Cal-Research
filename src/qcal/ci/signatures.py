@@ -26,9 +26,10 @@ from pathlib import Path
 from typing import Any
 
 from qcal.config import REPO_CONFIG_NAME, Config, load_config
-from qcal.gitutil import GitError, git, show_file
+from qcal.gitutil import GitError, git, merge_base, resolve_commit, show_file
 from qcal.log import get_logger
 from qcal.policy import Policy
+from qcal.reports import verdict
 
 _log = get_logger("ci.signatures")
 _MODES = ("bootstrap", "enforce")
@@ -64,7 +65,7 @@ class SignatureReport:
         return {
             "mode": self.mode,
             "allowed_keys": self.keys,
-            "verdict": "PASS" if self.passed else "FAIL",
+            "verdict": verdict(self.passed),
             "violations": [
                 {"sha": v.sha, "files": v.protected_files, "detail": v.detail}
                 for v in self.violations
@@ -73,14 +74,44 @@ class SignatureReport:
             "checked_net_paths": len(self.net),
         }
 
+    def render_text(self) -> str:
+        lines = [
+            (
+                f"signatures ({self.mode}, {self.keys} allowed key(s)): {verdict(self.passed)}; "
+                f"{len(self.verdicts)} commit(s), {len(self.net)} protected path(s) changed"
+            )
+        ]
+        lines += [
+            f"  {v.sha[:12]} {', '.join(v.protected_files)}: {v.detail}" for v in self.violations
+        ]
+        return "\n".join(lines)
+
+
+class RefError(ValueError):
+    """A ref given to a CI check names no commit (a usage error, never a silent fallback)."""
+
+
+def require_commit(repo: Path, ref: str, role: str) -> str:
+    try:
+        return resolve_commit(ref, repo)
+    except GitError:
+        raise RefError(f"{role} ref {ref!r} does not name a commit in {repo}") from None
+
 
 def policy_config(repo: Path, policy_ref: str) -> Config:
+    """Policy as committed at ``policy_ref``; packaged defaults when that commit has no qcal.toml.
+
+    A ref that names no commit is an error: falling back to defaults there would turn
+    an enforcing policy into ``bootstrap`` because of a typo.
+    """
+    require_commit(repo, policy_ref, "policy")
     text = show_file(policy_ref, REPO_CONFIG_NAME, repo)
-    return (
-        load_config(repo, repo_text=text, environ={})
-        if text is not None
-        else load_config(repo, environ={}, use_repo_file=False)
-    )
+    if text is None:
+        _log.warning(
+            "%s has no %s; judging with the packaged defaults", policy_ref, REPO_CONFIG_NAME
+        )
+        return load_config(repo, environ={}, use_repo_file=False)
+    return load_config(repo, repo_text=text, environ={})
 
 
 def _nul_split(output: str) -> list[str]:
@@ -113,6 +144,36 @@ def blob_id(repo: Path, ref: str, path: str) -> str | None:
         return None
 
 
+def tree_entries(repo: Path, ref: str) -> dict[str, str]:
+    """Every path in ``ref``'s tree mapped to its object id (one ``ls-tree`` call, ``-z``)."""
+    entries: dict[str, str] = {}
+    for record in _nul_split(git(["ls-tree", "-r", "-z", "--full-tree", ref], repo)):
+        meta, _, path = record.partition("\t")
+        entries[path] = meta.split()[2]
+    return entries
+
+
+class TreeIndex:
+    """Memoised ``blob_id`` over many refs: one ``ls-tree`` per ref instead of one call per path.
+
+    The net-content rule asks for the same few paths at every commit in the range and
+    its first parent, which was ``O(commits x paths)`` subprocesses before this cache.
+    """
+
+    def __init__(self, repo: Path) -> None:
+        self._repo = repo
+        self._trees: dict[str, dict[str, str]] = {}
+
+    def blob(self, ref: str, path: str) -> str | None:
+        if ref not in self._trees:
+            self._trees[ref] = tree_entries(self._repo, ref)
+        return self._trees[ref].get(path)
+
+    @property
+    def refs_loaded(self) -> int:
+        return len(self._trees)
+
+
 def count_keys(text: str | None) -> int:
     if not text:
         return 0
@@ -122,6 +183,8 @@ def count_keys(text: str | None) -> int:
 def verify_signatures(
     repo: Path, base: str, head: str, *, policy_ref: str | None = None, mode: str | None = None
 ) -> SignatureReport:
+    base = require_commit(repo, base, "base")
+    head = require_commit(repo, head, "head")
     ref = policy_ref or base
     config = policy_config(repo, ref)
     chosen = mode or config.str_value("signing.mode")
@@ -162,6 +225,7 @@ def verify_signatures(
             return cache[sha]
 
         parents = {sha: parents_of(repo, sha) for sha in commits}
+        trees = TreeIndex(repo)
         for sha in commits:
             if len(parents[sha]) > 1:
                 # A merge may carry content from any parent; the net-content rule below
@@ -171,27 +235,34 @@ def verify_signatures(
                     f
                     for f in merged
                     if policy.in_categories(f, categories)
-                    and blob_id(repo, sha, f) != blob_id(repo, base, f)  # base merges are fine
+                    and trees.blob(sha, f) != trees.blob(base, f)  # base merges are fine
                 ]
                 detail = "merge: judged by net content" if touched else "no protected paths"
-                report.verdicts.append(CommitVerdict(sha, touched, True, detail))
+                report.verdicts.append(CommitVerdict(sha, touched, signed=True, detail=detail))
                 continue
             protected = [f for f in changed_files(repo, sha) if policy.in_categories(f, categories)]
             if not protected:
-                report.verdicts.append(CommitVerdict(sha, [], True, "no protected paths"))
+                report.verdicts.append(
+                    CommitVerdict(sha, [], signed=True, detail="no protected paths")
+                )
                 continue
             ok, detail = signed(sha)
             report.verdicts.append(CommitVerdict(sha, protected, ok, detail))
 
-        for path in changed_between(repo, base, head):
+        # Judge what this branch changed, not what base gained since it branched: a pull
+        # request that is merely behind base must not fail for base's own signed edits.
+        # Merges inside the range are still diffed against this fork point, so a merge
+        # that drops or rolls back protected content is caught.
+        fork_point = merge_base(base, head, repo) or base
+        for path in changed_between(repo, fork_point, head):
             if not policy.in_categories(path, categories):
                 continue
-            target = blob_id(repo, head, path)
+            target = trees.blob(head, path)
             authors = [
                 sha
                 for sha in commits
-                if blob_id(repo, sha, path) == target
-                and (not parents[sha] or blob_id(repo, parents[sha][0], path) != target)
+                if trees.blob(sha, path) == target
+                and (not parents[sha] or trees.blob(parents[sha][0], path) != target)
             ]
             good = next((sha for sha in authors if signed(sha)[0]), None)
             detail = (
@@ -200,6 +271,7 @@ def verify_signatures(
                 else "net change not introduced by any signed commit in the range"
             )
             report.net.append(CommitVerdict(head, [path], good is not None, detail))
+        _log.debug("net-content rule read %d tree(s)", trees.refs_loaded)
     for violation in report.violations:
         _log.warning(
             "commit %s touches %s without an allowed signature (%s)",
@@ -261,7 +333,7 @@ def signature_kind(repo: Path, sha: str) -> str:
     for line in git(["cat-file", "commit", sha], repo).splitlines():
         if not line:
             break  # end of headers
-        if line.startswith("gpgsig ") or line.startswith("gpgsig-sha256 "):
+        if line.startswith(("gpgsig ", "gpgsig-sha256 ")):
             header = line.split(" ", 1)[1].strip()
             break
     if header is None:
@@ -286,13 +358,17 @@ def github_annotations(report: SignatureReport) -> Sequence[str]:
 
 
 __all__ = [
+    "RefError",
     "SignatureReport",
+    "TreeIndex",
     "blob_id",
     "changed_between",
     "changed_files",
     "github_annotations",
     "parents_of",
     "policy_config",
+    "require_commit",
     "signature_kind",
+    "tree_entries",
     "verify_signatures",
 ]

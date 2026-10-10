@@ -53,6 +53,7 @@ class _Context:
     metric_prefix: str
     tolerance: float
     superseded_is_error: bool
+    displayed: re.Pattern[str] = re.compile(r"\s*(?P<number>-?(?:\d+(?:\.\d+)?|\.\d+))\s*")
 
 
 class _RefError(ValueError):
@@ -87,10 +88,10 @@ def _values(ref: str, metric: str, run_ids: Sequence[str], ctx: _Context) -> lis
 
 def verify_reference(ref: str, displayed: str, ctx: _Context) -> str | None:
     """Return an error message, or ``None`` when ``displayed`` matches the registry."""
-    number = _NUMBER.search(displayed)
+    number = ctx.displayed.fullmatch(displayed)
     if number is None:
-        return f"value {displayed!r} for {ref} is not a number"
-    shown = number.group(0)
+        return f"value {displayed!r} for {ref} must be exactly one number"
+    shown = number.group("number")
     digits = len(shown.split(".", 1)[1]) if "." in shown else 0
     try:
         agg, metric, run_ids = _parse_ref(ref)
@@ -122,6 +123,7 @@ def check_claims(config: Config) -> list[Finding]:
         metric_prefix=str(config.get("registry.column_prefixes.metrics")),
         tolerance=config.float_value("claims.abs_tolerance"),
         superseded_is_error=config.bool_value("claims.superseded_is_error"),
+        displayed=re.compile(config.str_value("claims.displayed_value_pattern")),
     )
     policy = Policy.from_config(config)
     hatch_categories = config.str_list("claims.escape_hatch_categories")

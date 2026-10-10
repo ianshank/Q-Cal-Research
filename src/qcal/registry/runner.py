@@ -16,7 +16,7 @@ from qcal.config import Config
 from qcal.globs import iter_files
 from qcal.log import get_logger
 from qcal.registry.environment import collect_environment
-from qcal.registry.executor import Executor, RunSpec
+from qcal.registry.executor import ExecutionResult, Executor, RunSpec
 from qcal.registry.experiments import Cell, Experiments, ExperimentsError
 from qcal.registry.records import RecordError, RunRecord, effective, validate_run_id
 from qcal.registry.store import RegistryStore
@@ -112,6 +112,7 @@ class Runner:
             raise RunRefusedError(
                 f"seed {seed} is not pre-registered for {cell_id} (allowed: {list(allowed)})"
             )
+        self._check_not_duplicate(cell.id, seed, supersedes)
         root = self.config.root
         dirty = gitutil.is_dirty(root, self._output_paths())
         if self.config.bool_value("registry.require_clean_tree") and dirty is not False:
@@ -146,10 +147,19 @@ class Runner:
             "executor": type(self.executor).__name__,
         }
         _log.info("starting %s (cell=%s seed=%s)", run_id, cell.id, seed)
-        result = self.executor.execute(spec)
+        try:
+            result = self.executor.execute(spec)
+        except Exception as exc:  # noqa: BLE001 - a crash is recorded as a failed run, never lost
+            _log.exception("executor %s raised for %s", type(self.executor).__name__, run_id)
+            result = ExecutionResult(-1, error=f"executor raised {type(exc).__name__}: {exc}")
         finished = self.clock()
         environment = merge_environment(
-            collect_environment(self.collectors, root), result.environment
+            collect_environment(
+                self.collectors,
+                root,
+                command_timeout_s=self.config.float_value("registry.env_command_timeout_s"),
+            ),
+            result.environment,
         )
         if supersedes and not result.ok:
             _log.warning("rerun %s failed; it does not supersede %s", run_id, supersedes)
@@ -179,6 +189,27 @@ class Runner:
             _log.error("run %s failed: %s", run_id, result.error)
         return record
 
+    def _check_not_duplicate(self, cell_id: str, seed: int, supersedes: str | None) -> None:
+        """One current ok run per (cell, seed): a second one needs an explicit supersede."""
+        ok_status = self.config.str_value("registry.ok_status")
+        current = {
+            r.run_id: r
+            for r in effective(self.store.load_all())
+            if (r.cell_id, r.seed) == (cell_id, seed)
+        }
+        if supersedes is not None:
+            if supersedes not in current:
+                raise RunRefusedError(
+                    f"cannot supersede {supersedes}: it is not a current run of {cell_id}@{seed}"
+                )
+            return
+        done = sorted(r.run_id for r in current.values() if r.status == ok_status)
+        if done:
+            raise RunRefusedError(
+                f"{cell_id}@{seed} already completed as {done[0]}; "
+                "replace it with `qcal registry run --supersedes` or `run-batch --rerun`"
+            )
+
     # -- batches ------------------------------------------------------------------
     def plan(
         self, patterns: str, *, seeds: Sequence[int] | None = None, rerun: bool = False
@@ -196,7 +227,7 @@ class Runner:
         skipped: list[tuple[str, int, str]] = []
         for cell in cells:
             allowed = self.experiments.seeds_for(cell)
-            for seed in seeds if seeds is not None else allowed:
+            for seed in dict.fromkeys(seeds) if seeds is not None else allowed:
                 if seed not in allowed:
                     raise RunRefusedError(f"seed {seed} is not pre-registered for {cell.id}")
                 previous = done.get((cell.id, seed))

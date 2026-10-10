@@ -40,7 +40,11 @@ if [ -z "$python_bin" ]; then
   exit "$fail_code"
 fi
 
-PYTHONPATH="$root/src${PYTHONPATH:+:$PYTHONPATH}" "$python_bin" -s -m qcal.hooks "$@"
+# -P: never put the working directory on sys.path (a qcal/ directory there would shadow
+# the real package); -s: ignore user site-packages. QCAL_HOOK_FAIL_OPEN tells the hook how
+# to treat its own argument errors.
+QCAL_HOOK_FAIL_OPEN="$([ "$fail_code" = 0 ] && echo 1 || echo 0)" \
+  PYTHONPATH="$root/src${PYTHONPATH:+:$PYTHONPATH}" "$python_bin" -P -s -m qcal.hooks "$@"
 status=$?
 case "$status" in
   0|2) exit "$status" ;;

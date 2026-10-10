@@ -4,7 +4,6 @@ every added record must be valid and named after its run id."""
 from __future__ import annotations
 
 import json
-import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -92,14 +91,16 @@ def test_no_changes_passes(project: Path) -> None:
     assert report.added == []
 
 
-def test_added_non_json_file_is_accepted_without_validation(project: Path) -> None:
+def test_added_non_json_file_is_a_violation(project: Path) -> None:
     write(project, f"{REGISTRY}/README.txt", "not a record\n")
     commit(project, "notes")
 
     report = check(project)
 
-    assert report.passed
-    assert report.added == [f"{REGISTRY}/README.txt"]
+    assert not report.passed
+    assert report.violations == [
+        f"{REGISTRY}/README.txt: only <run_id>.json records belong in the registry directory"
+    ]
 
 
 def test_changes_outside_immutable_dirs_are_ignored(project: Path) -> None:
@@ -131,7 +132,7 @@ def _chmod(root: Path) -> None:
 
 def _symlink(root: Path) -> None:
     (root / R1).unlink()
-    os.symlink("R1-elsewhere.json", root / R1)
+    (root / R1).symlink_to("R1-elsewhere.json")
 
 
 @pytest.mark.parametrize(

@@ -34,11 +34,11 @@ class Decision:
 
     @classmethod
     def allowed(cls, rule: str = "") -> Decision:
-        return cls(True, "", rule)
+        return cls(allow=True, reason="", rule=rule)
 
     @classmethod
     def denied(cls, reason: str, rule: str) -> Decision:
-        return cls(False, reason, rule)
+        return cls(allow=False, reason=reason, rule=rule)
 
 
 def resolve_mode(config: Config, environ: Mapping[str, str]) -> Mode:

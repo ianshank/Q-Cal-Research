@@ -15,6 +15,7 @@ from typing import Any
 
 from qcal.config import Config
 from qcal.log import get_logger
+from qcal.reports import verdict
 
 _log = get_logger("integrity.leakage")
 
@@ -33,7 +34,7 @@ class LeakageReport:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "verdict": "PASS" if self.passed else "FAIL",
+            "verdict": verdict(self.passed),
             "splits": {k: {"sha256": v, "size": self.sizes[k]} for k, v in self.present.items()},
             "missing": self.missing,
             "duplicates": self.duplicates,
@@ -41,6 +42,17 @@ class LeakageReport:
                 k: {"count": len(v), "examples": v[:10]} for k, v in self.overlaps.items()
             },
         }
+
+    def render_text(self) -> str:
+        sizes = ", ".join(f"{k}={self.sizes[k]}" for k in self.present)
+        lines = [f"leakage: {verdict(self.passed)} ({sizes or 'no splits'})"]
+        lines += [f"  missing split: {name}" for name in self.missing]
+        lines += [f"  duplicate ids in {name}: {n}" for name, n in self.duplicates.items()]
+        lines += [
+            f"  overlap {pair}: {len(ids)} id(s), e.g. {', '.join(ids[:3])}"
+            for pair, ids in self.overlaps.items()
+        ]
+        return "\n".join(lines)
 
 
 def read_manifest(text: str, comment_prefix: str) -> list[str]:
@@ -75,5 +87,5 @@ def check_leakage(config: Config) -> LeakageReport:
     if not report.present:
         _log.info("leakage check: no split manifests found in %s", directory)
     else:
-        _log.info("leakage check: %s", "PASS" if report.passed else "FAIL")
+        _log.info("leakage check: %s", verdict(report.passed))
     return report

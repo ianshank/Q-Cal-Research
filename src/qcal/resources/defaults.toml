@@ -31,6 +31,7 @@ debug_env = "QCAL_DEBUG"
 
 [git]
 protected_branches = ["main"]
+timeout_s = 60                        # every git subprocess
 
 [policy]
 case_insensitive = true
@@ -55,6 +56,7 @@ enforcement_surface = [
   ".agents/**",
   ".mcp.json",
   ".pre-commit-config.yaml",
+  ".gitleaks.toml",
   "CLAUDE.md",
   "AGENTS.md",
   "Makefile",
@@ -65,6 +67,7 @@ enforcement_surface = [
   # Phase 1 science code lives in the agent-owned src/qcal_lab/ package instead.
   "src/qcal/**",
   "review/gemini-*",
+  "review/gemini/**",
   # Files that could shadow or reconfigure the code CI runs on a pull request's head.
   "qcal/**",
   "setup.py",
@@ -103,6 +106,19 @@ require_committer_match = true
 ssh_program = "ssh-keygen"
 immutable_dirs = ["runs/registry"]
 
+[review]
+# The cross-review merge rule (`qcal ci review-check`, run by integrity.yml).
+mode = "bootstrap"                    # bootstrap reports; enforce fails the pull request
+path_template = "review/{reviewer}/{slug}.md"   # slug: the branch name with "/" -> "-"
+reviewers = ["claude", "gemini"]      # any one of these when no branch prefix matches
+approve_verdict = "approve"
+post_review_globs = ["review/**"]     # the only paths that may change after reviewed_sha
+
+[review.reviewer_by_branch_prefix]
+"claude/" = "gemini"
+"gemini/" = "claude"
+"antigravity/" = "claude"
+
 [hooks]
 mode_env = "QCAL_GUARD_MODE"          # enforce | warn | off, set by the human who launches Claude Code
 default_mode = "enforce"
@@ -116,7 +132,12 @@ push_deny_flags = [
   "--force", "-f", "--force-with-lease", "--force-if-includes",
   "--mirror", "--all", "--delete", "-d", "--prune",
 ]
-extra_bash_deny = []                  # [{ pattern = "<regex>", reason = "<text>" }]
+max_nesting_depth = 3                 # bash -c "..." levels the push guard looks inside
+# [{ pattern = "<regex>", reason = "<text>" }]. The default keeps agents from overwriting
+# Ian's documents with templates; Ian runs `qcal init --force` himself.
+extra_bash_deny = [
+  { pattern = '(?:^|[\s;&|(])(?:qcal|-m\s+qcal)\s+(?:--?[\w-]+(?:[ =][^\s;&|]+)?\s+)*init\b[^;&|]*--force', reason = "qcal init --force overwrites Ian's documents; only Ian runs it" },
+]
 
 [registry]
 schema_version = 1
@@ -124,6 +145,7 @@ run_id_template = "R{timestamp}-{cell_id}-s{seed}-{nonce}"
 timestamp_format = "%Y%m%dT%H%M%SZ"
 nonce_bytes = 3
 env_collectors = ["python", "host", "git", "packages", "nvidia", "torch", "tensorrt", "jetson"]
+env_command_timeout_s = 10           # per external probe (nvidia-smi, nvpmodel)
 config_hash_inputs = ["configs/**/*.yaml", "configs/**/*.yml", "configs/**/*.toml"]
 max_runs_per_batch = 50
 require_clean_tree = false
@@ -141,6 +163,7 @@ metrics = "metric."
 environment = "env."
 
 [executor]
+kind = "subprocess"                   # registered executor used when --executor is not given
 command = []                          # argv template; placeholders: {run_id} {cell_id} {seed} {seed_role} {result_path} {log_path} {root}
 timeout_s = 0                         # 0 disables the timeout
 result_filename = "{run_id}.json"
@@ -175,7 +198,10 @@ strict_tex_globs = ["paper/sections/**/*.tex", "paper/tables/**/*.tex"]
 markdown_globs = ["README.md", "CLAIMS.md"]
 strict_markdown_globs = ["CLAIMS.md"]
 markdown_ref_pattern = '(?P<value>-?\d+(?:\.\d+)?)\s*\((?P<ref>(?:run|agg):[^)\s]+)\)'
-number_pattern = '(?<![\w.:/-])-?\d+\.\d+(?!\w|\.\d)'
+number_pattern = '(?<![\w.:/-])-?(?:\d+\.\d+|\.\d+)(?!\w|\.\d)'
+# A tagged value must be exactly one number (optionally in math mode or with a percent sign),
+# so "41.2 (vs. 97.3)" cannot smuggle a second, unverified number past the checker.
+displayed_value_pattern = '\s*\$?\s*(?P<number>-?(?:\d+(?:\.\d+)?|\.\d+))\s*\$?(?:\s|~|\\[,;:! ])*(?:\\?%)?\s*'
 # Whole numbers are flagged only when written as a result (percent, points, pp).
 integer_result_pattern = '(?<![\w.:/-])-?\d+\s*(?:\\?%|points?\b|pp\b|percentage points?\b)'
 # Escape hatches (the ignore marker and \qcalfixed{...}) work only in files of these policy
@@ -184,7 +210,10 @@ escape_hatch_categories = ["ian_only"]
 escape_patterns = ['\\qcalfixed\{[^}]*\}']
 tex_ignore_patterns = [
   '(?<!\\)%.*$',
-  '\\(?:cite[tp]?|ref|eqref|label|url|href|includegraphics|input|include|usepackage|documentclass|bibliography(?:style)?|vspace\*?|hspace\*?|resizebox|scalebox)\s*(?:\[[^\]]*\])?\s*\{[^}]*\}',
+  # Arguments that are never rendered as text. \url and citation notes ([p. 3: 97.3]) are
+  # rendered, so they are scanned; only the citation command name is removed.
+  '\\(?:ref|eqref|autoref|cref|Cref|label|href|includegraphics|input|include|usepackage|documentclass|bibliography(?:style)?|vspace\*?|hspace\*?|resizebox|scalebox)\s*(?:\[[^\]]*\])?\s*\{[^}]*\}',
+  '\\(?:cite[tp]?|citealp|citeauthor|citeyear)\*?(?=\s*[\[{])',
   '\\definecolor\s*\{[^}]*\}\s*\{[^}]*\}\s*\{[^}]*\}',
   '\\(?:setlength|addtolength)\s*\{[^}]*\}\s*\{[^}]*\}',
   '-?\d+(?:\.\d+)?(?:em|ex|pt|pc|cm|mm|in|bp|mu)\b',
@@ -237,6 +266,40 @@ skill_allowed_keys = [
   "background", "hooks", "paths", "shell", "metadata", "license", "compatibility",
 ]
 forbidden_permission_modes = ["bypassPermissions"]
+hook_wrapper = "run_hook.sh"          # settings commands through it must name a real qcal hook
+skill_required_keys = ["description"]
+builtin_agents = ["general-purpose", "Explore", "Plan", "statusline-setup", "claude-code-guide"]
+# Tool policy: no agent or skill may hold a write-capable tool and a network tool at once.
+write_tools = ["Edit", "Write", "MultiEdit", "NotebookEdit", "Bash"]
+network_tools = ["WebFetch", "WebSearch"]
+network_tool_prefixes = ["mcp__"]
+allowed_models = ["inherit", "opus", "sonnet", "haiku", "fable"]
+model_id_pattern = "claude-[a-z0-9.-]+"   # full model ids are also accepted
+# Hook settings. Extend these lists when Claude Code adds events, tools or sources.
+hook_events = [
+  "PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionRequest", "UserPromptSubmit",
+  "Notification", "Stop", "StopFailure", "SubagentStart", "SubagentStop", "PreCompact",
+  "PostCompact", "SessionStart", "SessionEnd", "TeammateIdle", "TaskCreated", "TaskCompleted",
+  "ConfigChange", "InstructionsLoaded", "WorktreeCreate", "WorktreeRemove", "CwdChanged",
+  "FileChanged", "Elicitation", "ElicitationResult",
+]
+tool_matcher_events = ["PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionRequest"]
+known_tools = [
+  "Agent", "Task", "Bash", "BashOutput", "KillShell", "Edit", "MultiEdit", "Write", "Read",
+  "NotebookEdit", "NotebookRead", "Glob", "Grep", "LS", "WebFetch", "WebSearch", "TodoWrite",
+  "Skill", "SlashCommand", "ExitPlanMode", "AskUserQuestion", "LSP", "ToolSearch",
+]
+session_start_sources = ["startup", "resume", "clear", "compact"]
+# Command-reference drift: `qcal ...` and `make <target>` in these files must exist.
+makefile = "Makefile"
+command_ref_globs = [
+  "CLAUDE.md", "AGENTS.md", "README.md", "CONTRIBUTING.md", "Makefile", "Dockerfile",
+  ".claude/**/*.md", ".claude/hooks/*.sh", ".github/workflows/*.yml", ".github/*.md",
+  "docs/**/*.md", "review/*.md", "scripts/**/*.sh", "configs/**/*.md",
+]
+command_ref_markdown_globs = ["**/*.md"]
+# The plan is a design document: it names commands that arrive in later phases.
+command_ref_exclude_globs = ["docs/SDLC_IMPLEMENTATION_PLAN.md", "CHANGELOG.md"]
 
 [init]
 files = ["experiments", "decisions", "amendments", "claims", "research_log"]

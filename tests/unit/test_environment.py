@@ -108,7 +108,7 @@ def test_failing_collector_contributes_nothing(
     assert collect_environment(["boom", "ok"], tmp_path) == {"ok": True}
 
 
-def test_failing_collector_is_logged_at_debug(
+def test_failing_collector_is_a_warning_with_a_debug_traceback(
     registry: ComponentRegistry[Collector], tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     def boom(_root: Path) -> dict[str, Any]:
@@ -116,11 +116,30 @@ def test_failing_collector_is_logged_at_debug(
 
     registry.register("boom", boom)
     with caplog.at_level(logging.DEBUG, logger="qcal"):
-        collect_environment(["boom"], tmp_path)
-    assert any(
-        r.levelno == logging.DEBUG and "collector boom failed" in r.getMessage()
-        for r in caplog.records
-    )
+        assert collect_environment(["boom"], tmp_path) == {}
+    levels = {r.levelno for r in caplog.records if "boom" in r.getMessage()}
+    assert levels == {logging.WARNING, logging.DEBUG}
+    assert any(r.exc_info for r in caplog.records if r.levelno == logging.DEBUG)
+
+
+def test_command_timeout_reaches_external_probes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import subprocess
+
+    from qcal.registry import environment
+
+    seen: list[float] = []
+
+    def fake_run(*_args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        seen.append(kwargs["timeout"])
+        return subprocess.CompletedProcess([], 0, "GPU, 1.0\n", "")
+
+    monkeypatch.setattr(environment.shutil, "which", lambda _name: "/bin/true")
+    monkeypatch.setattr(environment.subprocess, "run", fake_run)
+    collect_environment(["nvidia"], tmp_path, command_timeout_s=2.5)
+    collect_environment(["nvidia"], tmp_path)
+    assert seen == [2.5, environment.DEFAULT_COMMAND_TIMEOUT_S]
 
 
 def test_unknown_collector_name_is_a_configuration_error(tmp_path: Path) -> None:

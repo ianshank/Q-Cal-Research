@@ -38,6 +38,10 @@ _LATEX_ESCAPES = {
 }
 
 
+class TableDataError(RuntimeError):
+    """The index cannot honestly fill a table (for example a repeated cell and seed)."""
+
+
 @dataclass(frozen=True)
 class ColumnSpec:
     metric: str
@@ -152,9 +156,14 @@ def _build_spec(config: Config, data: Mapping[str, Any], origin: Path) -> TableS
 
 
 def _column_name(config: Config, group: str, name: str) -> str:
-    prefix = str(config.get(f"registry.column_prefixes.{group}"))
-    known = [str(v) for v in config.section("registry.column_prefixes").values()]
-    return name if any(name.startswith(p) for p in known) else f"{prefix}{name}"
+    """Index column for a row key or filter. Only pre-registered factors may select runs:
+    choosing rows by a metric or an environment value would let a spec cherry-pick results."""
+    prefixes = {str(k): str(v) for k, v in config.section("registry.column_prefixes").items()}
+    prefix = prefixes[group]
+    for other, other_prefix in prefixes.items():
+        if other != group and name.startswith(other_prefix):
+            raise ConfigError(f"table rows and filters may use only {group} columns, not {name!r}")
+    return name if name.startswith(prefix) else f"{prefix}{name}"
 
 
 def _selected(row: Mapping[str, str], spec: TableSpec, superseded: frozenset[str]) -> bool:
@@ -198,6 +207,7 @@ def render_table(config: Config, spec: TableSpec, index: Sequence[Mapping[str, s
     ]
     for key in sorted(groups):
         rows = sorted(groups[key], key=lambda r: r["run_id"])
+        _refuse_repeated_seeds(spec, key, rows)
         cells = [latex_escape(k) for k in key]
         for column in spec.columns:
             column_key = f"{metric_prefix}{column.metric}"
@@ -211,6 +221,22 @@ def render_table(config: Config, spec: TableSpec, index: Sequence[Mapping[str, s
         lines.append(" & ".join(cells) + r" \\")
     lines += [rule, "\\end{tabular}", "\\end{table}", ""]
     return "\n".join(lines)
+
+
+def _refuse_repeated_seeds(
+    spec: TableSpec, key: tuple[str, ...], rows: Sequence[Mapping[str, str]]
+) -> None:
+    """Two current runs of one cell and seed would be averaged as if independent."""
+    seen: dict[tuple[str, str], str] = {}
+    for row in rows:
+        pair = (row.get("cell_id", ""), row.get("seed", ""))
+        if pair in seen:
+            raise TableDataError(
+                f"table {spec.name!r} row {key}: {seen[pair]} and {row['run_id']} are both "
+                f"current runs of {pair[0]}@{pair[1]}; supersede one with `qcal registry run "
+                "--rerun`"
+            )
+        seen[pair] = row["run_id"]
 
 
 def build_tables(config: Config, *, check: bool = False) -> list[TableResult]:

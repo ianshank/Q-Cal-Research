@@ -53,7 +53,7 @@ def _translate(pattern: str) -> str:
 
 
 @lru_cache(maxsize=1024)
-def compile_glob(pattern: str, case_insensitive: bool = True) -> re.Pattern[str]:
+def compile_glob(pattern: str, *, case_insensitive: bool = True) -> re.Pattern[str]:
     flags = re.IGNORECASE if case_insensitive else 0
     return re.compile(_translate(pattern), flags | re.DOTALL)
 
@@ -65,14 +65,17 @@ def normalize(path: str) -> str:
     return text.lstrip("/")
 
 
-def glob_match(path: str, pattern: str, case_insensitive: bool = True) -> bool:
-    return compile_glob(pattern, case_insensitive).fullmatch(normalize(path)) is not None
+def glob_match(path: str, pattern: str, *, case_insensitive: bool = True) -> bool:
+    return (
+        compile_glob(pattern, case_insensitive=case_insensitive).fullmatch(normalize(path))
+        is not None
+    )
 
 
-def first_match(path: str, patterns: Iterable[str], case_insensitive: bool = True) -> str | None:
+def first_match(path: str, patterns: Iterable[str], *, case_insensitive: bool = True) -> str | None:
     """Return the first pattern that matches ``path``, or ``None``."""
     for pattern in patterns:
-        if glob_match(path, pattern, case_insensitive):
+        if glob_match(path, pattern, case_insensitive=case_insensitive):
             return pattern
     return None
 
@@ -92,7 +95,9 @@ def literal_base(pattern: str) -> tuple[str, bool]:
     return "/".join(literal), True
 
 
-def iter_files(root: Path, patterns: Sequence[str], case_insensitive: bool = False) -> list[Path]:
+def iter_files(
+    root: Path, patterns: Sequence[str], *, case_insensitive: bool = False
+) -> list[Path]:
     """All files under ``root`` matching any pattern, sorted and de-duplicated.
 
     Only the literal base directory of each pattern is walked, so ``paper/**/*.tex``
@@ -112,7 +117,7 @@ def iter_files(root: Path, patterns: Sequence[str], case_insensitive: bool = Fal
             continue
         for path in start.rglob("*"):
             if path.is_file() and glob_match(
-                path.relative_to(root).as_posix(), pattern, case_insensitive
+                path.relative_to(root).as_posix(), pattern, case_insensitive=case_insensitive
             ):
                 found.add(path)
     return sorted(found)

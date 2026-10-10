@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 import pytest
@@ -79,7 +78,7 @@ def test_guard_paths_checks_every_path_field(config, policy, repo: Path) -> None
 
 def test_guard_paths_follows_symlinks(config, policy, repo: Path) -> None:
     (repo / "EXPERIMENTS.yaml").write_text("x")
-    os.symlink(repo / "EXPERIMENTS.yaml", repo / "e.yaml")
+    (repo / "e.yaml").symlink_to(repo / "EXPERIMENTS.yaml")
     decision = guards.guard_paths(
         payload("Edit", file_path=str(repo / "e.yaml")), config=config, policy=policy, root=repo
     )
@@ -227,12 +226,24 @@ def test_payload_parsing_is_defensive() -> None:
     assert payload("Write", file_path="a", path="a").string_fields(["file_path", "path"]) == ["a"]
 
 
+def _linked_worktree(project: Path, location: Path) -> Path:
+    """A real ``git worktree add`` checkout (its .git file points back into the project)."""
+    from tests.conftest import run_git
+
+    run_git(project, "init", "-q", "-b", "main")
+    run_git(project, "config", "commit.gpgsign", "false")
+    run_git(project, "add", "-A")
+    run_git(project, "commit", "-q", "-m", "initial")
+    location.parent.mkdir(parents=True, exist_ok=True)
+    run_git(project, "worktree", "add", "-q", "-b", f"claude/{location.name}", str(location))
+    return location
+
+
 def test_worktree_inside_the_project_is_judged_relative_to_its_own_root(
     config, policy, repo: Path
 ) -> None:
-    worktree = repo / ".claude" / "worktrees" / "agent-1"
-    worktree.mkdir(parents=True)
-    (worktree / ".git").write_text("gitdir: /elsewhere\n")  # linked worktrees have a .git file
+    worktree = _linked_worktree(repo, repo / ".claude" / "worktrees" / "agent-1")
+    assert guards.root_for(str(worktree / "src/x.py"), repo) == worktree
     ok = guards.guard_paths(
         payload("Edit", file_path=str(worktree / "src/x.py")),
         config=config,
@@ -252,16 +263,30 @@ def test_worktree_inside_the_project_is_judged_relative_to_its_own_root(
 def test_worktree_beside_the_project_is_still_protected(
     config, policy, repo: Path, tmp_path: Path
 ) -> None:
-    worktree = tmp_path / "wt" / "claude-x"
-    worktree.mkdir(parents=True)
-    (worktree / ".git").write_text("gitdir: /elsewhere\n")
+    worktree = _linked_worktree(repo, tmp_path / "wt" / "claude-x")
+    assert guards.root_for(str(worktree / "qcal.toml"), repo) == worktree
     decision = guards.guard_paths(
         payload("Write", file_path=str(worktree / "qcal.toml")),
         config=config,
         policy=policy,
         root=repo,
     )
+    allowed = guards.guard_paths(
+        payload("Write", file_path=str(worktree / "src/qcal_lab/x.py")),
+        config=config,
+        policy=policy,
+        root=repo,
+    )
     assert decision.rule == "paths.enforcement_surface"
+    assert allowed.allow
+
+
+@pytest.mark.parametrize("marker", ["gitdir: /elsewhere\n", "", "not a gitdir line\n"])
+def test_hand_made_git_markers_are_not_worktrees(repo: Path, marker: str) -> None:
+    fake = repo / "paper"
+    fake.mkdir()
+    (fake / ".git").write_text(marker)
+    assert guards.root_for(str(fake / "sections/abstract.tex"), repo) == repo
 
 
 def test_root_for_falls_back_to_the_project_root(repo: Path, tmp_path: Path) -> None:
