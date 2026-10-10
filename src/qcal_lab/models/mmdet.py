@@ -58,6 +58,14 @@ def set_tf32(torch: Any, *, enabled: bool) -> None:
     torch.backends.cudnn.allow_tf32 = enabled
 
 
+def tf32_flags(torch: Any) -> dict[str, bool]:
+    """The TF32 switches in effect, recorded with every run (plain fp32 keeps torch defaults)."""
+    return {
+        "allow_tf32_matmul": bool(torch.backends.cuda.matmul.allow_tf32),
+        "allow_tf32_cudnn": bool(torch.backends.cudnn.allow_tf32),
+    }
+
+
 class MMDetDetector:
     def __init__(
         self,
@@ -70,8 +78,10 @@ class MMDetDetector:
         device: str,
         cfg_options: Mapping[str, Any],
         api: Any,
+        runtime: Mapping[str, Any] | None = None,
     ) -> None:
         self.name = name
+        self.runtime = dict(runtime or {})
         self.ground_truth = ground_truth
         self.images_dir = images_dir
         self._api = api
@@ -135,8 +145,9 @@ def _build(context: DetectorContext) -> MMDetDetector:
             raise DetectorError(f"checkpoint {checkpoint} has sha256 {actual}, expected {expected}")
     else:
         _log.warning("%s: checkpoint_sha256 is not set; the checkpoint is not verified", prefix)
+    torch = _import(TORCH_MODULE, "the MMDetection detector cannot run")
     if context.precision == TF32_OFF:
-        set_tf32(_import(TORCH_MODULE, "TF32 cannot be disabled"), enabled=False)
+        set_tf32(torch, enabled=False)
     api = _import(API_MODULE, "the MMDetection detector cannot run")
     return MMDetDetector(
         name=context.name,
@@ -147,9 +158,10 @@ def _build(context: DetectorContext) -> MMDetDetector:
         device=lab.text(f"{prefix}.device"),
         cfg_options=_cfg_options(context.settings),
         api=api,
+        runtime={"precision": context.precision, **tf32_flags(torch)},
     )
 
 
 DETECTORS.register("mmdet", _build)
 
-__all__ = ["API_MODULE", "TF32_OFF", "MMDetDetector", "set_tf32"]
+__all__ = ["API_MODULE", "TF32_OFF", "MMDetDetector", "set_tf32", "tf32_flags"]

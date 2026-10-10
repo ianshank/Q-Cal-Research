@@ -22,7 +22,7 @@ and so that every piece is validated deterministically by `qcal agent-layer`, no
 |---|---|---|---|
 | `adversarial-reviewer` | Read, Grep, Glob | opus | Hostile, read-only review in the `review/TEMPLATE.md` schema. The caller saves it to `review/claude/<branch-slug>.md`. |
 | `data-leakage-checker` | Read, Grep, Glob, Bash | sonnet | Runs `qcal leakage --json`, then greps for test-keyed selection. A frontmatter `PreToolUse` hook (`allow-only`) restricts Bash to that one command. |
-| `paper-reproducer` | Read, Grep, Glob, Edit, Write, Bash | sonnet | Phase 1. Implements published baselines in `src/qcal_lab`, citing equations, and writes oracle parity tests. It runs in its own worktree (`maxTurns: 40`). A `scope-write` hook limits writes to `src/qcal_lab`, `tests` and `configs`; the session guard still refuses `*/handwritten/*`. No network tool. |
+| `paper-reproducer` | Read, Grep, Glob, Edit, Write, Bash | sonnet | Phase 1. Implements published baselines in `src/qcal_lab`, citing equations, and writes oracle parity tests. It runs in its own worktree (`maxTurns: 40`). A `scope-write` hook limits writes to `src/qcal_lab`, `tests` and `configs`; the session guard still refuses `*/handwritten/*` and `ian_data` (oracle outputs, manifests, reference values). An `allow-only` hook limits Bash to make targets and read-only git. No network tool. |
 | `prior-art-scout` | Read, Grep, Glob, WebSearch; MCP `huggingface` | sonnet | Phase 1. Novelty re-check. It has no write tool; the caller saves its report to `review/prior-art/<date>.md`. A `deny-read ian_only` hook keeps Ian's private documents out of any prompt-injection path. The Hugging Face server is anonymous. |
 
 ### Skills (`.claude/skills/`)

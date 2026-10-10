@@ -87,7 +87,7 @@ def build_status(qcal_config: Config, lab: LabConfig) -> StatusReport:
     detail = f"missing {', '.join(leakage.missing)}" if leakage.missing else verdict(leakage.passed)
     report.add("split manifests", ok=leakage.passed, detail=detail)
     try:
-        load_eval_loop(lab)
+        load_eval_loop(lab, qcal_config)
         report.add("evaluation loop (Ian)", ok=True, detail=lab.text("eval_loop.module"))
     except HandwrittenMissingError:
         missing = f"{lab.text('eval_loop.module')} not written"

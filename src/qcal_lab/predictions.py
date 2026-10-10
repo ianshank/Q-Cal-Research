@@ -18,6 +18,7 @@ import math
 import os
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final
 
@@ -166,8 +167,21 @@ def cache_key(**parts: Any) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
+@dataclass(frozen=True)
+class CacheEntry:
+    path: Path
+    produced_by: str  # the run that computed these predictions
+    created_at: str
+
+
 class PredictionCache:
-    """Raw predictions keyed by :func:`cache_key`, each stored with its own sha256."""
+    """Raw predictions keyed by :func:`cache_key`, each with a metadata sidecar.
+
+    The sidecar records the file's sha256, the key and the run that produced it. A hit only
+    proves the bytes are unchanged since that run; the caller must still check the header
+    and image ids (:func:`qcal_lab.experiment` does), and the run record names the producer.
+    Edit tools may not write under ``runs/cache/`` (``registry_only`` in ``qcal.toml``).
+    """
 
     def __init__(self, directory: Path | None) -> None:
         self.directory = directory
@@ -175,34 +189,51 @@ class PredictionCache:
     def path(self, key: str) -> Path | None:
         return None if self.directory is None else self.directory / f"{key}.jsonl"
 
-    def get(self, key: str) -> Path | None:
-        """The cached file if it exists and its bytes still match the stored digest."""
+    @staticmethod
+    def _sidecar(path: Path) -> Path:
+        return path.with_suffix(".meta.json")
+
+    def get(self, key: str) -> CacheEntry | None:
+        """The cached entry if its bytes, key and metadata still agree."""
         path = self.path(key)
         if path is None or not path.is_file():
             return None
-        sidecar = path.with_suffix(".sha256")
-        expected = sidecar.read_text("utf-8").strip() if sidecar.is_file() else ""
-        actual = hashlib.sha256(path.read_bytes()).hexdigest()
-        if actual != expected:
-            _log.warning("ignoring cached predictions %s: digest mismatch", path.name)
+        try:
+            meta = json.loads(self._sidecar(path).read_text("utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            _log.warning("ignoring cached predictions %s: unreadable metadata", path.name)
             return None
-        return path
+        actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        if not isinstance(meta, Mapping) or meta.get("sha256") != actual or meta.get("key") != key:
+            _log.warning("ignoring cached predictions %s: metadata mismatch", path.name)
+            return None
+        return CacheEntry(path, str(meta.get("produced_by", "")), str(meta.get("created_at", "")))
 
-    def put(self, key: str, header: PredictionsHeader, images: Sequence[ImageDetections]) -> Path:
+    def put(
+        self,
+        key: str,
+        header: PredictionsHeader,
+        images: Sequence[ImageDetections],
+        *,
+        produced_by: str,
+    ) -> CacheEntry:
         path = self.path(key)
         if path is None:
             raise PredictionsError("the prediction cache is disabled")
         digest = write_predictions(path, header, images)
-        sidecar = path.with_suffix(".sha256")
+        created = datetime.now(UTC).isoformat()
+        meta = {"sha256": digest, "key": key, "produced_by": produced_by, "created_at": created}
+        sidecar = self._sidecar(path)
         tmp = sidecar.with_name(f".{sidecar.name}.{os.getpid()}.tmp")
-        tmp.write_text(digest + "\n", encoding="utf-8")
+        tmp.write_text(json.dumps(meta, sort_keys=True) + "\n", encoding="utf-8")
         tmp.replace(sidecar)
-        return path
+        return CacheEntry(path, produced_by, created)
 
 
 __all__ = [
     "FORMAT",
     "VERSION",
+    "CacheEntry",
     "PredictionCache",
     "PredictionsError",
     "PredictionsHeader",

@@ -46,6 +46,16 @@ The scaffold is in place ([LAB.md](LAB.md)). Still open:
 7. **Signatures.** Sign the enforcement-surface edits of this change (listed in
    `docs/changes/reproduce-kuzucu-eccv24-baselines.md`).
 
+**Review items deferred from the adversarial review**
+- An Alg. A.1 parity case kind (u_c/v_c selection on identical inputs); today only
+  calibrator fit/transform and metrics have case kinds.
+- A temperature-scaling baseline (the paper's Table 8 comparison), if Ian pre-registers it.
+- Check that `prior-art-scout` can call the Hugging Face MCP tools with its explicit
+  `tools` list, and widen the list if needed.
+- `executor.command` runs `python3` from PATH: launch runs from the project venv so the
+  interpreter recorded by the registry is the one that ran (`program_python` in each
+  record shows it).
+
 **Agents, once those exist**
 - `paper-reproducer`: make every calibrator parity case pass; report each deviation.
 - `/reproduce-check` before K1 (Nov 8); `/prior-art` monthly.

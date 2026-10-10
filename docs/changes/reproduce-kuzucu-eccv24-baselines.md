@@ -81,6 +81,60 @@ Deviations from the plan text:
 - `prior-art-scout` has no Write tool: the tool policy forbids write and network together.
   The caller saves its report.
 
+## Adversarial review (adversarial-reviewer, verdict: block)
+
+Seven blocking findings, each fixed with tests (`tests/unit/test_lab_*.py`,
+`tests/security/test_lab_boundaries.py`):
+
+- **B1. Leakage was checked by split name only.** Before any detector work, a run now
+  requires `qcal leakage` PASS and refuses fit, select and evaluate splits that share an
+  image id. `splits verify` fails on overlaps.
+- **B2. u_c was selected on the fit split.** Both thresholds are now selected on val only,
+  and fit, select and evaluate must be three different splits (CLAUDE.md rule 3). The
+  threshold-role settings are removed.
+- **B3. Any module could act as the evaluation loop.** The loop's source file must now be
+  `ian_only`, or be the fixture stand-in. The fixture is recognised by content digest, not
+  by its description. The record stores the module, file and sha256.
+- **B4. The prediction cache was incomplete and trusted.**
+  - The key now also covers the image directory and bytes, and the package source.
+  - Hits are checked against the header and image ids.
+  - Entries record their producer, and the run record names it.
+  - `runs/cache/**` is `registry_only`.
+- **B5. paper-reproducer could write its own oracle.** The oracle outputs and the reference
+  values are `ian_data`. A case's tolerance may only tighten the default. Its Bash is an
+  `allow-only` list.
+- **B6. Split shopping was one command away.** `--replace` is removed from the CLI, and the
+  manifests are `ian_data`.
+- **B7. The packaged defaults were not hashed.** `src/qcal_lab/resources/*.toml` is in
+  `registry.config_hash_inputs`, and every run records the effective configuration's
+  sha256.
+
+Non-blocking fixes:
+- real detectors no longer see ground-truth boxes;
+- `fit_draw.seeded` is recorded;
+- TF32 flags are recorded;
+- retained detections per class are recorded;
+- the threshold splits are recorded;
+- a Platt line-search failure no longer counts as convergence;
+- the Armijo and minimum-step constants, and the isotonic duplicate resolution, are now
+  configuration;
+- a per-class calibration with no calibrator for a class is an error;
+- smoke refuses a non-empty project and re-runs uncached;
+- `/reproduce-check` may call the leakage subagent.
+
+Deferred (NEXT_STEPS): an Alg. A.1 parity case kind, a temperature-scaling baseline, and
+verifying that the Hugging Face MCP tools are reachable under `prior-art-scout`'s tool list.
+
+Further enforcement-surface edits:
+- `qcal.toml`:
+  - the `ian_data` category;
+  - `runs/cache/**` added to `registry_only`;
+  - `hooks.deny_categories` and `signing.signed_categories`;
+  - `registry.config_hash_inputs`.
+- `.claude/agents/paper-reproducer.md`: the Bash allow list.
+- `.claude/skills/reproduce-check/SKILL.md`: the `Agent` tool.
+- `AGENTS.md`: the `ian_data` rule.
+
 ## Out of scope
 - Ian's hand-written files: `src/qcal_lab/handwritten/eval_loop.py` and `laece.py`
   (CLAUDE.md rule 4). Agents also do not write AP, LRP, D-ECE, LaECE0 or LaACE0.

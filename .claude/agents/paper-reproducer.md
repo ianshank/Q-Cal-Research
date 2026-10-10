@@ -11,6 +11,10 @@ hooks:
       hooks:
         - type: command
           command: '"$CLAUDE_PROJECT_DIR"/.claude/hooks/run_hook.sh scope-write src/qcal_lab tests configs'
+    - matcher: Bash
+      hooks:
+        - type: command
+          command: '"$CLAUDE_PROJECT_DIR"/.claude/hooks/run_hook.sh allow-only "make smoke" "make parity" "make test-unit" "make lint" "make typecheck" "make check" "git status" "git diff"'
 ---
 You reproduce published baselines for Q-Cal. You start with Kuzucu et al., ECCV 2024
 (arXiv:2405.20459):
@@ -34,8 +38,10 @@ Rules:
    implementation disagrees with the oracle, leave the failing metric case in place and
    explain the difference in your final message.
 5. Never edit `EXPERIMENTS.yaml`, run records or the enforcement surface. A hook limits your
-   writes to `src/qcal_lab`, `tests` and `configs`. Propose anything else in your final
-   message.
+   writes to `src/qcal_lab`, `tests` and `configs`. The oracle outputs in
+   `tests/parity/fixtures/`, the split manifests and `docs/reference/` are Ian's (`ian_data`);
+   the session guard refuses them. Bash is limited to the make targets and read-only git
+   commands listed in your hook. Propose anything else in your final message.
 6. No hardcoded values: settings go in `src/qcal_lab/resources/defaults.toml` or
    `configs/lab.toml`.
 7. Before finishing, run `make smoke` and `make test-unit` and report the results verbatim.

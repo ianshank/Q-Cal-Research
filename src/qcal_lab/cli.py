@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import IO
 
 from qcal.config import ConfigError, find_root, load_config
+from qcal.integrity.leakage import check_leakage, read_manifest
 from qcal.log import configure_logging, get_logger
 from qcal.registry.experiments import ExperimentsError
 from qcal_lab.calib.base import CalibrationError
@@ -67,13 +68,13 @@ def build_parser() -> argparse.ArgumentParser:
     imp = splits_sub.add_parser("import", help="one split from every image of an annotation file")
     imp.add_argument("--annotations", type=Path, required=True)
     imp.add_argument("--split", required=True)
-    imp.add_argument("--replace", action="store_true", help="replace a different existing split")
     part = splits_sub.add_parser("partition", help="disjoint seeded splits of one annotation file")
     part.add_argument("--annotations", type=Path, required=True)
     part.add_argument("--seed", type=int, required=True)
     part.add_argument("--sizes", required=True, help="split=count,... filled in this order")
-    part.add_argument("--replace", action="store_true")
-    verify = splits_sub.add_parser("verify", help="every manifest id exists in the annotations")
+    verify = splits_sub.add_parser(
+        "verify", help="every manifest id exists in the annotations, and the splits are disjoint"
+    )
     verify.add_argument("--annotations", type=Path, required=True)
     return parser
 
@@ -137,21 +138,17 @@ def _cmd_splits(args: argparse.Namespace, root: Path, out: IO[str]) -> int:
     source = {"source": args.annotations.name, "source_sha256": dataset.sha256}
     if args.splits_command == "import":
         path = manifest_path(config, args.split)
-        digest = write_manifest(path, dataset.image_ids(), source, comment, replace=args.replace)
+        digest = write_manifest(path, dataset.image_ids(), source, comment)
         out.write(f"{args.split}: {len(dataset.images)} ids, sha256 {digest}\n")
         return EXIT_OK
     if args.splits_command == "partition":
         parts = partition(dataset.image_ids(), _parse_sizes(args.sizes), args.seed)
         header = {**source, "seed": str(args.seed), "sizes": args.sizes}
         for split, ids in parts.items():
-            digest = write_manifest(
-                manifest_path(config, split), ids, header, comment, replace=args.replace
-            )
+            digest = write_manifest(manifest_path(config, split), ids, header, comment)
             out.write(f"{split}: {len(ids)} ids, sha256 {digest}\n")
         return EXIT_OK
     failed = False
-    from qcal.integrity.leakage import read_manifest
-
     for split in config.str_list("data.splits"):
         path = manifest_path(config, split)
         if not path.is_file():
@@ -162,6 +159,10 @@ def _cmd_splits(args: argparse.Namespace, root: Path, out: IO[str]) -> int:
         failed |= bool(missing)
         state = f"{len(missing)} id(s) not in {args.annotations.name}" if missing else "ok"
         out.write(f"{split}: {len(listed)} ids, sha256 {split_digest(listed)}, {state}\n")
+    leakage = check_leakage(config)
+    for pair, shared in leakage.overlaps.items():
+        failed = True
+        out.write(f"overlap {pair}: {len(shared)} id(s), e.g. {', '.join(shared[:3])}\n")
     return EXIT_FAILED if failed else EXIT_OK
 
 

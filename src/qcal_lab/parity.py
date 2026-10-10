@@ -57,9 +57,14 @@ class OracleCase:
         return self.path.stem
 
     def tolerance(self, default: float) -> float:
+        """The case's tolerance: it may tighten ``parity.abs_tolerance``, never loosen it."""
         value = self.data.get("tolerance", default)
         if isinstance(value, bool) or not isinstance(value, int | float) or value < 0:
             raise ParityError(f"{self.path.name}: tolerance must be a non-negative number")
+        if value > default:
+            raise ParityError(
+                f"{self.path.name}: tolerance {value} is looser than parity.abs_tolerance {default}"
+            )
         return float(value)
 
 

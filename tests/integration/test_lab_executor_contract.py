@@ -45,7 +45,7 @@ def test_a_cell_runs_through_the_subprocess_executor(tmp_path: Path) -> None:
     assert set(result.metrics) == {"smoke_images", "smoke_detections", "smoke_mean_abs_gap"}
     assert [a.kind for a in result.artifacts][-2:] == ["calibration", "predictions_calibrated_test"]
     assert all(len(a.sha256) == 64 for a in result.artifacts)
-    assert result.environment["eval_loop"] == "qcal_lab.fixture_eval:build"
+    assert result.environment["eval_loop"]["module"] == "qcal_lab.fixture_eval:build"
 
 
 def test_a_failing_cell_becomes_a_failed_result_with_its_log(tmp_path: Path) -> None:

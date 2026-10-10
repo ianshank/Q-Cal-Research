@@ -13,4 +13,7 @@
   CI and the other model's review at review/<reviewer>/<branch-slug>.md (slug: the branch with
   `/` replaced by `-`): verdict approve, reviewed_sha a commit of the PR, and nothing but
   review/ changed since. `qcal ci review-check` verifies this.
+- Ian's data (`ian_data`): split manifests, oracle outputs (tests/parity/fixtures/) and published
+  reference values (docs/reference/). Read them; never write them. Only Ian's
+  hand-written loop reports metrics.
 - Clean-room: public datasets only; no employer material, devices, networks or accounts.

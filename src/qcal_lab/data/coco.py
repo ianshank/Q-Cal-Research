@@ -53,7 +53,8 @@ class GroundTruth:
     category_ids: tuple[int, ...]  # label -> COCO category id
     category_names: tuple[str, ...]
     sha256: str = ""  # of the source annotation bytes
-    description: str = ""  # info.description, used to recognise the synthetic fixture
+    description: str = ""  # info.description
+    info: Mapping[str, Any] = field(default_factory=dict, repr=False)  # the document's info
     _label_by_category: Mapping[int, int] = field(default_factory=dict, repr=False)
 
     @property
@@ -83,6 +84,20 @@ class GroundTruth:
             category_names=self.category_names,
             sha256=self.sha256,
             description=self.description,
+            info=self.info,
+            _label_by_category=self._label_by_category,
+        )
+
+    def without_boxes(self) -> GroundTruth:
+        """Image metadata and the label map only: what a real detector may see."""
+        return GroundTruth(
+            images=self.images,
+            boxes=dict.fromkeys(self.images, ()),
+            category_ids=self.category_ids,
+            category_names=self.category_names,
+            sha256=self.sha256,
+            description=self.description,
+            info=self.info,
             _label_by_category=self._label_by_category,
         )
 
@@ -167,7 +182,8 @@ def parse_coco(data: Mapping[str, Any], *, sha256: str = "") -> GroundTruth:
             raise DatasetError(f"{where} has unknown category_id {cid!r}")
         boxes[image_id].append(_parse_box(entry, label_by_category[cid], where))
     info = data.get("info")
-    description = str(info.get("description", "")) if isinstance(info, Mapping) else ""
+    info = dict(info) if isinstance(info, Mapping) else {}
+    description = str(info.get("description", ""))
     return GroundTruth(
         images=images,
         boxes={k: tuple(v) for k, v in boxes.items()},
@@ -175,6 +191,7 @@ def parse_coco(data: Mapping[str, Any], *, sha256: str = "") -> GroundTruth:
         category_names=names,
         sha256=sha256,
         description=description,
+        info=info,
         _label_by_category=label_by_category,
     )
 

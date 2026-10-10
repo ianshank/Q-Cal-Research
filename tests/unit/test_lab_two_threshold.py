@@ -183,7 +183,10 @@ def test_malformed_saved_calibrations(data: dict, message: str) -> None:
         ThresholdedCalibration.from_dict(data)
 
 
-def test_missing_thresholds_are_errors() -> None:
+def test_missing_thresholds_and_calibrators_are_errors() -> None:
+    cal = ThresholdedCalibration("per_class", {0: 0.0}, {0: 0.0}, {})
+    with pytest.raises(CalibrationError, match="no calibrator for class 0"):
+        cal.calibrate([image("1", det(0.5, 0))])
     cal = ThresholdedCalibration("per_class", {}, {}, {})
     with pytest.raises(CalibrationError, match="no calibration threshold for class 0"):
         cal.calibrate([image("1", det(0.5, 0))])

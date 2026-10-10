@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -10,7 +11,7 @@ from typing import Any
 from qcal.protocols import Detection, ImageDetections
 from qcal_lab.config import LabConfig, load_lab_config, parse_lab_config
 from qcal_lab.data.coco import GroundTruth, parse_coco
-from qcal_lab.data.fixture import FIXTURE_DESCRIPTION
+from qcal_lab.data.fixture import build_fixture, fixture_bytes
 from qcal_lab.smoke import write_project
 
 
@@ -40,9 +41,28 @@ def coco_doc(
     }
 
 
-def ground_truth(*, fixture: bool = False, **kwargs: Any) -> GroundTruth:
-    description = FIXTURE_DESCRIPTION if fixture else ""
-    return parse_coco(coco_doc(description=description, **kwargs), sha256="test")
+def ground_truth(**kwargs: Any) -> GroundTruth:
+    return parse_coco(coco_doc(**kwargs), sha256="test")
+
+
+FIXTURE_PARAMETERS: dict[str, int] = {
+    "images": 6,
+    "categories": 3,
+    "max_objects_per_image": 3,
+    "seed": 1,
+    "width": 64,
+    "height": 48,
+}
+
+
+def fixture_document(**overrides: int) -> dict[str, Any]:
+    return build_fixture(**{**FIXTURE_PARAMETERS, **overrides})
+
+
+def fixture_ground_truth(**overrides: int) -> GroundTruth:
+    """A generated fixture, loaded the way a file would be (digest of its canonical bytes)."""
+    document = fixture_document(**overrides)
+    return parse_coco(document, sha256=hashlib.sha256(fixture_bytes(document)).hexdigest())
 
 
 def det(score: float, label: int = 0, box: tuple[float, ...] = (0, 0, 10, 10)) -> Detection:

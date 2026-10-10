@@ -17,6 +17,7 @@ from qcal.registry.executor import sha256_file
 from qcal_lab import __version__
 from qcal_lab.config import LabConfig
 from qcal_lab.data.coco import GroundTruth
+from qcal_lab.data.fixture import is_fixture
 
 
 class DetectorError(RuntimeError):
@@ -99,7 +100,10 @@ def build_detector(
 ) -> Detector:
     settings = detector_settings(lab, name)
     factory = DETECTORS.get(str(settings["kind"]))
-    return factory(DetectorContext(name, settings, ground_truth, lab, precision, images_dir))
+    # A real detector never sees ground-truth boxes (test boxes included); only the synthetic
+    # fixture's stand-in detector, which perturbs them, gets the boxes.
+    visible = ground_truth if is_fixture(ground_truth) else ground_truth.without_boxes()
+    return factory(DetectorContext(name, settings, visible, lab, precision, images_dir))
 
 
 def setting_number(settings: Mapping[str, Any], key: str, *, low: float, high: float) -> float:

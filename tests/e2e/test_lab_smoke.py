@@ -27,7 +27,9 @@ def test_python_m_qcal_lab_smoke_passes_within_budget() -> None:
     budget = load_lab_config(REPO_ROOT).config.float_value("smoke.max_seconds")
     assert report["seconds"] < budget
     names = [c["name"] for c in report["checks"]]
-    assert "a re-run reproduces metrics and outputs byte for byte" in names
+    assert (
+        "an uncached re-run reproduces predictions, calibration and metrics byte for byte" in names
+    )
 
 
 def test_make_smoke() -> None:

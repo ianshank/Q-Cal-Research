@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
-from typing import Any, Final
+from typing import Any
 
 from qcal.log import get_logger
 from qcal_lab.calib.base import (
@@ -28,9 +28,6 @@ from qcal_lab.calib.base import (
 from qcal_lab.config import LabConfig
 
 _log = get_logger("lab.calib.platt")
-
-_ARMIJO: Final = 1e-4
-_MIN_STEP: Final = 1e-12
 
 
 def sigmoid(z: float) -> float:
@@ -65,6 +62,8 @@ class PlattScaling:
         max_iterations: int,
         gradient_tolerance: float,
         ridge: float,
+        armijo: float = 1e-4,
+        min_step: float = 1e-12,
         a: float = 1.0,
         b: float = 0.0,
         fitted: bool = False,
@@ -73,6 +72,9 @@ class PlattScaling:
             raise CalibrationError("probability_epsilon must lie in (0, 0.5)")
         if max_iterations <= 0 or gradient_tolerance <= 0 or ridge < 0:
             raise CalibrationError("Platt settings must be positive")
+        if not (0.0 < armijo < 0.5 and 0.0 < min_step < 1.0):
+            raise CalibrationError("Platt line search needs 0 < armijo < 0.5 and 0 < min_step < 1")
+        self.armijo, self.min_step = armijo, min_step
         self.epsilon = epsilon
         self.max_iterations = max_iterations
         self.gradient_tolerance = gradient_tolerance
@@ -90,6 +92,8 @@ class PlattScaling:
             max_iterations=cfg.int_value("calibrators.platt.max_iterations"),
             gradient_tolerance=cfg.float_value("calibrators.platt.gradient_tolerance"),
             ridge=cfg.float_value("calibrators.platt.ridge"),
+            armijo=cfg.float_value("calibrators.platt.armijo"),
+            min_step=cfg.float_value("calibrators.platt.min_step"),
         )
 
     def _newton_direction(
@@ -131,16 +135,16 @@ class PlattScaling:
             while True:
                 na, nb = a - step * da, b - step * db
                 new_loss = mean_cross_entropy(x, y, na, nb)
-                if new_loss <= loss - _ARMIJO * step * decrease or step < _MIN_STEP:
+                if new_loss <= loss - self.armijo * step * decrease or step < self.min_step:
                     break
                 step /= 2.0
-            if step < _MIN_STEP:
-                self.converged = True  # no further decrease is representable
+            if step < self.min_step:
+                _log.warning("Platt line search found no decrease at iteration %d", iteration)
                 break
             a, b, loss = na, nb, new_loss
         if not self.converged:
-            _log.warning("Platt scaling stopped after %d iterations", self.max_iterations)
-        if a < 0.0:
+            _log.warning("Platt scaling stopped unconverged after %d iteration(s)", self.iterations)
+        if a < 0.0:  # the boundary solution is exact only at a converged unconstrained optimum
             a, b = 0.0, logit(math.fsum(y) / len(y), self.epsilon)
         self.a, self.b, self.fitted = a, b, True
 

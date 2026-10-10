@@ -111,10 +111,26 @@ def test_cache_round_trip_and_tamper_detection(tmp_path: Path) -> None:
     cache = PredictionCache(tmp_path / "cache")
     key = cache_key(detector={"name": "x"}, split_sha256="s")
     assert cache.get(key) is None
-    path = cache.put(key, HEADER, IMAGES)
-    assert cache.get(key) == path
-    path.write_bytes(path.read_bytes() + b"\n")
+    entry = cache.put(key, HEADER, IMAGES, produced_by="R-1")
+    found = cache.get(key)
+    assert found is not None
+    assert (found.path, found.produced_by) == (entry.path, "R-1")
+    meta = json.loads(entry.path.with_suffix(".meta.json").read_text())
+    assert meta["key"] == key
+    assert meta["produced_by"] == "R-1"
+    entry.path.write_bytes(entry.path.read_bytes() + b"\n")
     assert cache.get(key) is None  # digest mismatch: ignored, recomputed by the caller
+
+
+def test_cache_metadata_must_name_the_key(tmp_path: Path) -> None:
+    cache = PredictionCache(tmp_path / "cache")
+    entry = cache.put("k1", HEADER, IMAGES, produced_by="R-1")
+    moved = entry.path.with_name("k2.jsonl")
+    entry.path.rename(moved)
+    entry.path.with_suffix(".meta.json").rename(moved.with_suffix(".meta.json"))
+    assert cache.get("k2") is None  # a copied entry does not answer for another key
+    moved.with_suffix(".meta.json").unlink()
+    assert cache.get("k2") is None
 
 
 def test_cache_keys_depend_on_every_part() -> None:
@@ -128,4 +144,4 @@ def test_disabled_cache(tmp_path: Path) -> None:
     assert cache.path("k") is None
     assert cache.get("k") is None
     with pytest.raises(PredictionsError, match="disabled"):
-        cache.put("k", HEADER, IMAGES)
+        cache.put("k", HEADER, IMAGES, produced_by="R")

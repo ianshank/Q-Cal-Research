@@ -74,6 +74,16 @@ def test_require_hashed_refuses_a_file_outside_the_repository(repo: Path, tmp_pa
         require_hashed(lab, load_config(repo, environ={}))
 
 
+def test_the_packaged_defaults_must_be_hashed_too() -> None:
+    from tests.conftest import REPO_ROOT
+
+    lab = load_lab_config(REPO_ROOT)
+    require_hashed(lab, load_config(REPO_ROOT, environ={}))  # qcal.toml hashes them
+    without = load_config(REPO_ROOT, repo_text="", environ={})  # packaged qcal defaults only
+    with pytest.raises(ConfigError, match=r"src/qcal_lab/resources/defaults\.toml is not covered"):
+        require_hashed(lab, without)
+
+
 def test_environment_variables_never_change_science_settings(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

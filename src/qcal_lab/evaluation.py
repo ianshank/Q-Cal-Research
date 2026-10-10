@@ -16,10 +16,14 @@ from __future__ import annotations
 import importlib
 import math
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Final, Protocol, runtime_checkable
 
-from qcal.config import ConfigError
+from qcal.config import Config, ConfigError
+from qcal.policy import Policy
 from qcal.protocols import ImageDetections
+from qcal.registry.executor import sha256_file
 from qcal.registry.records import METRIC_NAME_PATTERN
 from qcal_lab.config import LabConfig
 from qcal_lab.data.coco import GroundTruth
@@ -27,6 +31,11 @@ from qcal_lab.data.coco import GroundTruth
 # Kuzucu et al., arXiv:2405.20459, Alg. A.1: line 2 selects the calibration threshold (LRP with
 # tau = 0); line 6 selects the operating threshold after calibration (LRP with tau).
 STAGES: Final = ("calibration", "operating")
+# The one module besides Ian's that may act as an evaluation loop. It refuses every dataset
+# except an unmodified generated fixture and reports only smoke_* metrics.
+FIXTURE_LOOP_MODULE: Final = "qcal_lab.fixture_eval"
+# The policy category an evaluation loop's source file must belong to (CLAUDE.md rule 4).
+IAN_CATEGORY: Final = "ian_only"
 
 
 class HandwrittenMissingError(ConfigError):
@@ -63,8 +72,38 @@ class EvalLoop(Protocol):
         ...
 
 
-def load_eval_loop(lab: LabConfig) -> EvalLoop:
-    """Import ``eval_loop.module`` and build the loop with ``eval_loop.options``."""
+@dataclass(frozen=True)
+class LoadedEvalLoop:
+    loop: EvalLoop
+    module: str
+    file: str  # repository-relative where possible
+    sha256: str
+
+    def provenance(self) -> dict[str, str]:
+        return {"module": self.module, "file": self.file, "sha256": self.sha256}
+
+
+def _check_source(module_name: str, module_file: str | None, qcal_config: Config) -> Path:
+    """The loop's source must be one of Ian's files, or the fixture stand-in."""
+    if module_file is None:
+        raise ConfigError(f"{module_name} has no source file to verify")
+    path = Path(module_file).resolve()
+    if module_name == FIXTURE_LOOP_MODULE:
+        return path
+    root = qcal_config.root
+    relative = path.relative_to(root).as_posix() if path.is_relative_to(root) else None
+    policy = Policy.from_config(qcal_config)
+    if relative is None or IAN_CATEGORY not in policy.categories_for(relative):
+        shown = relative or str(path)
+        raise ConfigError(
+            f"evaluation loop {module_name} ({shown}) is not one of Ian's hand-written files; "
+            f"reported metrics come only from the {IAN_CATEGORY} category (CLAUDE.md rule 4)"
+        )
+    return path
+
+
+def load_eval_loop(lab: LabConfig, qcal_config: Config) -> LoadedEvalLoop:
+    """Import ``eval_loop.module``, verify where it lives, and build it with its options."""
     module_name = lab.text("eval_loop.module")
     factory_name = lab.text("eval_loop.factory")
     try:
@@ -76,6 +115,7 @@ def load_eval_loop(lab: LabConfig) -> EvalLoop:
                 "(CLAUDE.md rule 4); agents never create it."
             ) from exc
         raise
+    source = _check_source(module_name, getattr(module, "__file__", None), qcal_config)
     factory = getattr(module, factory_name, None)
     if not callable(factory):
         raise ConfigError(f"{module_name} has no callable {factory_name!r}")
@@ -85,7 +125,9 @@ def load_eval_loop(lab: LabConfig) -> EvalLoop:
             f"{module_name}.{factory_name}() must return an object with targets, "
             "threshold_objective and metrics"
         )
-    return loop
+    root = qcal_config.root
+    shown = source.relative_to(root).as_posix() if source.is_relative_to(root) else str(source)
+    return LoadedEvalLoop(loop, f"{module_name}:{factory_name}", shown, sha256_file(source))
 
 
 def check_targets(
@@ -125,10 +167,13 @@ def check_metrics(metrics: Mapping[str, float]) -> dict[str, float]:
 
 
 __all__ = [
+    "FIXTURE_LOOP_MODULE",
+    "IAN_CATEGORY",
     "STAGES",
     "EvalLoop",
     "EvaluationError",
     "HandwrittenMissingError",
+    "LoadedEvalLoop",
     "check_metrics",
     "check_targets",
     "load_eval_loop",

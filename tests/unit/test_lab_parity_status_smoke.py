@@ -23,7 +23,7 @@ from qcal_lab.parity import (
 from qcal_lab.predictions import PredictionsHeader, write_predictions
 from qcal_lab.smoke import SmokeReport, run_smoke
 from qcal_lab.status import build_status
-from tests.lab_support import coco_doc, det, image, lab_config
+from tests.lab_support import det, image, lab_config
 
 ORACLE = {"repository": "fiveai/detection_calibration", "commit": "abc123"}
 
@@ -80,6 +80,7 @@ def test_calibrator_cases(tmp_path: Path) -> None:
         ({**good, "calibrator": 3}, "needs a 'calibrator'"),
         ({**good, "fit": {"scores": "x", "targets": []}}, "list of numbers"),
         ({**good, "tolerance": -1}, "tolerance"),
+        ({**good, "tolerance": 1.0}, "looser than parity.abs_tolerance"),
     ]:
         with pytest.raises(ParityError, match=message):
             check_calibrator_case(load_case(_case(tmp_path / "f", "broken", broken)), lab)
@@ -87,13 +88,18 @@ def test_calibrator_cases(tmp_path: Path) -> None:
 
 
 def test_metric_cases(tmp_path: Path) -> None:
-    from qcal_lab.data.fixture import FIXTURE_DESCRIPTION
+    from qcal_lab.data.fixture import write_fixture
+    from tests.lab_support import fixture_document
 
     directory = tmp_path / "cases"
-    doc = coco_doc(images=1, description=FIXTURE_DESCRIPTION, boxes={1: [(1, [0, 0, 10, 10])]})
-    _case(directory, "gt", doc)
-    header = PredictionsHeader("x", "test", "raw", "d", "s", (1, 3))
-    write_predictions(directory / "p.jsonl", header, [image("1", det(0.5, 0, (0, 0, 10, 10)))])
+    doc = fixture_document()
+    write_fixture(directory / "gt.json", doc)
+    first = next(a for a in doc["annotations"] if a["image_id"] == 1)
+    x, y, w, h = first["bbox"]
+    label = first["category_id"] - 1  # categories 1..n map to labels 0..n-1
+    header = PredictionsHeader("x", "test", "raw", "d", "s", (1, 2, 3))
+    hit = det(0.5, label, (x, y, x + w, y + h))  # exactly the object: target 1, gap 0.5
+    write_predictions(directory / "p.jsonl", header, [image("1", hit)])
     case = {"kind": "metric", "oracle": ORACLE, "predictions": "p.jsonl", "ground_truth": "gt.json"}
     loop = FixtureEvalLoop()
     good = load_case(

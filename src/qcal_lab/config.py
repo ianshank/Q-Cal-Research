@@ -85,24 +85,41 @@ def load_lab_config(root: Path, path: Path | None = None) -> LabConfig:
     return LabConfig(parsed.config, target, hashlib.sha256(raw).hexdigest())
 
 
-def require_hashed(lab: LabConfig, qcal_config: Config) -> None:
-    """Refuse a lab configuration file that the registry's config hash would not cover."""
-    if lab.path is None:
-        return
-    resolved = lab.path.resolve()
+def defaults_path() -> Path:
+    """Where the packaged defaults live on disk (inside the repository for an editable install)."""
+    return Path(str(resources.files(_DEFAULTS_PACKAGE).joinpath(_DEFAULTS_RESOURCE)))
+
+
+def _require_hashed_file(path: Path, qcal_config: Config, *, must_be_inside: bool) -> None:
+    resolved = path.resolve()
     if not resolved.is_relative_to(qcal_config.root):
-        raise ConfigError(f"{lab.path} is outside the repository, so no run record can hash it")
+        if must_be_inside:
+            raise ConfigError(f"{path} is outside the repository, so no run record can hash it")
+        return  # an installed package: the run records the effective configuration's digest
     relative = resolved.relative_to(qcal_config.root).as_posix()
     if first_match(relative, qcal_config.str_list("registry.config_hash_inputs")) is None:
         raise ConfigError(
             f"{relative} is not covered by registry.config_hash_inputs, so a run's science "
-            "settings would not be recorded; move it under configs/"
+            "settings would not be recorded in its config_hash"
         )
+
+
+def require_hashed(lab: LabConfig, qcal_config: Config) -> None:
+    """Refuse science settings that the registry's config hash would not cover.
+
+    Both layers count: the repository layer, and the packaged defaults when they are files of
+    this repository (an editable install). Every run also records the sha256 of the merged
+    configuration, so an installed package's defaults are traceable too.
+    """
+    _require_hashed_file(defaults_path(), qcal_config, must_be_inside=False)
+    if lab.path is not None:
+        _require_hashed_file(lab.path, qcal_config, must_be_inside=True)
 
 
 __all__ = [
     "LAB_CONFIG_FILE",
     "LabConfig",
+    "defaults_path",
     "load_lab_config",
     "load_lab_defaults",
     "parse_lab_config",

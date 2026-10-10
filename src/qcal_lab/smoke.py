@@ -29,8 +29,8 @@ from qcal.log import get_logger
 from qcal.registry.executor import sha256_file
 from qcal.registry.store import RegistryStore
 from qcal.reports import verdict
-from qcal_lab.config import LAB_CONFIG_FILE, LabConfig
-from qcal_lab.data.fixture import build_fixture
+from qcal_lab.config import LAB_CONFIG_FILE, LabConfig, parse_lab_config
+from qcal_lab.data.fixture import build_fixture, write_fixture
 from qcal_lab.data.splits import partition, write_manifest
 from qcal_lab.experiment import RunRequest, run_experiment
 
@@ -39,6 +39,16 @@ _log = get_logger("lab.smoke")
 FIXTURE_ANNOTATIONS = "data/fixture/annotations.json"
 CELL_PREFIX = "C-smoke-"
 QcalMain = Callable[[list[str]], tuple[int, str]]
+# Every successful smoke run records these (the default split names; see [splits]).
+EXPECTED_ARTIFACTS = frozenset(
+    {
+        "predictions_raw_calibrator_fit_split",
+        "predictions_raw_val",
+        "predictions_raw_test",
+        "calibration",
+        "predictions_calibrated_test",
+    }
+)
 
 
 @dataclass
@@ -90,6 +100,8 @@ def _settings(lab: LabConfig) -> Mapping[str, Any]:
 def write_project(project: Path, lab: LabConfig, python: str) -> list[str]:
     """Create the throwaway project; returns the cell ids it pre-registers."""
     s = _settings(lab)
+    if project.exists() and any(project.iterdir()):
+        raise ConfigError(f"{project} is not empty; the smoke test builds a fresh project")
     project.mkdir(parents=True, exist_ok=True)
     command = [
         python, "-m", "qcal_lab", "--root", "{root}", "run", "--run-id", "{run_id}",
@@ -112,9 +124,7 @@ def write_project(project: Path, lab: LabConfig, python: str) -> list[str]:
         width=int(s["image_width"]),
         height=int(s["image_height"]),
     )
-    annotations = project / FIXTURE_ANNOTATIONS
-    annotations.parent.mkdir(parents=True, exist_ok=True)
-    annotations.write_text(json.dumps(fixture), encoding="utf-8")
+    write_fixture(project / FIXTURE_ANNOTATIONS, fixture)
 
     config = load_config(project, environ={})
     sizes = s["split_sizes"]
@@ -181,8 +191,9 @@ def _check_records(report: SmokeReport, project: Path, expected: int) -> list[An
     )
     bad: list[str] = []
     for record in ok:
-        if len(record.artifacts) < 3:
-            bad.append(f"{record.run_id}: {len(record.artifacts)} artifacts")
+        missing = EXPECTED_ARTIFACTS - {a.kind for a in record.artifacts}
+        if missing:
+            bad.append(f"{record.run_id}: no {', '.join(sorted(missing))}")
         for artifact in record.artifacts:
             path = project / artifact.path
             if not path.is_file() or sha256_file(path) != artifact.sha256:
@@ -192,23 +203,23 @@ def _check_records(report: SmokeReport, project: Path, expected: int) -> list[An
 
 
 def _check_determinism(report: SmokeReport, project: Path, record: Any) -> None:
+    """Re-run one cell with the prediction cache off, so the detector itself runs again."""
+    lab_file = project / LAB_CONFIG_FILE
+    text = lab_file.read_text("utf-8") + '[predictions]\ncache_dir = ""\n'
+    uncached = parse_lab_config(project, text, origin=f"{lab_file} (cache off)")
     rerun_id = f"{record.run_id}-rerun"
     result = run_experiment(
         RunRequest(
             project, rerun_id, record.cell_id, record.seed, project / "runs/smoke" / rerun_id
-        )
+        ),
+        lab=LabConfig(uncached.config, lab_file, uncached.sha256),
     )
-    same_metrics = result.metrics == dict(record.metrics)
-    calibrated = {a.kind: a.sha256 for a in record.artifacts}
-    rerun = {
-        a["kind"]: sha256_file(project / a["path"])
-        for a in result.artifacts
-        if a["kind"].startswith(("predictions_calibrated", "calibration"))
-    }
-    same_outputs = all(calibrated.get(kind) == digest for kind, digest in rerun.items())
+    recorded = {a.kind: a.sha256 for a in record.artifacts}
+    rerun = {a["kind"]: sha256_file(project / a["path"]) for a in result.artifacts}
+    same = result.metrics == dict(record.metrics) and rerun == recorded
     report.add(
-        "a re-run reproduces metrics and outputs byte for byte",
-        ok=same_metrics and same_outputs and bool(rerun),
+        "an uncached re-run reproduces predictions, calibration and metrics byte for byte",
+        ok=same and set(rerun) == EXPECTED_ARTIFACTS,
         detail=record.cell_id,
     )
 

@@ -65,7 +65,10 @@ class ThresholdedCalibration:
 
     def calibrator_for(self, label: int) -> SerializableCalibrator:
         key = GLOBAL_KEY if self.scope == "global" else label
-        return self.calibrators.get(key) or IdentityCalibrator()
+        try:
+            return self.calibrators[key]
+        except KeyError:
+            raise CalibrationError(f"no calibrator for class {label}") from None
 
     def _threshold(self, table: Mapping[int, float], label: int, which: str) -> float:
         try:

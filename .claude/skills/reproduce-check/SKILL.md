@@ -1,7 +1,7 @@
 ---
 name: reproduce-check
 description: Report the gap to Gate G1/K1 for the clean-room FP32 reproduction (smoke, leakage, oracle parity and Phase 1 readiness) without editing anything.
-allowed-tools: Bash(make smoke), Bash(make parity), Bash(make lab-status), Bash(qcal leakage:*), Bash(qcal registry audit:*), Read
+allowed-tools: Bash(make smoke), Bash(make parity), Bash(make lab-status), Bash(qcal leakage:*), Bash(qcal registry audit:*), Read, Agent
 ---
 Run these steps in order and report each result verbatim. Never edit files, configuration or
 tests to change an outcome.

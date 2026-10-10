@@ -40,6 +40,15 @@ Added:
   The skills `/reproduce-check` and `/prior-art`.
 - A `smoke` CI job, the `parity` test suite, and the dataset card `docs/data/coco.md`.
 
+Fixed after the adversarial review (verdict: block; details in the change proposal):
+- leakage is now checked by image id before any detector work;
+- both thresholds are selected on val only;
+- only Ian's files, or the digest-verified fixture stand-in, can report metrics;
+- the prediction-cache key is complete, and hits are verified with their producer recorded;
+- the oracle outputs, reference values and manifests are `ian_data`;
+- splits cannot be replaced from the command line;
+- the packaged defaults are hashed into `config_hash`.
+
 Changed:
 - `qcal.toml` sets `executor.command`.
 - mypy and coverage include `qcal_lab`.

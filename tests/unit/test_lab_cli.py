@@ -82,10 +82,25 @@ def test_splits_import_partition_and_verify(repo: Path) -> None:
     partition = [*root, "partition", "--annotations", str(annotations), "--seed", "1"]
     assert lab(*partition, "--sizes", sizes)[0] == cli.EXIT_OK
     assert lab(*partition, "--sizes", "x=1,y")[0] == cli.EXIT_FAILED
-    # The import put every image in val, so it overlaps; verify still finds every id present.
+    # The import put every image in val, so val overlaps both partitions: verify fails on it.
     code, text = lab(*root, "verify", "--annotations", str(annotations))
-    assert code == cli.EXIT_OK
+    assert code == cli.EXIT_FAILED
     assert "trt_calib_images: no manifest" in text
+    assert "overlap calibrator_fit_split&val: 3 id(s)" in text
+    # An existing split is never replaced from the command line (split shopping).
+    code, _ = lab(
+        *root,
+        "import",
+        "--annotations",
+        str(write(repo, "b.json", json.dumps(coco_doc(images=4)))),
+        "--split",
+        "val",
+    )
+    assert code == cli.EXIT_FAILED
+    assert (
+        lab(*root, "import", "--annotations", str(annotations), "--split", "val", "--replace")[0]
+        == cli.EXIT_USAGE
+    )
     smaller = write(repo, "small.json", json.dumps(coco_doc(images=2)))
     code, text = lab(*root, "verify", "--annotations", str(smaller))
     assert code == cli.EXIT_FAILED
@@ -98,6 +113,14 @@ def test_smoke_json_with_a_kept_workdir(tmp_path: Path, repo: Path) -> None:
     assert code == cli.EXIT_OK, report
     assert report["verdict"] == "PASS"
     assert (tmp_path / "w/project/runs/index.csv").is_file()
+
+
+def test_smoke_refuses_to_reuse_a_project(tmp_path: Path, repo: Path) -> None:
+    (tmp_path / "w/project").mkdir(parents=True)
+    (tmp_path / "w/project/qcal.toml").write_text("# someone's project\n")
+    code, _ = lab("--root", str(repo), "smoke", "--workdir", str(tmp_path / "w"))
+    assert code == cli.EXIT_USAGE
+    assert (tmp_path / "w/project/qcal.toml").read_text() == "# someone's project\n"
 
 
 def test_smoke_text_in_a_temporary_directory(repo: Path) -> None:

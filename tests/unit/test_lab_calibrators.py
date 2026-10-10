@@ -128,7 +128,18 @@ def test_platt_stops_at_the_iteration_cap(tmp_path: Path, caplog: pytest.LogCapt
     model.fit([0.1, 0.9, 0.5], [0.0, 1.0, 0.2])
     assert model.iterations == 1
     assert not model.converged
-    assert "stopped after 1 iterations" in caplog.text
+    assert "stopped unconverged after 1 iteration(s)" in caplog.text
+
+
+def test_platt_line_search_that_cannot_decrease_is_not_convergence(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    model = PlattScaling(
+        epsilon=1e-7, max_iterations=50, gradient_tolerance=1e-30, ridge=1e-12, min_step=0.9
+    )
+    model.fit([0.1, 0.9, 0.5, 0.3], [0.0, 1.0, 0.2, 0.6])
+    assert not model.converged
+    assert "line search found no decrease" in caplog.text
 
 
 def test_platt_save_and_load(lab) -> None:
@@ -151,6 +162,8 @@ def test_platt_misuse(lab) -> None:
         PlattScaling(epsilon=0.6, max_iterations=1, gradient_tolerance=1, ridge=0)
     with pytest.raises(CalibrationError, match="positive"):
         PlattScaling(epsilon=0.1, max_iterations=0, gradient_tolerance=1, ridge=0)
+    with pytest.raises(CalibrationError, match="line search"):
+        PlattScaling(epsilon=0.1, max_iterations=1, gradient_tolerance=1, ridge=0, armijo=0.7)
 
 
 @settings(max_examples=60, deadline=None)
@@ -182,6 +195,10 @@ def test_duplicate_scores_merge_into_their_mean() -> None:
     assert xs == [0.2, 0.5]
     assert ys == pytest.approx([0.0, 0.5])
     assert counts == [1.0, 3.0]
+    # A coarser resolution (float32 scores) merges near-equal scores too.
+    assert merge_duplicates([0.5, 0.5000001], [0.0, 1.0], resolution=1e-6)[0] == [0.5]
+    with pytest.raises(CalibrationError, match="duplicate_resolution"):
+        IsotonicRegression(y_min=0, y_max=1, out_of_bounds="clip", duplicate_resolution=0.0)
 
 
 def test_isotonic_interpolates_and_clips(lab) -> None:

@@ -9,9 +9,10 @@ so the parity tests can compare its outputs directly:
 - prediction interpolates linearly between fitted points. Outside the fitted range it clips,
   or it raises with ``out_of_bounds = "raise"``.
 
-Duplicate scores are merged when they differ by less than float64 resolution (1e-15). This
-detail of scikit-learn's ``_make_unique`` is reproduced from its source as remembered
-[unverified]; the parity tests against the oracle decide.
+Duplicate scores are merged when they differ by less than ``duplicate_resolution`` from the
+first score of their group. scikit-learn's ``_make_unique`` uses the resolution of the input
+dtype (1e-15 for float64, 1e-6 for float32); the default assumes float64 scores, as in our
+prediction files [unverified against the oracle's dtype; the parity tests decide].
 """
 
 from __future__ import annotations
@@ -31,7 +32,7 @@ from qcal_lab.calib.base import (
 from qcal_lab.config import LabConfig
 
 OUT_OF_BOUNDS: Final = frozenset({"clip", "raise"})
-_RESOLUTION: Final = 1e-15
+FLOAT64_RESOLUTION: Final = 1e-15  # numpy.finfo(float64).resolution
 
 
 def pool_adjacent_violators(values: Sequence[float], weights: Sequence[float]) -> list[float]:
@@ -55,7 +56,7 @@ def pool_adjacent_violators(values: Sequence[float], weights: Sequence[float]) -
 
 
 def merge_duplicates(
-    x: Sequence[float], y: Sequence[float]
+    x: Sequence[float], y: Sequence[float], resolution: float = FLOAT64_RESOLUTION
 ) -> tuple[list[float], list[float], list[float]]:
     """Sorted unique x, the mean y at each, and the number of samples merged into each."""
     order = sorted(range(len(x)), key=lambda i: (x[i], y[i]))
@@ -63,7 +64,7 @@ def merge_duplicates(
     sums: list[float] = []
     counts: list[float] = []
     for i in order:
-        if ux and x[i] - ux[-1] < _RESOLUTION:
+        if ux and x[i] - ux[-1] < resolution:
             sums[-1] += y[i]
             counts[-1] += 1.0
         else:
@@ -82,6 +83,7 @@ class IsotonicRegression:
         y_min: float,
         y_max: float,
         out_of_bounds: str,
+        duplicate_resolution: float = FLOAT64_RESOLUTION,
         x: Sequence[float] = (),
         y: Sequence[float] = (),
     ) -> None:
@@ -93,7 +95,10 @@ class IsotonicRegression:
             raise CalibrationError("isotonic bounds must satisfy 0 <= y_min <= y_max <= 1")
         if len(x) != len(y):
             raise CalibrationError("isotonic knots differ in length")
+        if not 0.0 < duplicate_resolution < 1.0:
+            raise CalibrationError("duplicate_resolution must lie in (0, 1)")
         self.y_min, self.y_max, self.out_of_bounds = y_min, y_max, out_of_bounds
+        self.duplicate_resolution = duplicate_resolution
         self.x, self.y = list(x), list(y)
 
     @classmethod
@@ -103,11 +108,12 @@ class IsotonicRegression:
             y_min=cfg.float_value("calibrators.isotonic.y_min"),
             y_max=cfg.float_value("calibrators.isotonic.y_max"),
             out_of_bounds=cfg.str_value("calibrators.isotonic.out_of_bounds"),
+            duplicate_resolution=cfg.float_value("calibrators.isotonic.duplicate_resolution"),
         )
 
     def fit(self, scores: Sequence[float], targets: Sequence[float]) -> None:
         x, y = check_fit_inputs(scores, targets)
-        ux, uy, counts = merge_duplicates(x, y)
+        ux, uy, counts = merge_duplicates(x, y, self.duplicate_resolution)
         fitted = pool_adjacent_violators(uy, counts)
         self.x = ux
         self.y = [min(max(v, self.y_min), self.y_max) for v in fitted]

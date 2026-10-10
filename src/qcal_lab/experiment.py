@@ -4,10 +4,11 @@
 runs ``python -m qcal_lab run``. The program:
 
 1. reads the cell's factors from EXPERIMENTS.yaml, refusing unknown factors and values;
-2. loads the dataset and the split manifests, refusing any evaluate split that is also
-   used for fitting or selection;
-3. runs the detector on the fit, select and evaluate splits (raw predictions are cached);
-4. trains the calibration on the fit and select roles only (arXiv:2405.20459 Alg. A.1);
+2. loads the dataset and the split manifests, refusing unless ``qcal leakage`` passes and the
+   fit, select and evaluate splits share no image;
+3. runs the detector on the three splits (raw predictions are cached and verified);
+4. fits calibrators on the fit split and selects both thresholds on the select split
+   (arXiv:2405.20459 Alg. A.1);
 5. applies it to the evaluate split (Alg. A.2) and asks Ian's evaluation loop for the
    metrics;
 6. writes the executor contract's result JSON: metrics, artifacts, environment.
@@ -17,16 +18,24 @@ The registry, not this program, writes the run record.
 
 from __future__ import annotations
 
+import collections
+import functools
+import hashlib
+import itertools
 import json
 import os
+import platform
+import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final
 
 from qcal.config import Config, ConfigError, load_config
+from qcal.integrity.leakage import check_leakage
 from qcal.log import get_logger
 from qcal.protocols import Detector, ImageDetections
+from qcal.registry.executor import sha256_file
 from qcal.registry.experiments import load_experiments
 from qcal_lab import __version__
 from qcal_lab.calib import CALIBRATORS, build_calibrator
@@ -43,7 +52,9 @@ from qcal_lab.data.splits import draw, read_split, split_digest
 from qcal_lab.evaluation import EvalLoop, check_metrics, load_eval_loop
 from qcal_lab.models import build_detector, detector_fingerprint
 from qcal_lab.predictions import (
+    CacheEntry,
     PredictionCache,
+    PredictionsError,
     PredictionsHeader,
     cache_key,
     read_predictions,
@@ -53,7 +64,7 @@ from qcal_lab.predictions import (
 _log = get_logger("lab.experiment")
 
 ROLES: Final = ("fit", "select", "evaluate")
-THRESHOLD_ROLES: Final = ("fit", "select")
+HANDWRITTEN_DIR: Final = "handwritten/"  # Ian's files; never part of the source digest
 _FACTOR_ROLES: Final = (
     "detector",
     "calibrator",
@@ -153,7 +164,12 @@ def resolve_plan(factors: Mapping[str, Any], lab: LabConfig) -> RunPlan:
 
 
 def split_roles(lab: LabConfig, qcal_config: Config) -> dict[str, str]:
-    """Role -> split name; the evaluate split may never also fit or select."""
+    """Role -> split name: three different splits (CLAUDE.md rule 3).
+
+    Calibrators fit on the fit split only, and both thresholds are selected on the select
+    split only (arXiv:2405.20459 Alg. A.1 lines 2 and 6, with the paper's single val set split
+    in two by the pre-registration). The evaluate split is used for nothing but metrics.
+    """
     roles = {role: lab.text(f"splits.{role}") for role in ROLES}
     known = qcal_config.str_list("data.splits")
     unknown = [s for s in roles.values() if s not in known]
@@ -164,10 +180,26 @@ def split_roles(lab: LabConfig, qcal_config: Config) -> dict[str, str]:
             f"the evaluate split {roles['evaluate']!r} is also used for fitting or selection; "
             "that is tuning on the test split (CLAUDE.md rule 3)"
         )
-    for key in ("calibration_threshold_role", "operating_threshold_role"):
-        if lab.text(f"calibration.{key}") not in THRESHOLD_ROLES:
-            raise PlanError(f"calibration.{key} must be one of {THRESHOLD_ROLES}")
+    if roles["fit"] == roles["select"]:
+        raise PlanError(
+            f"{roles['fit']!r} would both fit calibrators and select thresholds; calibrators fit "
+            "on calibrator_fit_split only and selection uses val only (CLAUDE.md rule 3)"
+        )
     return roles
+
+
+def check_disjoint(qcal_config: Config, ids: Mapping[str, Sequence[str]]) -> None:
+    """Refuse unless every manifest passes ``qcal leakage`` and the roles share no image."""
+    report = check_leakage(qcal_config)
+    if not report.passed:
+        raise PlanError(f"split manifests fail the leakage check:\n{report.render_text()}")
+    for left, right in itertools.combinations(ROLES, 2):
+        shared = sorted(set(ids[left]) & set(ids[right]))
+        if shared:
+            raise PlanError(
+                f"the {left} and {right} splits share {len(shared)} image(s), "
+                f"for example {', '.join(shared[:3])}"
+            )
 
 
 @dataclass
@@ -178,7 +210,9 @@ class _Context:
     plan: RunPlan
     dataset: GroundTruth
     artifact_dir: Path
+    images_dir: Path | None
     artifacts: list[dict[str, str]] = field(default_factory=list)
+    cache_use: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def relative(self, path: Path) -> str:
         root = self.qcal_config.root
@@ -207,12 +241,53 @@ def _fingerprint(lab: LabConfig, plan: RunPlan) -> dict[str, Any]:
     )
 
 
+@functools.cache
+def source_digest() -> str:
+    """sha256 of this package's code and packaged settings, excluding Ian's files."""
+    package = Path(__file__).resolve().parent
+    digest = hashlib.sha256()
+    for path in sorted(package.rglob("*")):
+        relative = path.relative_to(package).as_posix()
+        if path.suffix not in {".py", ".toml"} or relative.startswith(HANDWRITTEN_DIR):
+            continue
+        digest.update(f"{relative}\0".encode())
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+def _images_digest(ctx: _Context, ids: Sequence[str]) -> str:
+    """sha256 over the image files of a split; empty when the detector reads no files."""
+    if ctx.images_dir is None:
+        return ""
+    digest = hashlib.sha256()
+    for image_id in ids:
+        path = ctx.images_dir / ctx.dataset.images[image_id].file_name
+        content = sha256_file(path) if path.is_file() else "missing"
+        digest.update(f"{image_id}\0{content}\n".encode())
+    return digest.hexdigest()
+
+
 def _cache(lab: LabConfig) -> PredictionCache:
     configured = lab.config.str_value("predictions.cache_dir")
     if not configured:
         return PredictionCache(None)
     path = Path(configured)
     return PredictionCache(path if path.is_absolute() else lab.config.root / path)
+
+
+def _cached_images(
+    entry: CacheEntry, header: PredictionsHeader, ids: Sequence[str]
+) -> tuple[ImageDetections, ...] | None:
+    """The cached predictions, if they are exactly what this run would compute."""
+    try:
+        found, images = read_predictions(entry.path)
+    except PredictionsError as exc:
+        _log.warning("ignoring cached predictions %s: %s", entry.path.name, exc)
+        return None
+    if found != header or [i.image_id for i in images] != list(ids):
+        _log.warning("ignoring cached predictions %s: header or images differ", entry.path.name)
+        return None
+    return images
 
 
 def _raw_predictions(
@@ -230,12 +305,16 @@ def _raw_predictions(
         detector=_fingerprint(ctx.lab, ctx.plan),
         dataset_sha256=ctx.dataset.sha256,
         split_sha256=header.split_sha256,
+        images_dir=str(ctx.images_dir.resolve()) if ctx.images_dir else "",
+        images_sha256=_images_digest(ctx, ids),
+        source_sha256=source_digest(),
     )
-    cached = cache.get(key)
-    if cached is not None:
-        _log.info("using cached raw predictions for %s (%s)", split, cached.name)
-        _, images = read_predictions(cached)
-        ctx.add_artifact(cached, f"predictions_raw_{split}")
+    entry = cache.get(key)
+    images = _cached_images(entry, header, ids) if entry is not None else None
+    if entry is not None and images is not None:
+        _log.info("using raw predictions for %s cached by %s", split, entry.produced_by)
+        ctx.cache_use[split] = {"hit": True, "produced_by": entry.produced_by}
+        ctx.add_artifact(entry.path, f"predictions_raw_{split}")
         return images
     _log.info("running %s on %d %s images", ctx.plan.detector, len(ids), split)
     images = tuple(detector.predict(list(ids)))
@@ -246,7 +325,8 @@ def _raw_predictions(
         path = ctx.artifact_dir / f"raw_{split}.jsonl"
         write_predictions(path, header, images)
     else:
-        cache.put(key, header, images)
+        cache.put(key, header, images, produced_by=ctx.request.run_id)
+    ctx.cache_use[split] = {"hit": False, "produced_by": ctx.request.run_id}
     ctx.add_artifact(path, f"predictions_raw_{split}")
     return images
 
@@ -256,6 +336,16 @@ def _subset(images: Sequence[ImageDetections], ids: Sequence[str]) -> tuple[Imag
     return tuple(i for i in images if i.image_id in wanted)
 
 
+def _retained(images: Sequence[ImageDetections]) -> dict[str, Any]:
+    per_class = collections.Counter(str(d.label) for i in images for d in i.detections)
+    return {"total": sum(per_class.values()), "per_class": dict(sorted(per_class.items()))}
+
+
+def _effective_digest(lab: LabConfig) -> str:
+    canonical = json.dumps(lab.config.data, sort_keys=True, default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def run_experiment(
     request: RunRequest,
     *,
@@ -263,6 +353,7 @@ def run_experiment(
     lab: LabConfig | None = None,
     eval_loop: EvalLoop | None = None,
 ) -> ExperimentResult:
+    """Run one cell and seed. ``eval_loop`` injects a loop for tests (recorded as injected)."""
     qcal_config = qcal_config or load_config(request.root)
     lab = lab or load_lab_config(qcal_config.root)
     require_hashed(lab, qcal_config)
@@ -272,44 +363,43 @@ def run_experiment(
         raise PlanError(f"seed {request.seed} is not pre-registered for {cell.id}")
     plan = resolve_plan(cell.factors, lab)
     roles = split_roles(lab, qcal_config)
-    loop = eval_loop or load_eval_loop(lab)  # fail before any detector work if it is missing
+    if eval_loop is None:  # fail before any detector work if Ian's loop is missing
+        loaded = load_eval_loop(lab, qcal_config)
+        loop, loop_provenance = loaded.loop, loaded.provenance()
+    else:
+        loop, loop_provenance = eval_loop, {"module": f"injected:{type(eval_loop).__name__}"}
     dataset = load_coco(lab.file(f"datasets.{plan.shift}.annotations"))
     ids = {role: read_split(qcal_config, split) for role, split in roles.items()}
+    check_disjoint(qcal_config, ids)
     subsets = {role: dataset.subset(role_ids) for role, role_ids in ids.items()}
     fit_ids = draw(ids["fit"], plan.fit_size, request.seed) if plan.fit_size else ids["fit"]
     images_setting = lab.config.str_value(f"datasets.{plan.shift}.images_dir")
+    images_dir = lab.file(f"datasets.{plan.shift}.images_dir") if images_setting else None
     ctx = _Context(
-        request, qcal_config, lab, plan, dataset, _artifact_dir(lab, qcal_config, request.run_id)
+        request,
+        qcal_config,
+        lab,
+        plan,
+        dataset,
+        _artifact_dir(lab, qcal_config, request.run_id),
+        images_dir,
     )
     detector = build_detector(
-        lab,
-        plan.detector,
-        dataset,
-        precision=plan.precision,
-        images_dir=lab.file(f"datasets.{plan.shift}.images_dir") if images_setting else None,
+        lab, plan.detector, dataset, precision=plan.precision, images_dir=images_dir
     )
     cache = _cache(lab)
-    by_split: dict[str, tuple[ImageDetections, ...]] = {}
-    for role in ROLES:
-        split = roles[role]
-        if split not in by_split:
-            by_split[split] = _raw_predictions(ctx, detector, split, ids[role], cache)
-    raw = {role: by_split[roles[role]] for role in ROLES}
-    data = {
-        "fit": SplitData(
-            roles["fit"], _subset(raw["fit"], fit_ids), subsets["fit"].subset(fit_ids)
-        ),
-        "select": SplitData(roles["select"], raw["select"], subsets["select"]),
-    }
+    raw = {role: _raw_predictions(ctx, detector, roles[role], ids[role], cache) for role in ROLES}
+    fit = SplitData(roles["fit"], _subset(raw["fit"], fit_ids), subsets["fit"].subset(fit_ids))
+    select = SplitData(roles["select"], raw["select"], subsets["select"])
     candidates = threshold_grid(
         lab.config.float_value("calibration.grid_start"),
         lab.config.float_value("calibration.grid_stop"),
         lab.config.float_value("calibration.grid_step"),
     )
     calibration = train_calibration(
-        fit=data["fit"],
-        calibration_threshold_data=data[lab.text("calibration.calibration_threshold_role")],
-        operating_threshold_data=data[lab.text("calibration.operating_threshold_role")],
+        fit=fit,
+        calibration_threshold_data=select,
+        operating_threshold_data=select,
         build=lambda: build_calibrator(plan.calibrator, lab),
         scope=plan.scope,
         candidates=candidates,
@@ -318,10 +408,13 @@ def run_experiment(
     evaluated = calibration.apply(raw["evaluate"])
     metrics = check_metrics(loop.metrics(evaluated, subsets["evaluate"]))
     _write_outputs(ctx, roles["evaluate"], ids["evaluate"], calibration, evaluated)
+    saved = calibration.to_dict()
     environment = {
         "qcal_lab_version": __version__,
+        "qcal_lab_source_sha256": source_digest(),
         "lab_config_sha256": lab.sha256,
-        "eval_loop": f"{lab.text('eval_loop.module')}:{lab.text('eval_loop.factory')}",
+        "lab_config_effective_sha256": _effective_digest(lab),
+        "eval_loop": loop_provenance,
         "dataset_sha256": dataset.sha256,
         "splits": {
             role: {
@@ -332,11 +425,21 @@ def run_experiment(
             for role in ROLES
         },
         "fit_draw": {
+            "seeded": plan.fit_size is not None,
             "size": len(fit_ids),
             "seed": request.seed,
             "sha256": split_digest(fit_ids),
         },
         "detector": _fingerprint(lab, plan),
+        "detector_runtime": dict(getattr(detector, "runtime", {})),
+        "prediction_cache": ctx.cache_use,
+        "calibration": {
+            key: saved[key]
+            for key in ("scope", "calibration_thresholds", "operating_thresholds", "provenance")
+        },
+        "evaluate_retained_detections": _retained(evaluated),
+        "program_python": sys.executable,
+        "program_python_version": platform.python_version(),
     }
     return ExperimentResult(metrics, ctx.artifacts, environment)
 
@@ -376,13 +479,16 @@ def write_result(path: Path, result: ExperimentResult) -> None:
 
 
 __all__ = [
+    "HANDWRITTEN_DIR",
     "ROLES",
     "ExperimentResult",
     "PlanError",
     "RunPlan",
     "RunRequest",
+    "check_disjoint",
     "resolve_plan",
     "run_experiment",
+    "source_digest",
     "split_roles",
     "write_result",
 ]

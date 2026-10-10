@@ -12,17 +12,14 @@ import pytest
 from qcal.config import ConfigError
 from qcal.protocols import Detector
 from qcal_lab.data.coco import parse_coco
-from qcal_lab.data.fixture import NotFixtureError, build_fixture, is_fixture
+from qcal_lab.data.fixture import NotFixtureError, build_fixture, fixture_bytes, is_fixture
 from qcal_lab.models import DetectorError, build_detector, detector_spec
 from qcal_lab.models import mmdet as mmdet_module
 from qcal_lab.models.base import setting_int, setting_number
 from qcal_lab.models.fixture import FixtureDetector
-from tests.lab_support import ground_truth, lab_config
+from tests.lab_support import fixture_document, fixture_ground_truth, ground_truth, lab_config
 
-FIXTURE = parse_coco(
-    build_fixture(images=6, categories=3, max_objects_per_image=3, seed=1, width=64, height=48),
-    sha256="f",
-)
+FIXTURE = fixture_ground_truth()
 
 
 # --- fixture dataset and detector ------------------------------------------------------------
@@ -33,9 +30,50 @@ def test_fixture_dataset_is_deterministic_and_marked() -> None:
     assert build_fixture(seed=1, **kwargs) == build_fixture(seed=1, **kwargs)
     assert build_fixture(seed=1, **kwargs) != build_fixture(seed=2, **kwargs)
     assert is_fixture(FIXTURE)
+    assert is_fixture(FIXTURE.subset(["1", "2"]))
     assert not is_fixture(ground_truth())
     with pytest.raises(ValueError, match="positive"):
         build_fixture(seed=1, **{**kwargs, "images": 0})
+
+
+def _digest(document: dict[str, Any]) -> str:
+    return hashlib.sha256(fixture_bytes(document)).hexdigest()
+
+
+def test_the_fixture_is_recognised_by_content_not_by_its_label() -> None:
+    """A copied description, edited boxes or forged parameters do not make a fixture."""
+    spoofed = ground_truth(description=fixture_document()["info"]["description"])
+    assert not is_fixture(spoofed)
+    edited = fixture_document()
+    edited["annotations"][0]["bbox"] = [0.0, 0.0, 1.0, 1.0]
+    assert not is_fixture(parse_coco(edited, sha256=_digest(edited)))
+    forged = fixture_document()
+    forged["info"]["fixture_parameters"] = {"images": "many"}
+    assert not is_fixture(parse_coco(forged, sha256=_digest(forged)))
+    missing = fixture_document()
+    del missing["info"]["fixture_parameters"]
+    assert not is_fixture(parse_coco(missing, sha256=_digest(missing)))
+
+
+def test_real_detectors_never_see_ground_truth_boxes(tmp_path: Path) -> None:
+    from qcal_lab.models import DETECTORS
+
+    seen = {}
+
+    def spy(context: Any) -> Any:
+        seen["boxes"] = sum(len(b) for b in context.ground_truth.boxes.values())
+        seen["images"] = len(context.ground_truth.images)
+        return SimpleNamespace(name="spy", predict=lambda ids: [])
+
+    DETECTORS.register("labtest_spy", spy)
+    try:
+        lab = lab_config(tmp_path, '[detectors.spy]\nkind = "labtest_spy"\n')
+        build_detector(lab, "spy", ground_truth(), precision="fp32")
+        assert seen == {"boxes": 0, "images": 3}
+        build_detector(lab, "spy", FIXTURE, precision="fp32")
+        assert seen["boxes"] > 0  # only the synthetic fixture's stand-in gets boxes
+    finally:
+        DETECTORS._items.pop("labtest_spy")
 
 
 def test_fixture_detector_is_deterministic_per_image(tmp_path: Path) -> None:
@@ -182,6 +220,11 @@ def test_mmdet_adapter_converts_pred_instances(mmdet_setup) -> None:
     assert s.api.init_args["device"] == "cuda:0"
     assert s.torch.backends.cuda.matmul.allow_tf32 is False
     assert s.torch.backends.cudnn.allow_tf32 is False
+    assert detector.runtime == {
+        "precision": "fp32_tf32_off",
+        "allow_tf32_matmul": False,
+        "allow_tf32_cudnn": False,
+    }
     result = detector.predict(["1"])[0]
     assert [(d.score, d.label) for d in result.detections] == [(0.9, 0), (0.3, 1)]
     assert result.detections[1].box_xyxy == (1.0, 2.0, 3.0, 4.0)
@@ -194,9 +237,10 @@ def test_mmdet_adapter_converts_pred_instances(mmdet_setup) -> None:
 def test_mmdet_adapter_leaves_tf32_alone_for_plain_fp32(mmdet_setup) -> None:
     s = mmdet_setup
     lab = lab_config(s.tmp, s.body.replace("score_threshold = 0.05\nmax_per_image = 100\n", ""))
-    build_detector(lab, "atss_r50", s.gt, precision="fp32", images_dir=s.images)
+    detector = build_detector(lab, "atss_r50", s.gt, precision="fp32", images_dir=s.images)
     assert s.torch.backends.cudnn.allow_tf32 is True
     assert s.api.init_args["cfg_options"] is None
+    assert detector.runtime["allow_tf32_cudnn"] is True  # recorded, so the run says so
 
 
 @pytest.mark.parametrize(
@@ -224,6 +268,9 @@ def test_mmdet_adapter_needs_images_and_the_library(mmdet_setup) -> None:
         build_detector(lab, "atss_r50", s.gt, precision="fp32")
     del s.modules["mmdet.apis"]
     with pytest.raises(DetectorError, match=r"mmdet\.apis is not importable"):
+        build_detector(lab, "atss_r50", s.gt, precision="fp32", images_dir=s.images)
+    del s.modules["torch"]
+    with pytest.raises(DetectorError, match="torch is not importable"):
         build_detector(lab, "atss_r50", s.gt, precision="fp32", images_dir=s.images)
 
 
