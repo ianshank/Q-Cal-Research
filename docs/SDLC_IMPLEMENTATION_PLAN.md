@@ -1,6 +1,10 @@
 # Q-Cal: SDLC Implementation Plan for the Agentic Tool Execution Layer
 
-Status: proposal, v2 (Oct 9, 2026), revised after a three-lens expert peer review (§10). Source: *Adversarial Review of Plans A/B and a Corrected 12-Month CV Research Plan* (the "Review"), sections C (Corrected Plan), D (Tool Execution Layer), and F (risks).
+Status: v2 (Oct 9, 2026), revised after a three-lens expert peer review (§10). Phase 0 is
+implemented and hardened (Oct 10, 2026): see `docs/IMPLEMENTATION_NOTES.md` and
+`docs/NEXT_STEPS.md`. Deviations from this text are listed in the notes. Notably, the
+license audit is `qcal licenses`, not `qcal registry licenses`, and `make release` and
+`make reproduce-full` arrive with later phases. Source: *Adversarial Review of Plans A/B and a Corrected 12-Month CV Research Plan* (the "Review"), sections C (Corrected Plan), D (Tool Execution Layer), and F (risks).
 
 **Implementation status (Oct 9, 2026).** Phase 0 is implemented: the `qcal` package, the minimal viable agent layer, and both CI workflows. See [IMPLEMENTATION_NOTES.md](IMPLEMENTATION_NOTES.md) for what exists, the enforcement model, the refinements made while building it, and Ian's remaining Phase 0 steps. Phase 1 science code waits for G0.
 

@@ -130,10 +130,12 @@ def test_unknown_agent_keys_are_listed_sorted(config: Config, repo: Path) -> Non
 @pytest.mark.parametrize(
     ("front", "missing"),
     [
-        ("name: reviewer\n", ["description"]),
-        ("name: reviewer\ndescription: ''\n", ["description"]),
-        ("description: d\n", ["name"]),
+        ("name: reviewer\ntools: Read\n", ["description"]),
+        ("name: reviewer\ndescription: ''\ntools: Read\n", ["description"]),
+        ("description: d\ntools: Read\n", ["name"]),
         ("tools: Read\n", ["name", "description"]),
+        ("name: reviewer\ndescription: d\n", ["tools"]),
+        ("name: reviewer\ndescription: d\ntools: ''\n", ["tools"]),
     ],
 )
 def test_missing_or_empty_required_agent_keys_are_errors(
@@ -145,7 +147,7 @@ def test_missing_or_empty_required_agent_keys_are_errors(
 
 
 def test_agent_name_must_equal_file_stem(config: Config, repo: Path) -> None:
-    frontmatter_file(repo, AGENT, "name: other\ndescription: d\n")
+    frontmatter_file(repo, AGENT, "name: other\ndescription: d\ntools: Read\n")
 
     assert check_agent_layer(config).errors == [f"{AGENT}: name 'other' != file name"]
 
@@ -170,13 +172,15 @@ def test_forbidden_permission_modes_are_configurable(
 ) -> None:
     config = make_config('[agent_layer]\nforbidden_permission_modes = ["acceptEdits"]\n')
     frontmatter_file(repo, AGENT, VALID_AGENT + "permissionMode: acceptEdits\n")
-    frontmatter_file(repo, ".claude/agents/other.md", "name: other\ndescription: d\n")
+    frontmatter_file(repo, ".claude/agents/other.md", "name: other\ndescription: d\ntools: Read\n")
 
     assert check_agent_layer(config).errors == [f"{AGENT}: permissionMode acceptEdits is forbidden"]
 
 
 def test_one_file_can_report_several_problems(config: Config, repo: Path) -> None:
-    frontmatter_file(repo, AGENT, "name: other\nbogus: 1\npermissionMode: bypassPermissions\n")
+    frontmatter_file(
+        repo, AGENT, "name: other\ntools: Read\nbogus: 1\npermissionMode: bypassPermissions\n"
+    )
 
     assert check_agent_layer(config).errors == [
         f"{AGENT}: unknown frontmatter keys ['bogus'] (Claude Code would ignore them)",

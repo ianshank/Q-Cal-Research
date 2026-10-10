@@ -36,7 +36,7 @@ _MAKE_RULE = re.compile(
 )
 # Shell syntax that ends a command: pipes, lists, redirections, subshells, comments.
 _COMMAND_END = re.compile(r"[|;&<>()`#]")
-_FENCE = re.compile(r"^\s*(```|~~~)")
+_FENCE = re.compile(r"^\s*(?:```|~~~)\s*(?P<lang>[\w+-]*)")
 # Outside Markdown: comments, and YAML keys that hold prose rather than commands.
 _COMMENT = re.compile(r"(^|\s)#.*$")
 _YAML_PROSE_KEY = re.compile(r"^\s*(?:-\s*)?(?:name|description|title)\s*:")
@@ -66,23 +66,34 @@ class CommandRefError:
         return f"{self.ref.file}:{self.ref.line}: `{self.ref.text}` {self.problem}"
 
 
-def code_lines(text: str, *, markdown: bool, yaml: bool = False) -> Iterator[tuple[int, str]]:
+def code_lines(
+    text: str,
+    *,
+    markdown: bool,
+    yaml: bool = False,
+    skip_languages: frozenset[str] = frozenset(),
+) -> Iterator[tuple[int, str]]:
     """Lines (1-based) holding code.
 
-    Markdown: fenced blocks and inline code spans. Everything else: every line with
-    ``#`` comments removed and, for YAML, prose keys such as ``name:`` skipped.
+    Markdown: fenced blocks (except fences in ``skip_languages``, such as diagrams) and
+    inline code spans. Everything else: every line with ``#`` comments removed and, for
+    YAML, prose keys such as ``name:`` skipped.
     """
     in_fence = False
+    skipping = False
     for number, line in enumerate(text.splitlines(), start=1):
         if not markdown:
             if not (yaml and _YAML_PROSE_KEY.match(line)):
                 yield number, _COMMENT.sub("", line)
             continue
-        if _FENCE.match(line):
+        fence = _FENCE.match(line)
+        if fence:
             in_fence = not in_fence
+            skipping = in_fence and fence.group("lang").lower() in skip_languages
             continue
         if in_fence:
-            yield number, line
+            if not skipping:
+                yield number, line
             continue
         for span in _INLINE_CODE.finditer(line):
             yield number, span.group(1)
@@ -95,11 +106,14 @@ def _tokens(rest: str) -> tuple[str, ...]:
     return tuple(word for word in (w.strip("'\"") for w in words) if word and word != "\\")
 
 
-def extract_refs(text: str, file: str, *, markdown: bool) -> list[CommandRef]:
+def extract_refs(
+    text: str, file: str, *, markdown: bool, skip_languages: frozenset[str] = frozenset()
+) -> list[CommandRef]:
     """Every ``qcal`` and ``make`` invocation in the code parts of ``text``."""
     refs: list[CommandRef] = []
     yaml = file.endswith(_YAML_SUFFIXES)
-    for number, line in code_lines(text, markdown=markdown, yaml=yaml):
+    lines = code_lines(text, markdown=markdown, yaml=yaml, skip_languages=skip_languages)
+    for number, line in lines:
         for match in _QCAL_INVOCATION.finditer(line):
             prefix = _SCRIPT_PREFIX.get(match.group("cmd"), ())
             refs.append(CommandRef(file, number, "qcal", prefix + _tokens(line[match.end() :])))
@@ -195,6 +209,7 @@ def check_command_refs(
     root = config.root
     exclude = config.str_list("agent_layer.command_ref_exclude_globs")
     markdown_globs = config.str_list("agent_layer.command_ref_markdown_globs")
+    skip = frozenset(s.lower() for s in config.str_list("agent_layer.command_ref_skip_fences"))
     parser = parser_factory()
     targets = make_targets(root / config.str_value("agent_layer.makefile"))
     errors: list[CommandRefError] = []
@@ -209,7 +224,7 @@ def check_command_refs(
             _log.warning("cannot read %s for command references: %s", relative, exc)
             continue
         markdown = first_match(relative, markdown_globs) is not None
-        for ref in extract_refs(text, relative, markdown=markdown):
+        for ref in extract_refs(text, relative, markdown=markdown, skip_languages=skip):
             checked += 1
             if ref.kind == "qcal":
                 problem = validate_qcal(parser, ref.tokens)

@@ -33,7 +33,8 @@ RUN --mount=type=secret,id=build_ca,required=false \
 
 ARG APP_USER=qcal
 ARG APP_UID=10001
-RUN useradd --create-home --uid "${APP_UID}" "${APP_USER}"
+RUN useradd --create-home --uid "${APP_UID}" "${APP_USER}" \
+ && install -d -o "${APP_USER}" -g "${APP_USER}" /app
 
 WORKDIR /app
 # Install dependencies from the metadata first so source edits keep this layer cached.

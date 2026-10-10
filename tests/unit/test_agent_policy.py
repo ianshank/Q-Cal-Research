@@ -16,7 +16,8 @@ from tests.conftest import write
 AGENT = ".claude/agents/reviewer.md"
 SKILL = ".claude/skills/weekly/SKILL.md"
 SETTINGS = ".claude/settings.json"
-BASE_AGENT = "name: reviewer\ndescription: Reviews things.\n"
+BASE_AGENT = "name: reviewer\ndescription: Reviews things.\n"  # tools added per test
+AGENT_WITH_TOOLS = BASE_AGENT + "tools: Read\n"
 BASE_SKILL = "name: weekly\ndescription: Weekly review.\n"
 
 
@@ -100,7 +101,7 @@ def test_tool_policy_lists_are_configurable(
 
 @pytest.mark.parametrize("model", ["inherit", "opus", "sonnet", "haiku", "claude-sonnet-5-5"])
 def test_allowed_models_pass(config: Config, repo: Path, model: str) -> None:
-    front(repo, AGENT, BASE_AGENT + f"model: {model}\n")
+    front(repo, AGENT, AGENT_WITH_TOOLS + f"model: {model}\n")
 
     assert check_agent_layer(config).errors == []
 
@@ -133,7 +134,7 @@ def test_skill_name_must_match_its_directory(config: Config, repo: Path) -> None
 
 @pytest.mark.parametrize("agent", ["reviewer", "Explore", "general-purpose", "Plan"])
 def test_fork_skill_naming_a_real_agent_passes(config: Config, repo: Path, agent: str) -> None:
-    front(repo, AGENT, BASE_AGENT)
+    front(repo, AGENT, AGENT_WITH_TOOLS)
     front(repo, SKILL, BASE_SKILL + f"context: fork\nagent: {agent}\n")
 
     assert check_agent_layer(config).errors == []
@@ -161,7 +162,7 @@ def test_unknown_context_value_fails(config: Config, repo: Path) -> None:
 
 def test_agent_skills_must_exist(config: Config, repo: Path) -> None:
     front(repo, SKILL, BASE_SKILL)
-    front(repo, AGENT, BASE_AGENT + "skills: [weekly, missing]\n")
+    front(repo, AGENT, AGENT_WITH_TOOLS + "skills: [weekly, missing]\n")
 
     assert check_agent_layer(config).errors == [f"{AGENT}: references unknown skills ['missing']"]
 
@@ -300,7 +301,7 @@ def test_matcher_groups_must_be_mappings(config: Config, repo: Path) -> None:
 
 
 def test_agent_frontmatter_hooks_are_validated(config: Config, repo: Path) -> None:
-    front(repo, AGENT, BASE_AGENT + "hooks:\n  PreToolUze: []\n")
+    front(repo, AGENT, AGENT_WITH_TOOLS + "hooks:\n  PreToolUze: []\n")
     front(repo, ".claude/agents/other.md", "name: other\ndescription: d\nhooks: [1]\n")
 
     errors = check_agent_layer(config).errors
@@ -310,3 +311,9 @@ def test_agent_frontmatter_hooks_are_validated(config: Config, repo: Path) -> No
         ".claude/agents/other.md: hooks must be a mapping of event names to matcher groups"
         in errors
     )
+
+
+def test_agents_must_declare_their_tools(config: Config, repo: Path) -> None:
+    front(repo, AGENT, BASE_AGENT)
+
+    assert check_agent_layer(config).errors == [f"{AGENT}: missing required keys ['tools']"]

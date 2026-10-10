@@ -254,7 +254,7 @@ settings_file = ".claude/settings.json"
 mcp_file = ".mcp.json"
 agents_glob = ".claude/agents/*.md"
 skills_glob = ".claude/skills/*/SKILL.md"
-agent_required_keys = ["name", "description"]
+agent_required_keys = ["name", "description", "tools"]   # an agent without tools inherits all of them
 agent_allowed_keys = [
   "name", "description", "tools", "disallowedTools", "model", "permissionMode", "maxTurns",
   "skills", "mcpServers", "hooks", "memory", "background", "effort", "isolation", "color",
@@ -298,6 +298,7 @@ command_ref_globs = [
   "docs/**/*.md", "review/*.md", "scripts/**/*.sh", "configs/**/*.md",
 ]
 command_ref_markdown_globs = ["**/*.md"]
+command_ref_skip_fences = ["mermaid", "text", "toml", "json", "python"]   # not shell
 # The plan is a design document: it names commands that arrive in later phases.
 command_ref_exclude_globs = ["docs/SDLC_IMPLEMENTATION_PLAN.md", "CHANGELOG.md"]
 

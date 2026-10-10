@@ -17,14 +17,19 @@ quantization, model wrappers) is Phase 1 and is gated on G0 (Oct 23, 2026), see 
 | Claims check | `qcal.integrity.claims` | `check_claims.py` (plan §1.5) |
 | Leakage check | `qcal.integrity.leakage` | deterministic half of `data-leakage-checker` |
 | License audit | `qcal.integrity.licenses` | v1 agent `license-auditor` |
-| Agent-layer validation | `qcal.integrity.agent_layer` | frontmatter test (plan §3.7) |
-| CI integrity | `qcal.ci.signatures`, `qcal.ci.immutability` | signed-commit check, append-only registry |
+| Agent-layer validation | `qcal.integrity.agent_layer`, `agent_settings`, `command_refs` | frontmatter test (plan §3.7), tool policy, hook settings, command-reference drift |
+| CI integrity | `qcal.ci.signatures`, `qcal.ci.immutability`, `qcal.ci.review` | signed-commit check, append-only registry, cross-review rule |
+| CLI | `qcal.cli` package (`app`, `common`, `registry`, `checks`, `ci`, `inspection`) | one entry point; command groups register through `COMMAND_GROUPS` |
+| Reports | `qcal.reports` | `CheckReport` protocol shared by every check |
 | Templates | `qcal init`, `resources/templates/` | Ian's documents, never authored by agents |
 | Interfaces | `qcal.protocols` | Detector, Calibrator, Metric, Quantizer shapes for Phase 1 |
 
 Agent layer: `CLAUDE.md`, `AGENTS.md`, two subagents (`adversarial-reviewer`,
-`data-leakage-checker`), one skill (`/weekly-review`), four hooks, `.mcp.json` with GitHub in
-read-only mode. CI: `.github/workflows/ci.yml` and `.github/workflows/integrity.yml`.
+`data-leakage-checker`), three skills (`/weekly-review`, `/pre-pr`, `/change-proposal`), four
+settings hooks plus one agent-frontmatter hook, `.mcp.json` with GitHub in read-only mode. CI:
+`.github/workflows/ci.yml` and `.github/workflows/integrity.yml`. Details and validation:
+[AGENT_LAYER.md](AGENT_LAYER.md); diagrams: [architecture/](architecture/README.md); history:
+[CHANGELOG](../CHANGELOG.md).
 
 ## Enforcement model
 
@@ -35,8 +40,9 @@ Hooks are feedback; signed commits plus CI are the control (plan v2 §1.2).
    - *per commit:* every non-merge commit in `base..head` that changes such a path needs a
      good SSH signature from a key in `allowed_signers` whose principal equals the committer
      email (OpenPGP and X.509 signatures never count);
-   - *net content:* every such path whose content differs between `base` and `head` must hold
-     content that a signed commit in the range introduced. Merges, and commits built on old
+   - *net content:* every such path whose content differs between the fork point
+     (`merge-base(base, head)`) and `head` must hold content that a signed commit in the range
+     introduced. A branch that is only behind base therefore passes. Merges, and commits built on old
      history, can only carry forward signed or base content; they cannot delete or roll back a
      protected file. Merging the base branch into a PR needs no signature.
    Run records are signed too, so a result enters the record only through Ian's signed commit.
@@ -45,8 +51,12 @@ Hooks are feedback; signed commits plus CI are the control (plan v2 §1.2).
 2. **Base-branch judge.** `integrity.yml` runs on `pull_request_target`: the workflow, the
    `qcal` code, `qcal.toml` and `allowed_signers` all come from the base commit. The PR head
    is fetched as git data and never executed, so a PR cannot relax the rules that judge it.
-3. **Immutable records.** `qcal ci registry-immutable` allows only added files under
-   `runs/registry/`, each a valid record named after its run id.
+3. **Immutable records.** `qcal ci registry-immutable` allows only added files directly in
+   `runs/registry/`, each a valid `<run_id>.json` record whose `supersedes` (if any) names an
+   existing record of the same cell and seed.
+   **Cross-review.** `qcal ci review-check` requires the other model's approving review at
+   `review/<reviewer>/<branch-slug>.md` whose `reviewed_sha` is a commit of the pull request,
+   with nothing but `review/` changed since (report-only until `review.mode = "enforce"`).
 4. **Head-side consistency.** `ci.yml` regenerates the index and tables and fails if the
    committed copies differ, and runs the claims, leakage, license and agent-layer checks with
    `python -I`, so a stray top-level module cannot shadow the package. The whole `src/qcal/`
@@ -61,7 +71,9 @@ Hooks are feedback; signed commits plus CI are the control (plan v2 §1.2).
    not block twice in a row, so it cannot trap a session.
    The Bash guard is deliberately conservative: it also analyses quoted text, so a
    heredoc or `echo` that merely *contains* a push command to a protected branch is
-   refused. Write such text to a file with an edit tool and run the file instead.
+   refused, and so is any command that mentions a push next to command substitution
+   (`$(...)`, backticks, `$((...))`). Write such text to a file with an edit tool and run
+   the file instead.
 6. **Human switch.** `QCAL_GUARD_MODE=enforce|warn|off` comes from the environment Claude Code
    was launched with, which an agent cannot change.
 
@@ -94,7 +106,8 @@ qcal registry tables      # configs/tables/*.toml -> paper/tables/*.tex (--check
 qcal claims               # every number traces to a run
 qcal leakage              # split manifests are disjoint
 qcal licenses             # dependency, import and dataset-card audit
-qcal agent-layer          # validate agents, skills, hooks, .mcp.json
+qcal agent-layer          # validate agents, skills, hooks, .mcp.json, documented commands
+qcal ci review-check --base B --head H --branch claude/slug   # cross-review rule
 qcal policy check PATH    # which protection category a path falls in
 qcal config               # merged configuration and where each layer came from
 ```
@@ -131,12 +144,17 @@ All values come from `src/qcal/resources/defaults.toml`, overridden by the repos
   their strict-xfail bug reports were fixed in the source.
 - A `code-review` pass, a red-team agent and a `security-review` pass (with independent
   false-positive filtering) attacked the guards and the CI controls. Every reproduced finding
-  was fixed and has a regression test (`tests/unit/test_regressions.py`,
-  `tests/integration/test_security_regressions.py`), including a crafted merge that deleted
-  `qcal.toml`, quoted file names, OpenPGP signatures, sub-package shadowing and fabricated
-  run records.
+  was fixed and has a regression test (`tests/regression/`, `tests/security/`), including a
+  crafted merge that deleted `qcal.toml`, quoted file names, OpenPGP signatures, sub-package
+  shadowing and fabricated run records.
+- A Phase 0 peer review (gap analysis) reported 18 findings; each is fixed with a test named
+  after it in `tests/regression/test_peer_review_findings.py` or
+  `tests/security/test_guard_bypasses.py`. Writing those tests found one more guard bypass
+  (command substitution), also fixed. See `docs/changes/phase-0-hardening.md`.
 
 ## Ian's next steps
+
+The current list, with the tech-debt register, is in [NEXT_STEPS.md](NEXT_STEPS.md).
 
 1. Decide repository visibility before G0.
 2. Generate an SSH signing key, add it to `allowed_signers`, and in a signed commit set

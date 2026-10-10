@@ -224,3 +224,22 @@ def test_error_string_format(config: Config, repo: Path) -> None:
     (error,), _ = check_command_refs(config)
 
     assert str(error) == "AGENTS.md:2: `qcal nope --x` has no command 'nope' (in `qcal`)"
+
+
+def test_fences_of_skipped_languages_are_not_scanned() -> None:
+    text = "```mermaid\nqcal tooling\n```\n```bash\nqcal claims\n```\n```\nqcal x\n```\n"
+
+    refs = extract_refs(text, "a.md", markdown=True, skip_languages=frozenset({"mermaid"}))
+
+    assert [r.tokens for r in refs] == [("claims",), ("x",)]
+
+
+def test_skipped_fence_languages_are_configurable(
+    make_config: Callable[[str], Config], repo: Path
+) -> None:
+    write(repo, "docs/a.md", "```mermaid\nqcal tooling\n```\n")
+    assert check_command_refs(make_config("# defaults\n")) == ([], 0)
+    config = make_config("[agent_layer]\ncommand_ref_skip_fences = []\n")
+    (error,), checked = check_command_refs(config)
+    assert checked == 1
+    assert "has no command 'tooling'" in str(error)
