@@ -23,6 +23,7 @@ from typing import Any
 
 from qcal import gitutil
 from qcal.components import ComponentRegistry
+from qcal.config import load_defaults
 from qcal.log import get_logger
 
 _log = get_logger("registry.environment")
@@ -30,7 +31,7 @@ _log = get_logger("registry.environment")
 Collector = Callable[[Path], dict[str, Any]]
 COLLECTORS: ComponentRegistry[Collector] = ComponentRegistry("environment collector")
 _TEGRA_RELEASE = Path("/etc/nv_tegra_release")
-DEFAULT_COMMAND_TIMEOUT_S = 10.0  # mirrors registry.env_command_timeout_s in defaults.toml
+DEFAULT_COMMAND_TIMEOUT_S = float(load_defaults()["registry"]["env_command_timeout_s"])
 _command_timeout: ContextVar[float] = ContextVar(
     "qcal_env_command_timeout", default=DEFAULT_COMMAND_TIMEOUT_S
 )

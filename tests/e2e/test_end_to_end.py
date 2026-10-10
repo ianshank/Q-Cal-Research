@@ -91,7 +91,20 @@ def test_full_loop(repo: Path, tmp_path: Path) -> None:
     assert qcal(repo, "registry", "tables", "--check")[0] == cli.EXIT_FAILED
 
     # A rerun supersedes the old records; claims that cite superseded runs fail.
-    assert qcal(repo, "registry", "run-batch", "C-*", "--seeds", "0", "--rerun")[0] == 0
+    assert (
+        qcal(
+            repo,
+            "registry",
+            "run-batch",
+            "C-*",
+            "--seeds",
+            "0",
+            "--rerun",
+            "--reason",
+            "driver update",
+        )[0]
+        == 0
+    )
     assert qcal(repo, "registry", "index")[0] == 0
     (repo / "paper/tables/main.tex").write_text(table)
     code, findings = qcal(repo, "claims", "--json")

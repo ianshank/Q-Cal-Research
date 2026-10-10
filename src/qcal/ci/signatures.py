@@ -144,12 +144,14 @@ def blob_id(repo: Path, ref: str, path: str) -> str | None:
         return None
 
 
-def tree_entries(repo: Path, ref: str) -> dict[str, str]:
-    """Every path in ``ref``'s tree mapped to its object id (one ``ls-tree`` call, ``-z``)."""
+def tree_entries(repo: Path, ref: str, *, with_mode: bool = False) -> dict[str, str]:
+    """Every path in ``ref``'s tree mapped to its object id, or ``"<mode> <id>"`` with
+    ``with_mode`` (one ``ls-tree`` call, ``-z``)."""
     entries: dict[str, str] = {}
     for record in _nul_split(git(["ls-tree", "-r", "-z", "--full-tree", ref], repo)):
         meta, _, path = record.partition("\t")
-        entries[path] = meta.split()[2]
+        mode, _kind, oid = meta.split()
+        entries[path] = f"{mode} {oid}" if with_mode else oid
     return entries
 
 
@@ -164,10 +166,15 @@ class TreeIndex:
         self._repo = repo
         self._trees: dict[str, dict[str, str]] = {}
 
-    def blob(self, ref: str, path: str) -> str | None:
+    def entry(self, ref: str, path: str) -> str | None:
+        """``"<mode> <object id>"`` of ``path`` at ``ref``: content and executable bit."""
         if ref not in self._trees:
-            self._trees[ref] = tree_entries(self._repo, ref)
+            self._trees[ref] = tree_entries(self._repo, ref, with_mode=True)
         return self._trees[ref].get(path)
+
+    def blob(self, ref: str, path: str) -> str | None:
+        entry = self.entry(ref, path)
+        return entry.split(" ", 1)[1] if entry else None
 
     @property
     def refs_loaded(self) -> int:
@@ -235,7 +242,7 @@ def verify_signatures(
                     f
                     for f in merged
                     if policy.in_categories(f, categories)
-                    and trees.blob(sha, f) != trees.blob(base, f)  # base merges are fine
+                    and trees.entry(sha, f) != trees.entry(base, f)  # base merges are fine
                 ]
                 detail = "merge: judged by net content" if touched else "no protected paths"
                 report.verdicts.append(CommitVerdict(sha, touched, signed=True, detail=detail))
@@ -257,12 +264,13 @@ def verify_signatures(
         for path in changed_between(repo, fork_point, head):
             if not policy.in_categories(path, categories):
                 continue
-            target = trees.blob(head, path)
+            # Mode is content: a merge that only drops +x from a hook is a change too.
+            target = trees.entry(head, path)
             authors = [
                 sha
                 for sha in commits
-                if trees.blob(sha, path) == target
-                and (not parents[sha] or trees.blob(parents[sha][0], path) != target)
+                if trees.entry(sha, path) == target
+                and (not parents[sha] or trees.entry(parents[sha][0], path) != target)
             ]
             good = next((sha for sha in authors if signed(sha)[0]), None)
             detail = (

@@ -89,7 +89,7 @@ def test_missing_review_fails_in_enforce_and_reports_in_bootstrap(pr) -> None:
         ({"reviewed_sha": "f" * 40}, "is not a commit in this repository"),
         (
             {"blocking": [{"id": "B1", "finding": "x", "resolved_in": ""}]},
-            "blocking findings without resolved_in: ['B1']",
+            "blocking finding B1 has no resolved_in",
         ),
         ({"blocking": "B1"}, "blocking must be a list"),
     ],

@@ -72,7 +72,7 @@ Every tunable value lives in configuration, never in code. The layers are:
 | security | `make test-security` | bypass attempts on the guards and the signed-commit control |
 | e2e | `make test-e2e` | the documented workflow and `scripts/nightly.sh` through the real CLI |
 
-Coverage gate: 95% branch coverage (`pyproject.toml`).
+The branch-coverage gate is set in `pyproject.toml` (`fail_under`).
 
 On CI (`CI=true`), a test that needs `ssh-keygen` or `gpg` fails instead of skipping. Before
 opening a pull request, run `make pre-pr`; it adds gitleaks and the container suite when

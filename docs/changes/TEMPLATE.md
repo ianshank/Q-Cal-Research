@@ -14,7 +14,8 @@
 - [ ] parity tests green where a reference exists
 - [ ] no enforcement-surface edits without Ian's signed commit
 - [ ] RESEARCH_LOG.md entry; CLAIMS.md updated if numbers changed
-- [ ] cross-review file with reviewed_sha equal to the head and verdict approve
+- [ ] the other model's review at review/<reviewer>/<branch-slug>.md passes `qcal ci review-check`
+      (approve; reviewed_sha a commit of the PR; only review/ changed since)
 
 ## Tasks
 Scaffold (Claude Code) → hand-write (Ian) → parity tests → runs (`qcal registry run-batch`)

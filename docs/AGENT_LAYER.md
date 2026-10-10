@@ -80,7 +80,8 @@ What the guards decide, and their known limits:
 
 - `guard-paths` judges a path against the verified git work tree that holds it: the
   project, or a linked worktree whose `.git` file and `.git/worktrees/<name>/gitdir`
-  point at each other. A hand-made `.git` marker is ignored.
+  point at each other. A hand-made `.git` marker is ignored. Edit tools may not write git
+  internals (`.git/**`, any `.git` file). A symlink is also judged at its target's tree.
 - `guard-bash` is push-only by design (plan §3.4). It refuses:
   - force flags (including unambiguous abbreviations);
   - pushes to protected branches in any spelling: `HEAD`, `@`, `heads/`, `refs/heads/`;
@@ -88,10 +89,13 @@ What the guards decide, and their known limits:
     variables, or `--git-dir`;
   - command substitution in a push command;
   - variable or wildcard refspecs;
-  - pushes fed by `xargs`.
+  - pushes fed by `xargs`;
+  - `-c remote|push|branch|url|alias.*`;
+  - shell aliases. Persistent aliases are expanded through `git config`.
 
   It does not try to stop file writes from the shell; the signed-commit check covers
-  those.
+  those. It recognizes known spellings, not every possible one. The control is the branch
+  ruleset, which forbids direct pushes to the default branch.
 
 ## Deterministic validation: `qcal agent-layer`
 

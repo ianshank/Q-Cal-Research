@@ -205,9 +205,12 @@ def render_table(config: Config, spec: TableSpec, index: Sequence[Mapping[str, s
         " & ".join(headers + [c.header for c in spec.columns]) + r" \\",
         rule,
     ]
+    pooled_ok = config.bool_value("tables.allow_pooled_cells")
     for key in sorted(groups):
         rows = sorted(groups[key], key=lambda r: r["run_id"])
         _refuse_repeated_seeds(spec, key, rows)
+        if not pooled_ok:
+            _refuse_pooled_cells(spec, key, rows)
         cells = [latex_escape(k) for k in key]
         for column in spec.columns:
             column_key = f"{metric_prefix}{column.metric}"
@@ -237,6 +240,19 @@ def _refuse_repeated_seeds(
                 "--rerun`"
             )
         seen[pair] = row["run_id"]
+
+
+def _refuse_pooled_cells(
+    spec: TableSpec, key: tuple[str, ...], rows: Sequence[Mapping[str, str]]
+) -> None:
+    """One table row is one pre-registered cell: averaging across cells would mix evaluation
+    targets (for example Jetson INT8 with x86 FP32) under one number."""
+    cells = sorted({row.get("cell_id", "") for row in rows})
+    if len(cells) > 1:
+        raise TableDataError(
+            f"table {spec.name!r} row {key} pools cells {', '.join(cells)}; add the factors "
+            "that differ to rows or filter (or set tables.allow_pooled_cells)"
+        )
 
 
 def build_tables(config: Config, *, check: bool = False) -> list[TableResult]:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 from collections.abc import Mapping, Sequence
@@ -86,6 +87,17 @@ def _absolute(path: str, root: Path) -> str:
     return path if Path(path).is_absolute() else str(root / path)
 
 
+def trees_for(path: str, root: Path) -> list[Path]:
+    """The work tree holding ``path``, plus the one holding its symlink target if different.
+
+    Judging both means a symlink inside a worktree that points back into the project
+    (``wt/up -> /project``) is still judged by the project's policy.
+    """
+    lexical = root_for(path, root)
+    resolved = root_for(os.path.realpath(_absolute(path, root)), root)
+    return [lexical] if resolved == lexical else [lexical, resolved]
+
+
 def guard_paths(payload: HookPayload, *, config: Config, policy: Policy, root: Path) -> Decision:
     """Deny edit-tool writes to protected categories and clean-room-forbidden paths."""
     tool = payload.tool_name
@@ -102,14 +114,17 @@ def guard_paths(payload: HookPayload, *, config: Config, policy: Policy, root: P
         )
     deny = config.str_list("hooks.deny_categories")
     for path in paths:
-        verdict = policy.evaluate(_absolute(path, root), root_for(path, root))
-        if verdict.clean_room_hits:
-            return Decision.denied(f"{path} {policy.message_for('clean_room')}", "paths.clean_room")
-        blocked = verdict.blocked_by(deny)
-        if blocked:
-            return Decision.denied(
-                f"{path} {policy.message_for(blocked[0])}", f"paths.{blocked[0]}"
-            )
+        for tree in trees_for(path, root):
+            verdict = policy.evaluate(_absolute(path, root), tree)
+            if verdict.clean_room_hits:
+                return Decision.denied(
+                    f"{path} {policy.message_for('clean_room')}", "paths.clean_room"
+                )
+            blocked = verdict.blocked_by(deny)
+            if blocked:
+                return Decision.denied(
+                    f"{path} {policy.message_for(blocked[0])}", f"paths.{blocked[0]}"
+                )
     return Decision.allowed("paths.ok")
 
 
@@ -186,17 +201,18 @@ def deny_read(
     globs = [t for t in targets if t not in policy.category_names]
     patterns = globs + [p for c in categories for p in policy.patterns(c)]
     for path in paths:
-        decision = _deny_read_in(
-            path,
-            root_for(path, root),
-            root=root,
-            categories=categories,
-            globs=globs,
-            patterns=patterns,
-            policy=policy,
-        )
-        if decision is not None:
-            return decision
+        for tree in trees_for(path, root):
+            decision = _deny_read_in(
+                path,
+                tree,
+                root=root,
+                categories=categories,
+                globs=globs,
+                patterns=patterns,
+                policy=policy,
+            )
+            if decision is not None:
+                return decision
     return Decision.allowed("read.ok")
 
 

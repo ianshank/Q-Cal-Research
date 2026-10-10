@@ -8,11 +8,12 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
 
+from qcal.config import load_defaults
 from qcal.log import get_logger
 
 _log = get_logger("git")
 
-DEFAULT_TIMEOUT_S = 60.0  # mirrors git.timeout_s in defaults.toml
+DEFAULT_TIMEOUT_S = float(load_defaults()["git"]["timeout_s"])
 _timeout: ContextVar[float] = ContextVar("qcal_git_timeout", default=DEFAULT_TIMEOUT_S)
 
 

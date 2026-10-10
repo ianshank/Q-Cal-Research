@@ -185,8 +185,21 @@ def make_targets(makefile: Path) -> set[str]:
     return targets
 
 
+_MAKE_OPTS_WITH_VALUE = frozenset({"-C", "-f", "-I", "-o", "-W", "--directory", "--file"})
+
+
 def validate_make(targets: set[str], tokens: Sequence[str]) -> str | None:
+    """Targets of this Makefile only; ``make -C <dir>`` runs another Makefile and is skipped."""
+    if any(t in {"-C", "--directory"} or t.startswith(("-C", "--directory=")) for t in tokens):
+        return None
+    skip = False
     for word in tokens:
+        if skip:
+            skip = False
+            continue
+        if word in _MAKE_OPTS_WITH_VALUE:
+            skip = True
+            continue
         if word.startswith("-") or "=" in word or _is_placeholder(word):
             continue
         if word not in targets:

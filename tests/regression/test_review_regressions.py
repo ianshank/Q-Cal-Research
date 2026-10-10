@@ -107,7 +107,7 @@ def test_failed_rerun_does_not_supersede_a_good_run(repo: Path) -> None:
     )
     runner = _runner(repo, executor)
     first = runner.run_batch("C-a").completed[0]
-    rerun = runner.run_batch("C-a", rerun=True)
+    rerun = runner.run_batch("C-a", rerun=True, reason="flaky node")
     assert rerun.failed[0].supersedes is None
     assert runner.plan("C-a")[1][0][2] == f"already completed as {first.run_id}"
 
@@ -138,7 +138,9 @@ def test_clean_tree_requirement_ignores_registry_outputs(git_repo: Path) -> None
     assert len(batch.completed) == 2
     write(git_repo, "src/x.py", "x = 1\n")
     with pytest.raises(RunRefusedError, match="dirty"):
-        _runner(git_repo, FakeExecutor()).run("C-a", 0, supersedes=batch.completed[0].run_id)
+        _runner(git_repo, FakeExecutor()).run(
+            "C-a", 0, supersedes=batch.completed[0].run_id, reason="r"
+        )
 
 
 # --- red-team findings -------------------------------------------------------------------

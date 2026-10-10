@@ -18,3 +18,7 @@ mode = "bootstrap"
 # Dataset-card licenses accepted for public release (plan Appendix E.4). Ian confirms in DECISIONS.md.
 dataset_allowed = ["CC-BY-4.0", "Flickr-Terms-of-Use", "Cityscapes-Non-Commercial-Research", "Apache-2.0"]
 dataset_denied = ["BDD100K"]
+
+[agent_layer]
+# The guards must stay wired as PreToolUse hooks (checked by `qcal agent-layer`).
+required_pretooluse_hooks = ["guard-paths", "guard-bash"]

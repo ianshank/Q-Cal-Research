@@ -30,7 +30,7 @@ jobs:
       HEAD_REF: ${{ github.event.pull_request.head.ref }}
     steps:
       - name: Check out the base commit (trusted code and policy)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ github.event.pull_request.base.sha }}
           fetch-depth: 0

@@ -45,9 +45,70 @@ These edits touch the enforcement surface (`src/qcal/`, `.claude/`, `.github/`,
   - tool matchers must compile and name known tools;
   - SessionStart matchers must name valid sources.
 
+**Semantics of existing controls.** These change what passes or fails, so they are listed
+one by one. Each has a regression or security test named after its finding.
+- **Signatures.**
+  - The net-content rule diffs from `merge-base(base, head)`, so a branch that is only
+    behind base passes. Merge rollbacks are still caught.
+  - File mode counts as content, so a merge that drops `+x` from a hook fails.
+  - A base, head or policy ref that names no commit is a usage error (exit 2), not a
+    silent fallback to `bootstrap`.
+- **Cross-review (new `qcal ci review-check`, `[review]` config, run by `integrity.yml`).**
+  - The other model's review lives at `review/<reviewer>/<branch-slug>.md` and must be
+    approving.
+  - Its `reviewed_sha` is a commit of the PR, and only `review/**` changed after it.
+  - Every blocking finding is `resolved_in` a PR commit that the review covers.
+  - Reviewer names match exactly (`gemini` or `gemini-<model>`). Branch prefixes match
+    case-insensitively.
+  - Every file under `review/*/` is in the signed `cross_review` category.
+  - Report-only until `review.mode = "enforce"`.
+- **Registry.**
+  - One current ok run per (cell, seed).
+  - A rerun must supersede a current run of the same pair, with a recorded `--reason`
+    (`registry.require_supersede_reason`).
+  - `--seeds` is de-duplicated.
+  - An executor crash still writes a failed record.
+  - Audit fails on duplicates and on dangling or cross-pair supersedes.
+  - `registry-immutable` accepts only top-level `<run_id>.json` files whose supersedes
+    point at the same pair.
+- **Tables.** Rows and filters use factor columns only. A row may not pool cells
+  (`tables.allow_pooled_cells`). A repeated (cell, seed) is an error.
+- **Claims.**
+  - A tagged value must be exactly one number. A sign or digit touching it is an error.
+  - Every file in `paper/` and `README.md` is strict.
+  - Numbers with units, ranges and pairs are detected.
+  - `\url` and citation notes are scanned.
+  - A reference must name every current run of exactly one cell
+    (`claims.require_complete_runs`).
+- **Hooks.**
+  - The wrapper runs `python -P`. Argument errors follow the hook's fail mode.
+  - `guard-paths` judges paths in verified linked worktrees and at symlink targets.
+    Edit tools may not write git internals (new `git_internals` category).
+  - `guard-bash` refuses or resolves:
+    - `heads/` prefixes;
+    - `cd` and `-C`, including `cd -P` and subshells;
+    - `-c remote|push|branch|url|alias.*`;
+    - `GIT_DIR` and `--git-dir`;
+    - persistent and shell aliases;
+    - command substitution;
+    - variable and wildcard refspecs;
+    - `xargs`;
+    - punctuation runs such as `);`.
+
+    It also denies agents `qcal init --force`.
+- **Configuration instead of constants.** `git.timeout_s`, `executor.kind`,
+  `hooks.max_nesting_depth`, and every `[agent_layer]` list. Library defaults are read
+  from the packaged `defaults.toml`, not repeated as literals.
+
 **Agent layer**
 - New skills: `pre-pr` and `change-proposal`. Both are user-invoked only.
-- The SessionStart hook reports the guard mode and the signing mode.
+- The data-leakage-checker's Bash is restricted by a frontmatter `allow-only` hook.
+- The SessionStart hook reports the guard, signing and review modes.
+- `qcal agent-layer` also checks:
+  - hook names behind the wrapper;
+  - that the guards are wired as PreToolUse hooks (`required_pretooluse_hooks` in
+    `qcal.toml`);
+  - hooks declared in agent frontmatter.
 
 **Infrastructure**
 - `.github/dependabot.yml`.
@@ -76,6 +137,7 @@ These edits touch the enforcement surface (`src/qcal/`, `.claude/`, `.github/`,
 - [ ] Ian's signed commit for the enforcement-surface edits
 
 ## Tasks
-Implemented by Claude Code with a read-only peer-review subagent. Edits to `src/qcal/`
+Implemented by Claude Code with a read-only peer-review subagent and the project's
+`adversarial-reviewer` (verdict: block, six findings; all fixed with tests). Edits to `src/qcal/`
 were made through scripted patches, because the guard-paths hook blocks the Edit and
 Write tools there by design. The hook is feedback; Ian's signature is the control.

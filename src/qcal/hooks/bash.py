@@ -13,12 +13,15 @@ from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
+from qcal.config import load_defaults
 from qcal.gitutil import try_git
 from qcal.log import get_logger
 
 _log = get_logger("hooks.bash")
 
 _SEPARATORS = frozenset({";", "&&", "||", "|", "&", "|&", ";;", "(", ")"})
+# shlex groups adjacent punctuation (");", "&&(", ";("): any such run is a boundary.
+_SEPARATOR_CHARS = frozenset(";&|()")
 _GIT_OPTS_WITH_VALUE = frozenset(
     {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix"}
 )
@@ -28,7 +31,26 @@ _BRANCH_PREFIXES = ("refs/heads/", "heads/")
 # A directory argument the guard cannot resolve statically (variables, home, substitution).
 _UNRESOLVABLE_DIR = re.compile(r"[$`~*?\[]")
 _REPO_LOCATION_OPTS = frozenset({"--git-dir", "--work-tree"})
-DEFAULT_MAX_DEPTH = 3  # mirrors hooks.max_nesting_depth in defaults.toml
+DEFAULT_MAX_DEPTH = int(load_defaults()["hooks"]["max_nesting_depth"])
+# Environment variables that point git at another repository or configuration.
+_REPO_LOCATION_ENV = re.compile(r"^(?:GIT_DIR|GIT_WORK_TREE|GIT_CONFIG\w*|GIT_NAMESPACE)=")
+_ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+# `git -c <key>=...` keys that change what or where a push sends.
+_PUSH_CONFIG = re.compile(r"^(?:remote|push|branch|url|alias)\.", re.IGNORECASE)
+_CD_OPTIONS = frozenset({"-P", "-L", "-e", "-@"})
+# Git ignores aliases that shadow built-in commands, so only other names are looked up.
+_BUILTINS = frozenset(
+    {
+        "add", "am", "apply", "archive", "bisect", "blame", "branch", "cat-file", "checkout",
+        "cherry-pick", "clean", "clone", "commit", "commit-tree", "config", "describe", "diff",
+        "diff-tree", "fetch", "for-each-ref", "format-patch", "gc", "grep", "hash-object",
+        "help", "init", "log", "ls-files", "ls-remote", "ls-tree", "merge", "merge-base", "mv",
+        "notes", "pull", "read-tree", "rebase", "reflog", "remote", "reset", "restore",
+        "rev-list", "rev-parse", "revert", "rm", "shortlog", "show", "show-ref",
+        "sparse-checkout", "stash", "status", "submodule", "switch", "symbolic-ref", "tag",
+        "update-ref", "verify-commit", "version", "worktree", "write-tree",
+    }
+)  # fmt: skip
 _HEAD_ALIASES = frozenset({"HEAD", "@"})
 _REF_SUFFIX = re.compile(r"[~^@{].*$")
 _REDIRECT_CHARS = frozenset("<>&")
@@ -42,6 +64,7 @@ _DYNAMIC_REF = re.compile(r"[$`]")
 _ARGUMENT_FEEDERS = frozenset({"xargs", "parallel"})
 
 BranchResolver = Callable[[str | None], str | None]
+AliasResolver = Callable[[str | None, str], str | None]
 
 
 @dataclass(frozen=True)
@@ -56,6 +79,11 @@ def current_branch(cwd: str | None) -> str | None:
     return branch if branch and branch != "HEAD" else None
 
 
+def git_alias(cwd: str | None, name: str) -> str | None:
+    """The configured expansion of ``git <name>`` in ``cwd``, or ``None``."""
+    return try_git(["config", "--get", f"alias.{name}"], Path(cwd or ".")) or None
+
+
 def tokenize(command: str) -> list[list[str]]:
     """Split a command line into simple commands; raises ``ValueError`` if unbalanced.
 
@@ -68,7 +96,7 @@ def tokenize(command: str) -> list[list[str]]:
     lexer.commenters = ""
     segments: list[list[str]] = [[]]
     for token in lexer:
-        if token in _SEPARATORS:
+        if token in _SEPARATORS or (token and set(token) <= _SEPARATOR_CHARS):
             segments.append([])
         else:
             segments[-1].append(token)
@@ -102,6 +130,7 @@ def analyze(
     deny_flags: Sequence[str],
     cwd: str | None,
     resolve_branch: BranchResolver = current_branch,
+    resolve_alias: AliasResolver = git_alias,
     max_depth: int = DEFAULT_MAX_DEPTH,
     _depth: int = 0,
 ) -> PushFinding | None:
@@ -126,11 +155,21 @@ def analyze(
         return None
     protected = {b.lower() for b in protected_branches}
     here: str | None = cwd
+    # A cd inside ( ... ) does not outlive the subshell; the tokens no longer show where
+    # it ended, so any cd in a command with parentheses makes the directory unknown.
+    subshell = "(" in command or ")" in command
     for segment in segments:
         if segment[0] == "cd":
-            here = _change_dir(here, segment[1] if len(segment) > 1 else "~")
+            here = _UNRESOLVED if subshell else _change_dir(here, _cd_target(segment))
             continue
-        finding = _check_segment(segment, protected, deny_flags, here, resolve_branch)
+        finding = _check_segment(
+            segment,
+            protected,
+            deny_flags,
+            here,
+            resolve_branch=resolve_branch,
+            resolve_alias=resolve_alias,
+        )
         if finding is None and _depth < max_depth:
             finding = _check_nested(
                 segment,
@@ -138,6 +177,7 @@ def analyze(
                 deny_flags=deny_flags,
                 cwd=here,
                 resolve_branch=resolve_branch,
+                resolve_alias=resolve_alias,
                 max_depth=max_depth,
                 depth=_depth + 1,
             )
@@ -146,18 +186,31 @@ def analyze(
     return None
 
 
+def _cd_target(segment: list[str]) -> str:
+    words = [w for w in segment[1:] if w not in _CD_OPTIONS and w != "--"]
+    return words[0] if words else "~"
+
+
 def _check_segment(
     segment: list[str],
     protected: set[str],
     deny_flags: Sequence[str],
     here: str | None,
+    *,
     resolve_branch: BranchResolver,
+    resolve_alias: AliasResolver,
 ) -> PushFinding | None:
-    for invocation in _git_push_invocations(segment):
+    for invocation in _git_push_invocations(segment, here, resolve_alias):
         if invocation.fed:
             return PushFinding(
                 "git push run by xargs or a similar runner gets arguments the guard "
                 "cannot see; run the push directly",
+                "bash.push_unresolved",
+            )
+        if invocation.opaque:
+            return PushFinding(
+                f"git push through {invocation.opaque}, which the guard cannot follow; "
+                "run git push with an explicit branch",
                 "bash.push_unresolved",
             )
         finding = _check_push(
@@ -180,6 +233,7 @@ def _check_nested(
     deny_flags: Sequence[str],
     cwd: str | None,
     resolve_branch: BranchResolver,
+    resolve_alias: AliasResolver,
     max_depth: int,
     depth: int,
 ) -> PushFinding | None:
@@ -192,6 +246,7 @@ def _check_nested(
                 deny_flags=deny_flags,
                 cwd=cwd,
                 resolve_branch=resolve_branch,
+                resolve_alias=resolve_alias,
                 max_depth=max_depth,
                 _depth=depth,
             )
@@ -204,8 +259,9 @@ def _check_nested(
 class _PushInvocation:
     args: list[str]
     dirs: tuple[str, ...] = ()  # -C values, applied in order
-    elsewhere: bool = False  # --git-dir/--work-tree name another repository
+    elsewhere: bool = False  # --git-dir/--work-tree/GIT_DIR name another repository
     fed: bool = False  # xargs and friends append arguments the guard never sees
+    opaque: str = ""  # why the push cannot be followed (push config, a shell alias)
 
 
 _UNRESOLVED = "\0unresolved"  # sentinel cwd: the directory cannot be known statically
@@ -223,22 +279,65 @@ def _apply_dirs(here: str | None, dirs: Sequence[str]) -> str | None:
     return here
 
 
-def _git_push_invocations(segment: list[str]) -> Iterator[_PushInvocation]:
+def _git_push_invocations(
+    segment: list[str], here: str | None, resolve_alias: AliasResolver
+) -> Iterator[_PushInvocation]:
     indexes = [i for i, token in enumerate(segment) if PurePosixPath(token).name == "git"]
     for n, start in enumerate(indexes):
         end = indexes[n + 1] if n + 1 < len(indexes) else len(segment)
+        prefix = segment[:start]
         i = start + 1
         dirs: list[str] = []
-        elsewhere = False
+        config: dict[str, str] = {}
+        elsewhere = any(_REPO_LOCATION_ENV.match(t) for t in prefix if _ENV_ASSIGNMENT.match(t))
         while i < end and segment[i].startswith("-"):
             option = segment[i].split("=", 1)[0]
             elsewhere = elsewhere or option in _REPO_LOCATION_OPTS
             if segment[i] == "-C" and i + 1 < end:
                 dirs.append(segment[i + 1])
+            if segment[i] == "-c" and i + 1 < end:
+                key, _, value = segment[i + 1].partition("=")
+                config[key.lower()] = value
+            elif option == "--config-env":
+                config["config-env"] = segment[i]
             i += 2 if segment[i] in _GIT_OPTS_WITH_VALUE else 1
-        if i < end and segment[i] == "push":
-            fed = any(PurePosixPath(t).name in _ARGUMENT_FEEDERS for t in segment[:start])
-            yield _PushInvocation(segment[i + 1 : end], tuple(dirs), elsewhere, fed)
+        if i >= end:
+            continue
+        args = _expand_alias(segment[i], segment[i + 1 : end], config, here, resolve_alias)
+        if args is None:
+            continue
+        fed = any(PurePosixPath(t).name in _ARGUMENT_FEEDERS for t in prefix)
+        risky = sorted(k for k in config if _PUSH_CONFIG.match(k) or k == "config-env")
+        opaque = f"git -c {risky[0]}" if risky else ""
+        if args and args[0].startswith("!"):
+            opaque = f"a shell alias for git {segment[i]}"
+        yield _PushInvocation(args[1:], tuple(dirs), elsewhere, fed, opaque)
+
+
+def _expand_alias(
+    command: str,
+    rest: list[str],
+    config: dict[str, str],
+    here: str | None,
+    resolve_alias: AliasResolver,
+) -> list[str] | None:
+    """``["push", ...]`` for a push (directly or through an alias), else ``None``."""
+    if command == "push":
+        return [command, *rest]
+    if command in _BUILTINS or command.startswith("-"):
+        return None
+    expansion = config.get(f"alias.{command.lower()}")
+    if expansion is None and here != _UNRESOLVED:
+        expansion = resolve_alias(here, command)
+    if not expansion or "push" not in expansion:
+        return None
+    if expansion.lstrip().startswith("!"):
+        return ["!", *rest]  # a shell alias: opaque
+    try:
+        words = shlex.split(expansion)
+    except ValueError:
+        return ["!", *rest]
+    return [*words, *rest] if words and words[0] == "push" else ["!", *rest]
 
 
 def _check_push(
@@ -272,7 +371,9 @@ def _check_push(
             )
         return None
     for refspec in refspecs:
-        finding = _check_refspec(refspec, protected, cwd, resolve_branch)
+        finding = _check_refspec(
+            refspec, protected, _UNRESOLVED if elsewhere else cwd, resolve_branch
+        )
         if finding:
             return finding
     return None

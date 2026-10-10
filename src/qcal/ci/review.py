@@ -71,12 +71,21 @@ def branch_slug(branch: str) -> str:
 
 
 def required_reviewers(config: Config, branch: str) -> list[str]:
-    """The model that must review ``branch``: by branch prefix, else any configured reviewer."""
+    """The model that must review ``branch``: by branch prefix (case-insensitive, as branch
+    names on case-insensitive file systems are), else any configured reviewer. Review files
+    are signed (``cross_review`` category), so the fallback cannot be self-approved."""
+    name = branch.removeprefix("refs/heads/").lower()
     by_prefix = config.section("review.reviewer_by_branch_prefix")
     for prefix, reviewer in sorted(by_prefix.items(), key=lambda kv: -len(str(kv[0]))):
-        if branch.startswith(str(prefix)):
+        if name.startswith(str(prefix).lower()):
             return [str(reviewer)]
     return config.str_list("review.reviewers")
+
+
+def names_reviewer(named: str, reviewer: str) -> bool:
+    """``gemini`` or ``gemini-<model>`` names the gemini reviewer; ``geminiX`` does not."""
+    named, reviewer = named.strip().lower(), reviewer.lower()
+    return named == reviewer or named.startswith(f"{reviewer}-")
 
 
 def review_path(config: Config, reviewer: str, branch: str) -> str:
@@ -142,29 +151,44 @@ def _judge(
         return [f"{path}: no YAML frontmatter (see review/TEMPLATE.md)"]
     problems: list[str] = []
     named = str(meta.get("reviewer", ""))
-    if not named.lower().startswith(reviewer.lower()):
+    if not names_reviewer(named, reviewer):
         problems.append(f"{path}: reviewer {named!r} is not {reviewer!r}")
     wanted = config.str_value("review.approve_verdict")
     if str(meta.get("verdict", "")).strip().lower() != wanted:
         problems.append(f"{path}: verdict {meta.get('verdict')!r} is not {wanted!r}")
-    problems += _open_blocking(path, meta.get("blocking"))
-    problems += _currency(
-        repo, config, base=base, head=head, path=path, reviewed=str(meta.get("reviewed_sha", ""))
-    )
+    reviewed = str(meta.get("reviewed_sha", ""))
+    currency = _currency(repo, config, base=base, head=head, path=path, reviewed=reviewed)
+    problems += currency
+    if not currency:
+        problems += _open_blocking(repo, path, meta.get("blocking"), base=base, reviewed=reviewed)
     return problems
 
 
-def _open_blocking(path: str, blocking: Any) -> list[str]:
+def _open_blocking(repo: Path, path: str, blocking: Any, *, base: str, reviewed: str) -> list[str]:
+    """Every blocking finding names the pull-request commit that resolved it, and the
+    reviewer saw that commit (it is an ancestor of ``reviewed_sha``)."""
     if blocking in (None, []):
         return []
     if not isinstance(blocking, list):
         return [f"{path}: blocking must be a list"]
-    open_ids = [
-        str(item.get("id", i + 1)) if isinstance(item, dict) else str(i + 1)
-        for i, item in enumerate(blocking)
-        if not (isinstance(item, dict) and str(item.get("resolved_in") or "").strip())
-    ]
-    return [f"{path}: blocking findings without resolved_in: {open_ids}"] if open_ids else []
+    problems: list[str] = []
+    for number, item in enumerate(blocking, start=1):
+        ident = str(item.get("id", number)) if isinstance(item, dict) else str(number)
+        resolved = str(item.get("resolved_in") or "").strip() if isinstance(item, dict) else ""
+        if not resolved:
+            problems.append(f"{path}: blocking finding {ident} has no resolved_in")
+            continue
+        try:
+            commit = require_commit(repo, resolved, "resolved_in")
+        except ValueError:
+            problems.append(f"{path}: blocking finding {ident}: {resolved!r} is not a commit")
+            continue
+        if is_ancestor(repo, commit, base) or not is_ancestor(repo, commit, reviewed):
+            problems.append(
+                f"{path}: blocking finding {ident}: {resolved[:12]} is not a commit of this "
+                "pull request that the review covers"
+            )
+    return problems
 
 
 def _currency(
@@ -205,6 +229,7 @@ __all__ = [
     "check_review",
     "github_annotations",
     "is_ancestor",
+    "names_reviewer",
     "required_reviewers",
     "review_path",
 ]

@@ -385,7 +385,7 @@ def test_merge_environment_does_not_mutate_its_inputs() -> None:
 def test_run_records_supersession(config: Config, fake_executor: FakeExecutor) -> None:
     runner = make_runner(config, fake_executor)
     first = runner.run("C-a", 0)
-    assert runner.run("C-a", 0, supersedes=first.run_id).supersedes == first.run_id
+    assert runner.run("C-a", 0, supersedes=first.run_id, reason="x").supersedes == first.run_id
 
 
 def test_failed_rerun_does_not_supersede_the_previous_run(
@@ -394,7 +394,7 @@ def test_failed_rerun_does_not_supersede_the_previous_run(
     runner = make_runner(config, FakeExecutor([ExecutionResult(0, metrics={"AP": 1.0}), FAILED]))
     first = runner.run("C-a", 0)
     with caplog.at_level(logging.WARNING, logger="qcal"):
-        record = runner.run("C-a", 0, supersedes=first.run_id)
+        record = runner.run("C-a", 0, supersedes=first.run_id, reason="x")
     assert (record.status, record.supersedes) == ("failed", None)
     assert f"does not supersede {first.run_id}" in caplog.text
 
@@ -760,7 +760,7 @@ def test_run_batch_with_rerun_supersedes_previous_records(
 ) -> None:
     runner = make_runner(config, fake_executor)
     first = runner.run_batch("C-a")
-    second = runner.run_batch("C-a", rerun=True)
+    second = runner.run_batch("C-a", rerun=True, reason="x")
     assert [r.supersedes for r in second.completed] == [r.run_id for r in first.completed]
     current = effective(runner.store.load_all())
     assert {r.run_id for r in current} == {r.run_id for r in second.completed}
@@ -770,7 +770,7 @@ def test_failed_rerun_in_a_batch_keeps_the_previous_result_effective(config: Con
     runner = make_runner(config, FakeExecutor())
     (original,) = runner.run_batch("C-a", seeds=[0]).completed
     runner.executor = FakeExecutor([FAILED])
-    (failed,) = runner.run_batch("C-a", seeds=[0], rerun=True).failed
+    (failed,) = runner.run_batch("C-a", seeds=[0], rerun=True, reason="x").failed
     assert failed.supersedes is None
     assert original in effective(runner.store.load_all())
     _, skipped = runner.plan("C-a", seeds=[0])

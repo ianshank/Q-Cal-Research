@@ -105,7 +105,9 @@ class Runner:
         return [p.relative_to(root).as_posix() for p in paths if p.is_relative_to(root)]
 
     # -- single run ---------------------------------------------------------------
-    def run(self, cell_id: str, seed: int, *, supersedes: str | None = None) -> RunRecord:
+    def run(
+        self, cell_id: str, seed: int, *, supersedes: str | None = None, reason: str = ""
+    ) -> RunRecord:
         cell = self.experiments.cell(cell_id)
         allowed = self.experiments.seeds_for(cell)
         if seed not in allowed:
@@ -113,6 +115,15 @@ class Runner:
                 f"seed {seed} is not pre-registered for {cell_id} (allowed: {list(allowed)})"
             )
         self._check_not_duplicate(cell.id, seed, supersedes)
+        if (
+            supersedes
+            and not reason.strip()
+            and self.config.bool_value("registry.require_supersede_reason")
+        ):
+            raise RunRefusedError(
+                f"superseding {supersedes} needs a reason (--reason); a rerun without one "
+                "looks like rerunning until the result is favourable"
+            )
         root = self.config.root
         dirty = gitutil.is_dirty(root, self._output_paths())
         if self.config.bool_value("registry.require_clean_tree") and dirty is not False:
@@ -146,6 +157,8 @@ class Runner:
             "experiments_sha256": self.experiments.sha256,
             "executor": type(self.executor).__name__,
         }
+        if supersedes:
+            provenance["supersede_reason"] = reason.strip()
         _log.info("starting %s (cell=%s seed=%s)", run_id, cell.id, seed)
         try:
             result = self.executor.execute(spec)
@@ -246,6 +259,7 @@ class Runner:
         keep_going: bool = False,
         rerun: bool = False,
         dry_run: bool = False,
+        reason: str = "",
     ) -> BatchResult:
         planned, skipped = self.plan(patterns, seeds=seeds, rerun=rerun)
         limit = (
@@ -263,7 +277,7 @@ class Runner:
         if dry_run:
             return batch
         for item in planned:
-            record = self.run(item.cell.id, item.seed, supersedes=item.supersedes)
+            record = self.run(item.cell.id, item.seed, supersedes=item.supersedes, reason=reason)
             if record.status == self.config.str_value("registry.ok_status"):
                 batch.completed.append(record)
                 continue

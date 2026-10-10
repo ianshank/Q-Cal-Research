@@ -17,6 +17,8 @@ from qcal.registry.store import RegistryStore
 from tests.conftest import make_record, write
 
 BASE_TOML = '[registry]\nwrite_parquet = "never"\n'
+# These tests verify number matching; the complete-seed rule has its own tests.
+NO_COMPLETENESS = "require_complete_runs = false\n"
 SECTION = "paper/sections/results.tex"
 TABLE = "paper/tables/h1.tex"
 CLAIMS = "CLAIMS.md"
@@ -49,7 +51,12 @@ def summary(findings: Iterable[Finding]) -> list[tuple[int, str, str]]:
 @pytest.fixture
 def configure(make_config: Callable[[str], Config]) -> Callable[[str], Config]:
     def _configure(extra: str = "") -> Config:
-        return make_config(BASE_TOML + textwrap.dedent(extra))
+        body = textwrap.dedent(extra)
+        if "[claims]\n" in body:
+            body = body.replace("[claims]\n", "[claims]\n" + NO_COMPLETENESS, 1)
+        else:
+            body += "\n[claims]\n" + NO_COMPLETENESS
+        return make_config(BASE_TOML + body)
 
     return _configure
 
@@ -304,8 +311,18 @@ def test_strict_globs_flag_untagged_decimals(scan: Scan, relative: str) -> None:
 
 
 @pytest.mark.parametrize("relative", ["paper/main.tex", "paper/appendix/extra.tex", README])
-def test_untagged_decimal_outside_strict_globs_is_allowed(scan: Scan, relative: str) -> None:
-    assert scan(relative, "AP improves to 41.0 on COCO") == []
+def test_all_of_paper_and_the_readme_are_strict(scan: Scan, relative: str) -> None:
+    # CLAUDE.md rule 1 covers every number in paper/ and README.md, not only sections/.
+    findings = scan(relative, "AP improves to 41.0 on COCO")
+    assert [f.kind for f in findings] == ["untagged"]
+
+
+def test_files_outside_the_strict_globs_are_not_scanned_for_untagged_numbers(
+    configure: Callable[[str], Config],
+) -> None:
+    config = configure('[claims]\nstrict_tex_globs = ["paper/sections/**/*.tex"]\n')
+    write(config.root, "paper/main.tex", "AP improves to 41.0 on COCO\n")
+    assert check_claims(config) == []
 
 
 @pytest.mark.parametrize(
@@ -332,7 +349,6 @@ def test_tagged_value_is_not_also_reported_as_untagged(scan: Scan) -> None:
     [
         "We use 3 detectors, 5000 images and seed 0",
         "Table 2 and Section 4 use COCO 2017 with 3 seeds",
-        "speedup of 1.5x over FP32",
         "checkpoint yolox-0.5 from the zoo",
         "see eq:2.5 and https://example.org/1.5",
     ],

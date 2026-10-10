@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from qcal.config import Config
@@ -31,7 +31,6 @@ from qcal.policy import Policy
 from qcal.registry.index import read_index, superseded_ids
 
 _log = get_logger("integrity.claims")
-_NUMBER = re.compile(r"-?\d+(?:\.\d+)?")
 
 
 @dataclass(frozen=True)
@@ -54,6 +53,9 @@ class _Context:
     tolerance: float
     superseded_is_error: bool
     displayed: re.Pattern[str] = re.compile(r"\s*(?P<number>-?(?:\d+(?:\.\d+)?|\.\d+))\s*")
+    # cell id -> run ids of its current ok runs; empty disables the completeness rule
+    current_by_cell: Mapping[str, frozenset[str]] = field(default_factory=dict)
+    allow_pooled_cells: bool = False
 
 
 class _RefError(ValueError):
@@ -86,6 +88,37 @@ def _values(ref: str, metric: str, run_ids: Sequence[str], ctx: _Context) -> lis
     return values
 
 
+def _require_complete(ref: str, run_ids: Sequence[str], ctx: _Context) -> None:
+    """A reference names every current run of its cell (no seed cherry-picking), and one
+    cell unless pooling is allowed (no averaging across evaluation targets)."""
+    if not ctx.current_by_cell:
+        return
+    cells = sorted({ctx.rows[r].get("cell_id", "") for r in run_ids})
+    if len(cells) > 1 and not ctx.allow_pooled_cells:
+        raise _RefError(f"{ref} pools runs of cells {', '.join(cells)}")
+    expected = frozenset().union(*(ctx.current_by_cell.get(c, frozenset()) for c in cells))
+    if frozenset(run_ids) != expected:
+        missing = sorted(expected - set(run_ids))
+        extra = sorted(set(run_ids) - expected)
+        detail = f"leaves out {', '.join(missing)}" if missing else ""
+        if extra:
+            detail += ("; " if detail else "") + f"includes non-current {', '.join(extra)}"
+        raise _RefError(
+            f"{ref} must name every current run of {', '.join(cells)} ({detail}); "
+            f"use agg:<fn>:<metric>:{'+'.join(sorted(expected))}"
+        )
+
+
+def current_runs_by_cell(
+    index: Sequence[Mapping[str, str]], superseded: frozenset[str], ok_status: str
+) -> dict[str, frozenset[str]]:
+    cells: dict[str, set[str]] = {}
+    for row in index:
+        if row.get("status") == ok_status and row["run_id"] not in superseded:
+            cells.setdefault(row.get("cell_id", ""), set()).add(row["run_id"])
+    return {cell: frozenset(ids) for cell, ids in cells.items()}
+
+
 def verify_reference(ref: str, displayed: str, ctx: _Context) -> str | None:
     """Return an error message, or ``None`` when ``displayed`` matches the registry."""
     number = ctx.displayed.fullmatch(displayed)
@@ -96,6 +129,7 @@ def verify_reference(ref: str, displayed: str, ctx: _Context) -> str | None:
     try:
         agg, metric, run_ids = _parse_ref(ref)
         expected = aggregate(agg, _values(ref, metric, run_ids, ctx))
+        _require_complete(ref, run_ids, ctx)
     except _RefError as exc:
         return str(exc)
     except (KeyError, ValueError) as exc:
@@ -112,18 +146,31 @@ class _Rules:
     escapes: tuple[re.Pattern[str], ...]
     numbers: tuple[re.Pattern[str], ...]
     marker: str
+    # (prefix, suffix): text touching a tagged value that changes what the reader sees
+    adjacent: tuple[re.Pattern[str], re.Pattern[str]]
 
 
 def check_claims(config: Config) -> list[Finding]:
     root = config.root
     index = read_index(config.path("index_csv"))
+    superseded = superseded_ids(index)
     ctx = _Context(
         rows={row["run_id"]: row for row in index},
-        superseded=superseded_ids(index),
+        superseded=superseded,
         metric_prefix=str(config.get("registry.column_prefixes.metrics")),
         tolerance=config.float_value("claims.abs_tolerance"),
         superseded_is_error=config.bool_value("claims.superseded_is_error"),
         displayed=re.compile(config.str_value("claims.displayed_value_pattern")),
+        current_by_cell=(
+            current_runs_by_cell(index, superseded, config.str_value("registry.ok_status"))
+            if config.bool_value("claims.require_complete_runs")
+            else {}
+        ),
+        allow_pooled_cells=config.bool_value("tables.allow_pooled_cells"),
+    )
+    adjacent = (
+        re.compile(config.str_value("claims.value_prefix_pattern")),
+        re.compile(config.str_value("claims.value_suffix_pattern")),
     )
     policy = Policy.from_config(config)
     hatch_categories = config.str_list("claims.escape_hatch_categories")
@@ -147,6 +194,7 @@ def check_claims(config: Config) -> list[Finding]:
                 escapes,
                 numbers,
                 marker,
+                adjacent,
             ),
         ),
         (
@@ -158,6 +206,7 @@ def check_claims(config: Config) -> list[Finding]:
                 escapes,
                 numbers,
                 marker,
+                adjacent,
             ),
         ),
     ]
@@ -185,6 +234,17 @@ def _scan(
             error = verify_reference(match.group("ref"), match.group("value"), ctx)
             if error:
                 findings.append(Finding(path, lineno, "mismatch", error))
+            prefix, suffix = rules.adjacent
+            if prefix.search(line[: match.start()]) or suffix.match(line[match.end() :]):
+                findings.append(
+                    Finding(
+                        path,
+                        lineno,
+                        "mismatch",
+                        f"{match.group('ref')}: a sign or digit next to the tagged value "
+                        "changes the number the reader sees",
+                    )
+                )
         if not strict or (escapes_allowed and rules.marker and rules.marker in line):
             continue
         residue = rules.ref.sub(" ", line)

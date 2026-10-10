@@ -42,7 +42,9 @@
 | TD-5 | `_TEGRA_RELEASE` (`/etc/nv_tegra_release`) is a platform constant in the Jetson collector | None today; a non-standard L4T image would not be detected | Make it a collector option if a second Jetson image appears | S |
 | TD-6 | Five report dataclasses share only a protocol, not a base class | Small duplication in `to_dict` | Acceptable: the fields differ. Revisit if a sixth report appears. | S |
 | TD-7 | Local `docker build` in the cloud sandbox cannot reach `deb.debian.org` | The slim + apt path is verified only on CI | None needed in the repository. Allow the host in the environment's network settings to verify locally. | S |
-| TD-8 | Review files committed in the PR satisfy `review-check`. A reviewer could be impersonated by a commit authored as the other model. | The cross-review is only as strong as `review/gemini/**` protection | `review/gemini/**` is on the enforcement surface, so such a commit needs Ian's signature in enforce mode. Consider requiring the reviewer's own signing key. | M |
+| TD-8 | Review files are trusted once Ian signs them | Ian's signature vouches for the review, not the reviewer's identity | Every `review/*/**` file is signed (`cross_review`). Optionally require the reviewer's own signing key. | M |
+| TD-10 | Run records that were never committed can be deleted locally, so rerun-until-favourable is invisible to CI | Supersedes need a recorded reason, but uncommitted runs leave no trace | Commit records promptly (signed). Optionally upload every record to an append-only store from the executor. | M |
+| TD-11 | `guard-bash` recognizes known push spellings only | An unusual spelling can still push from an agent's shell | The ruleset forbidding direct pushes is the control; add spellings as they are found, each with a security test | S |
 | TD-9 | Parquet output is tested only in the dedicated CI job | The main matrix covers CSV only | Acceptable; the parquet job runs on every PR | S |
 
 Closed in this change: every finding of the Phase 0 peer review. Tests named

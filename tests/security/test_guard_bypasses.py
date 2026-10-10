@@ -100,7 +100,15 @@ def test_8_marker_pointing_at_a_real_worktree_entry_still_needs_the_back_pointer
     assert root_for(str(real / "x.py"), git_repo) == real
 
 
-# --- finding 9: every spelling of a push to a protected branch is caught ---------------------
+# --- finding 9: known spellings of a push to a protected branch are caught -------------------
+# The guard is feedback; the branch ruleset (no direct pushes to main) is the control.
+
+ALIASES = {
+    ("/work", "p"): "push",
+    ("/work", "pf"): "push --force",
+    ("/work", "shp"): "!git push origin HEAD:main",
+    ("/work", "lg"): "log --oneline",
+}
 
 
 def _finding(
@@ -112,8 +120,69 @@ def _finding(
         deny_flags=DENY_FLAGS,
         cwd=cwd,
         resolve_branch=lambda where: {"/work": branch, "/main": "main"}.get(where or ""),
+        resolve_alias=lambda where, name: ALIASES.get((where or "", name)),
     )
     return found.rule if found else None
+
+
+@pytest.mark.parametrize(
+    ("command", "rule"),
+    [
+        # adversarial review B5
+        ("git -c remote.origin.push=HEAD:refs/heads/main push origin", "bash.push_unresolved"),
+        ("git -c alias.p=push p origin HEAD:main", "bash.push_unresolved"),
+        ("git -c Push.Default=current push", "bash.push_unresolved"),
+        ("git --config-env=remote.origin.push=X push origin", "bash.push_unresolved"),
+        ("GIT_DIR=/main/.git git push origin HEAD", "bash.push_unresolved"),
+        ("GIT_WORK_TREE=/main git push origin @", "bash.push_unresolved"),
+        ("git --git-dir=/main/.git push origin HEAD", "bash.push_unresolved"),
+        ("cd -P /main && git push", "bash.push_implicit"),
+        ("cd -- /main && git push", "bash.push_implicit"),
+        ("(cd /work); git push", "bash.push_unresolved"),
+        # found while fixing B5: shlex groups ");" so the push was never seen
+        ("(cd /x); git push origin main", "bash.push_protected"),
+        ("true&&(git push origin main)", "bash.push_protected"),
+        # persistent aliases are resolved through git config
+        ("git p origin HEAD:main", "bash.push_protected"),
+        ("git pf origin claude/x", "bash.push_flag"),
+        ("git shp", "bash.push_unresolved"),
+    ],
+)
+def test_b5_configuration_aliases_and_directories_cannot_hide_a_push(
+    command: str, rule: str
+) -> None:
+    assert _finding(command) == rule
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git -c user.name=x push origin claude/x",
+        "git p origin claude/x",
+        "git lg",
+        "git status && git log",
+        "FOO=1 git push origin claude/x",
+    ],
+)
+def test_b5_ordinary_commands_and_aliases_pass(command: str) -> None:
+    assert _finding(command) is None
+
+
+def test_b5_aliases_are_looked_up_with_git_config(git_repo: Path) -> None:
+    from qcal.hooks.bash import git_alias
+
+    run_git(git_repo, "config", "alias.pp", "push origin HEAD:main")
+    assert git_alias(str(git_repo), "pp") == "push origin HEAD:main"
+    assert git_alias(str(git_repo), "missing") is None
+    found = analyze(
+        "git pp",
+        protected_branches=PROTECTED,
+        deny_flags=DENY_FLAGS,
+        cwd=str(git_repo),
+        resolve_branch=lambda _: "claude/x",
+    )
+    assert found is not None
+    assert found.rule == "bash.push_protected"
 
 
 @pytest.mark.parametrize(

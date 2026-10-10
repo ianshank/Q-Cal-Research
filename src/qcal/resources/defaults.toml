@@ -87,19 +87,27 @@ enforcement_surface = [
   "constraints*.txt",
   "uv.lock",
 ]
+# Every committed review is signed: an author cannot approve their own pull request, and
+# nobody can flip a verdict or a reviewed_sha after the fact without Ian's signature.
+cross_review = ["review/*/**"]
+# Edit tools never write git internals: a forged .git file or .git/worktrees entry would
+# otherwise move the root that path policy is judged against.
+git_internals = [".git", ".git/**", "**/.git", "**/.git/**"]
 
 [policy.messages]
 ian_only = "is Ian-only. Propose the change in AMENDMENTS.md or review/ instead."
 registry_only = "is written only by the qcal registry CLI."
 enforcement_surface = "is part of the enforcement surface; it needs a change proposal and Ian's signed commit."
 clean_room = "violates the clean-room rule recorded in DECISIONS.md."
+cross_review = "is a committed review; it lands only in Ian's signed commit."
+git_internals = "is git's own state; agents never edit it directly."
 
 [signing]
 mode = "bootstrap"         # bootstrap (report only) | enforce (fail CI)
 allowed_signers = "allowed_signers"
 # Run records are signed too: a result enters the record only through Ian's signed commit,
 # so a pull request cannot add a fabricated run or supersede an inconvenient one.
-signed_categories = ["ian_only", "enforcement_surface", "registry_only"]
+signed_categories = ["ian_only", "enforcement_surface", "registry_only", "cross_review"]
 # The signing principal in allowed_signers must equal the committer email.
 require_committer_match = true
 # Verify with this program regardless of the machine's git configuration.
@@ -127,7 +135,7 @@ log_file = ""
 project_dir_env = "CLAUDE_PROJECT_DIR"
 edit_tools = ["Edit", "Write", "MultiEdit", "NotebookEdit"]
 path_fields = ["file_path", "path", "notebook_path"]
-deny_categories = ["ian_only", "registry_only", "enforcement_surface"]
+deny_categories = ["ian_only", "registry_only", "enforcement_surface", "git_internals"]
 push_deny_flags = [
   "--force", "-f", "--force-with-lease", "--force-if-includes",
   "--mirror", "--all", "--delete", "-d", "--prune",
@@ -149,6 +157,7 @@ env_command_timeout_s = 10           # per external probe (nvidia-smi, nvpmodel)
 config_hash_inputs = ["configs/**/*.yaml", "configs/**/*.yml", "configs/**/*.toml"]
 max_runs_per_batch = 50
 require_clean_tree = false
+require_supersede_reason = true       # `--reason` is recorded in provenance.supersede_reason
 ok_status = "ok"
 failed_status = "failed"
 write_parquet = "auto"                # auto | always | never
@@ -191,19 +200,29 @@ missing_cell = "--"
 spec_glob = "*.toml"
 rule = "\\hline"
 float_placement = "t"
+allow_pooled_cells = false            # true lets one table row or reference average several cells
 
 [claims]
 tex_globs = ["paper/**/*.tex"]
-strict_tex_globs = ["paper/sections/**/*.tex", "paper/tables/**/*.tex"]
+# CLAUDE.md rule 1: every number in paper/, README.md and CLAIMS.md comes from the index.
+strict_tex_globs = ["paper/**/*.tex"]
 markdown_globs = ["README.md", "CLAIMS.md"]
-strict_markdown_globs = ["CLAIMS.md"]
+strict_markdown_globs = ["CLAIMS.md", "README.md"]
 markdown_ref_pattern = '(?P<value>-?\d+(?:\.\d+)?)\s*\((?P<ref>(?:run|agg):[^)\s]+)\)'
-number_pattern = '(?<![\w.:/-])-?(?:\d+\.\d+|\.\d+)(?!\w|\.\d)'
+# Units may follow (2.3ms, 1.5x); a range (0.03--0.05) or pair (0.04/41.2) shows each number;
+# "Apache-2.0" and "fig/1.5" (a word right before the - or /) are names, not results.
+number_pattern = '(?<![\w.:])(?<!\w[-/])-?(?:\d+\.\d+|\.\d+)(?!\.\d)'
 # A tagged value must be exactly one number (optionally in math mode or with a percent sign),
 # so "41.2 (vs. 97.3)" cannot smuggle a second, unverified number past the checker.
+# Text touching a tagged value that changes it: a sign before ($-$, -, +, \textminus, but
+# not the en-dash of a range), or a digit or point directly before or after.
+value_prefix_pattern = '(?:[\d.]|(?:(?<!-)[-+\u2212]|\$[-+\u2212]\$|\\textminus)\s*\$?)$'
+value_suffix_pattern = '\d|\.\d'
+# A reference must name every current run of its cell (agg over all seeds), never a subset.
+require_complete_runs = true
 displayed_value_pattern = '\s*\$?\s*(?P<number>-?(?:\d+(?:\.\d+)?|\.\d+))\s*\$?(?:\s|~|\\[,;:! ])*(?:\\?%)?\s*'
 # Whole numbers are flagged only when written as a result (percent, points, pp).
-integer_result_pattern = '(?<![\w.:/-])-?\d+\s*(?:\\?%|points?\b|pp\b|percentage points?\b)'
+integer_result_pattern = '(?<![\w.:])(?<!\w[-/])-?\d+\s*(?:\\?%|points?\b|pts?\b|pp\b|percentage points?\b|[x\u00d7](?!\w)|ms\b|fps\b)'
 # Escape hatches (the ignore marker and \qcalfixed{...}) work only in files of these policy
 # categories, so an agent cannot use them to hide a number in a file it may edit.
 escape_hatch_categories = ["ian_only"]
@@ -216,13 +235,18 @@ tex_ignore_patterns = [
   '\\(?:cite[tp]?|citealp|citeauthor|citeyear)\*?(?=\s*[\[{])',
   '\\definecolor\s*\{[^}]*\}\s*\{[^}]*\}\s*\{[^}]*\}',
   '\\(?:setlength|addtolength)\s*\{[^}]*\}\s*\{[^}]*\}',
-  '-?\d+(?:\.\d+)?(?:em|ex|pt|pc|cm|mm|in|bp|mu)\b',
+  # TeX lengths only as arguments ({4pt}, [width=3cm], =0.5em); "4.1pt" in prose is a result.
+  '(?<=[{\[=,])\s*-?\d*\.?\d+\s*(?:em|ex|pt|pc|cm|mm|in|bp|mu|sp|dd|cc)\b',
+  '\\renewcommand\s*\{?\\arraystretch\}?\s*\{[^}]*\}',
+  '\\(?:linespread|setstretch)\s*\{[^}]*\}',
+  'https?://[^\s}]+',
   '-?\d*\.\d+\s*\\(?:linewidth|textwidth|columnwidth|hsize|paperwidth|textheight)',
   'arXiv:\s*\d{4}\.\d{4,5}(?:v\d+)?',
   '\bv?\d+\.\d+\.\d+\b',
 ]
 markdown_ignore_patterns = [
   '`[^`]*`',
+  'https?://[^\s)>]+',
   'arXiv:\s*\d{4}\.\d{4,5}(?:v\d+)?',
   '\bv?\d+\.\d+\.\d+\b',
   '\]\([^)]*\)',
@@ -267,6 +291,7 @@ skill_allowed_keys = [
 ]
 forbidden_permission_modes = ["bypassPermissions"]
 hook_wrapper = "run_hook.sh"          # settings commands through it must name a real qcal hook
+required_pretooluse_hooks = []        # qcal.toml lists the guards this repository must wire
 skill_required_keys = ["description"]
 builtin_agents = ["general-purpose", "Explore", "Plan", "statusline-setup", "claude-code-guide"]
 # Tool policy: no agent or skill may hold a write-capable tool and a network tool at once.

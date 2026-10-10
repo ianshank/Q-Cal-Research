@@ -72,6 +72,14 @@ def tool_names(value: Any) -> list[str]:
     return names
 
 
+def _raw_tools(value: Any) -> list[str]:
+    """The entries ``tool_names`` parses, unparsed (same order, same filtering)."""
+    if value is None:
+        return []
+    items = value.split(",") if isinstance(value, str) else value
+    return [str(item).strip() for item in items if _TOOL_NAME.match(str(item))]
+
+
 @dataclass(frozen=True)
 class _ToolPolicy:
     write: frozenset[str]
@@ -219,7 +227,16 @@ def _check_agents(
             report.errors.append(f"{shown}: permissionMode {data['permissionMode']} is forbidden")
         _check_model(shown, data, policy, report)
         _check_bool_keys(shown, data, ("background",), report)
-        disallowed = set(tool_names(data.get("disallowedTools")))
+        # Only a bare name removes a tool; "Bash(curl:*)" narrows Bash but leaves it granted.
+        disallowed = {
+            name
+            for name, raw in zip(
+                tool_names(data.get("disallowedTools")),
+                _raw_tools(data.get("disallowedTools")),
+                strict=True,
+            )
+            if "(" not in raw
+        }
         _check_tools(
             shown, [t for t in tool_names(data.get("tools")) if t not in disallowed], policy, report
         )

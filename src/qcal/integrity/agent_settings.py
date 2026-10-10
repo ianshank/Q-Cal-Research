@@ -94,8 +94,11 @@ def _check_command(
             f"{shown}: {event} hook {command!r} should locate its script via $CLAUDE_PROJECT_DIR"
         )
         return None
-    script = root / match.group("rest").lstrip("/")
-    script_shown = script.relative_to(root)
+    script = (root / match.group("rest").lstrip("/")).resolve()
+    if not script.is_relative_to(root.resolve()):
+        report(f"{shown}: {event} hook {command!r} points outside the project")
+        return None
+    script_shown = script.relative_to(root.resolve())
     if not script.is_file():
         report(f"{shown}: {event} hook script {script_shown} is missing")
     elif not os.access(script, os.X_OK):
@@ -128,7 +131,25 @@ def check_settings(config: Config, report: Report) -> int:
     settings = _load_json(config.root / shown, shown, report)
     if settings is None:
         return 0
-    return check_hooks(config, settings.get("hooks") or {}, shown, report)
+    hooks = settings.get("hooks") or {}
+    _check_required_hooks(config, hooks, shown, report)
+    return check_hooks(config, hooks, shown, report)
+
+
+def _check_required_hooks(config: Config, hooks: Any, shown: Path, report: Report) -> None:
+    """The guards must be wired as PreToolUse hooks; elsewhere they would never block."""
+    if not isinstance(hooks, dict):
+        return
+    wired = {
+        wrapped_hook(config, str(hook.get("command", "")))
+        for group in hooks.get("PreToolUse") or []
+        if isinstance(group, dict)
+        for hook in group.get("hooks", [])
+        if isinstance(hook, dict)
+    }
+    for required in config.str_list("agent_layer.required_pretooluse_hooks"):
+        if required not in wired:
+            report(f"{shown}: required PreToolUse hook {required!r} is not wired")
 
 
 def check_hooks(config: Config, hooks: Any, shown: Path, report: Report) -> int:

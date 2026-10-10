@@ -37,7 +37,7 @@ def cmd_run(args: argparse.Namespace, config: Config, out: TextIO) -> int:
         _store(config),
         build_executor(config, args.executor or config.str_value("executor.kind")),
     )
-    record = runner.run(args.cell, args.seed, supersedes=args.supersedes)
+    record = runner.run(args.cell, args.seed, supersedes=args.supersedes, reason=args.reason)
     emit(out, record.to_dict(), as_json=args.json, text=f"{record.run_id}: {record.status}")
     return EXIT_OK if record.status == config.str_value("registry.ok_status") else EXIT_FAILED
 
@@ -56,6 +56,7 @@ def cmd_run_batch(args: argparse.Namespace, config: Config, out: TextIO) -> int:
         keep_going=args.keep_going,
         rerun=args.rerun,
         dry_run=args.dry_run,
+        reason=args.reason,
     )
     payload = {
         "planned": [f"{p.cell.id}@{p.seed}" for p in batch.planned],
@@ -150,6 +151,7 @@ def add_commands(sub: SubParsers) -> None:
     run.add_argument(
         "--supersedes", metavar="RUN_ID", help="replace this current run of the same cell and seed"
     )
+    run.add_argument("--reason", default="", help="why the run is replaced (recorded)")
     add_experiments_arg(run)
     add_json_flag(run)
     run.set_defaults(handler=cmd_run)
@@ -167,6 +169,7 @@ def add_commands(sub: SubParsers) -> None:
         "--rerun", action="store_true", help="re-run completed pairs; new records supersede old"
     )
     batch.add_argument("--dry-run", action="store_true")
+    batch.add_argument("--reason", default="", help="why --rerun replaces runs (recorded)")
     batch.add_argument("--executor", help="executor kind (default: executor.kind)")
     add_experiments_arg(batch)
     add_json_flag(batch)

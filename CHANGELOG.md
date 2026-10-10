@@ -98,12 +98,30 @@ Each fix has a regression test in `tests/regression/` or `tests/security/`.
   settings deny list now refuse it.
 - The weekly-review skill read signatures through host-dependent `git log %G?`.
 
+- Adversarial review of this round (verdict: block, six findings; each has a test in
+  `tests/security/test_review_and_worktree_bypasses.py`,
+  `tests/security/test_guard_bypasses.py` or
+  `tests/regression/test_adversarial_review_findings.py`):
+  - an author could approve their own pull request. Every review file is now signed;
+    reviewer names match exactly; `resolved_in` must be a reviewed commit of the PR;
+  - forged `.git` files could move the policy root. Edit tools may not write git
+    internals, and symlinks are judged at their target;
+  - numbers with units, ranges, pairs or an adjacent sign hid from the claims checker.
+    All of `paper/` and `README.md` are strict;
+  - references and table rows could pick seeds or pool cells;
+  - further push bypasses: `-c remote.*` and `alias.*`, persistent and shell aliases,
+    `GIT_DIR`, `cd -P`, subshells, and a tokenizer gap (`);`);
+  - a merge that only changed a file's mode passed the net-content rule;
+  - a narrowing `disallowedTools` entry removed the whole tool from the policy check.
+- Superseding a run needs a recorded `--reason`.
+
 ### Security
 
 - Gitleaks scans history and the working tree in CI with a pinned, checksum-verified
   binary.
 - `.gitleaks.toml`, the Gemini review directory and Dependabot configuration are on the
-  enforcement surface.
+  enforcement surface; every committed review (`review/*/**`) is signed.
+- GitHub Actions: `actions/checkout@v5` (the v4 runtime, Node 20, is deprecated).
 
 ## [0.1.0]: Phase 0 integrity layer
 
