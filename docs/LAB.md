@@ -123,7 +123,7 @@ make lab-status   # what still blocks a registered run (Ian's inputs, configurat
 make parity       # parity with fiveai/detection_calibration outputs (tests/parity/README.md)
 python -m qcal_lab splits import --annotations FILE --split val      # a published split
 python -m qcal_lab splits partition --annotations FILE --seed S --sizes val=N1,test=N2
-python -m qcal_lab splits verify --annotations FILE                  # manifests vs dataset
+python -m qcal_lab splits verify --annotations FILE                  # manifests vs dataset, and leakage
 ```
 
 The smoke test uses a synthetic dataset with no pixels. A dataset counts as the fixture

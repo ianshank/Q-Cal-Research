@@ -16,7 +16,7 @@ from qcal.registry.executor import sha256_file
 from qcal.reports import verdict
 from qcal_lab.config import LabConfig
 from qcal_lab.evaluation import HandwrittenMissingError, load_eval_loop
-from qcal_lab.parity import ParityError, load_cases
+from qcal_lab.parity import KINDS, ParityError, load_cases
 
 
 @dataclass
@@ -108,9 +108,12 @@ def build_status(qcal_config: Config, lab: LabConfig) -> StatusReport:
     except ParityError as exc:
         report.add("oracle parity cases", ok=False, detail=str(exc))
     else:
-        kinds = {k: sum(c.kind == k for c in cases) for k in ("calibrator", "metric")}
+        # Calibrator and metric parity are separate gates: each kind needs at least one case.
+        kinds = {k: sum(c.kind == k for c in cases) for k in KINDS}
         shown = ", ".join(f"{n} {k}" for k, n in kinds.items())
-        report.add("oracle parity cases", ok=bool(cases), detail=shown if cases else "none yet")
+        absent = [k for k, n in kinds.items() if not n]
+        detail = f"{shown}; none of kind {', '.join(absent)}" if absent else shown
+        report.add("oracle parity cases", ok=not absent, detail=detail if cases else "none yet")
     return report
 
 

@@ -244,3 +244,73 @@ def test_the_cells_command_refuses_a_reserved_factor(config) -> None:
     code = cli.main(["--root", str(config.root), "registry", "cells", "--emit"], out=out)
     assert code != 0
     assert "id:" not in out.getvalue()
+
+
+# --- fourth Copilot review (4b1e597) ---------------------------------------------------------
+
+
+def test_splits_verify_fails_on_missing_and_duplicated_manifests(repo: Path) -> None:
+    import io
+    import json
+
+    from qcal.config import load_config
+    from qcal_lab import cli
+    from qcal_lab.data.splits import manifest_path
+    from tests.conftest import write
+    from tests.lab_support import coco_doc
+
+    def verify() -> tuple[int, str]:
+        out = io.StringIO()
+        code = cli.main(
+            ["--root", str(repo), "splits", "verify", "--annotations", str(ann)], out=out
+        )
+        return code, out.getvalue()
+
+    ann = write(repo, "ann.json", json.dumps(coco_doc(images=10)))
+    sizes = "trt_calib_images=1,calibrator_fit_split=3,val=3,test=3"
+    partition = ["--root", str(repo), "splits", "partition", "--annotations", str(ann)]
+    assert cli.main([*partition, "--seed", "1", "--sizes", sizes], out=io.StringIO()) == 0
+    code, text = verify()
+    assert (code, text.splitlines()[-1]) == (cli.EXIT_OK, "leakage: PASS"), text
+
+    config = load_config(repo, environ={})
+    test_manifest = manifest_path(config, "test")
+    original = test_manifest.read_text()
+    first = next(line for line in original.splitlines() if not line.startswith("#"))
+    test_manifest.write_text(original + first + "\n")
+    code, text = verify()
+    assert code == cli.EXIT_FAILED
+    assert "duplicate ids in test: 1" in text
+
+    test_manifest.write_text(original)
+    assert verify()[0] == cli.EXIT_OK
+    manifest_path(config, "trt_calib_images").unlink()
+    code, text = verify()  # no overlap and no unknown id, but a split is missing
+    assert code == cli.EXIT_FAILED
+    assert "trt_calib_images: no manifest" in text
+    assert text.splitlines()[-1] == "leakage: FAIL"
+
+
+def test_parity_readiness_needs_every_kind_of_oracle_case(repo: Path) -> None:
+    import json
+
+    from qcal.config import load_config
+    from qcal_lab.config import load_lab_config
+    from qcal_lab.status import build_status
+
+    fixtures = repo / "tests/parity/fixtures"
+    fixtures.mkdir(parents=True)
+    oracle = {"repository": "fiveai/detection_calibration", "commit": "abc123"}
+
+    def parity_item() -> tuple[bool, str]:
+        report = build_status(load_config(repo, environ={}), load_lab_config(repo))
+        return next(
+            (ok, detail) for name, ok, detail in report.items if name == "oracle parity cases"
+        )
+
+    (fixtures / "iso.json").write_text(json.dumps({"kind": "calibrator", "oracle": oracle}))
+    ok, detail = parity_item()
+    assert not ok
+    assert detail == "1 calibrator, 0 metric; none of kind metric"
+    (fixtures / "laece.json").write_text(json.dumps({"kind": "metric", "oracle": oracle}))
+    assert parity_item() == (True, "1 calibrator, 1 metric")

@@ -88,7 +88,7 @@ Seven blocking findings, each fixed with tests (`tests/unit/test_lab_*.py`,
 
 - **B1. Leakage was checked by split name only.** Before any detector work, a run now
   requires `qcal leakage` PASS and refuses fit, select and evaluate splits that share an
-  image id. `splits verify` fails on overlaps.
+  image id. `splits verify` fails on overlaps, missing manifests and duplicated ids.
 - **B2. u_c was selected on the fit split.** Both thresholds are now selected on val only,
   and fit, select and evaluate must be three different splits (CLAUDE.md rule 3). The
   threshold-role settings are removed.

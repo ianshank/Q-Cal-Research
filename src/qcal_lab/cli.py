@@ -19,6 +19,7 @@ from qcal.config import ConfigError, find_root, load_config
 from qcal.integrity.leakage import check_leakage, read_manifest
 from qcal.log import configure_logging, get_logger
 from qcal.registry.experiments import ExperimentsError
+from qcal.reports import verdict
 from qcal_lab.calib.base import CalibrationError
 from qcal_lab.config import load_lab_config
 from qcal_lab.data.coco import DatasetError, load_coco
@@ -159,11 +160,14 @@ def _cmd_splits(args: argparse.Namespace, root: Path, out: IO[str]) -> int:
         failed |= bool(missing)
         state = f"{len(missing)} id(s) not in {args.annotations.name}" if missing else "ok"
         out.write(f"{split}: {len(listed)} ids, sha256 {split_digest(listed)}, {state}\n")
+    # The verdict is check_leakage's: a missing manifest or a duplicated id fails, as an overlap.
     leakage = check_leakage(config)
+    for split, count in leakage.duplicates.items():
+        out.write(f"duplicate ids in {split}: {count}\n")
     for pair, shared in leakage.overlaps.items():
-        failed = True
         out.write(f"overlap {pair}: {len(shared)} id(s), e.g. {', '.join(shared[:3])}\n")
-    return EXIT_FAILED if failed else EXIT_OK
+    out.write(f"leakage: {verdict(leakage.passed)}\n")
+    return EXIT_FAILED if failed or not leakage.passed else EXIT_OK
 
 
 def main(argv: Sequence[str] | None = None, *, out: IO[str] | None = None) -> int:

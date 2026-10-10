@@ -185,6 +185,13 @@ Each fix has a regression test in `tests/regression/` or `tests/security/`.
   - `make lab-status` verifies the checkpoint against its recorded sha256 and reports the
     image directory.
 
+  Fourth Copilot review (Phase 1 scaffold):
+  - `python -m qcal_lab splits verify` takes its verdict from `qcal leakage`: a missing
+    manifest or a duplicated id now fails, as an overlap already did, and duplicates are
+    reported;
+  - `make lab-status` counts oracle parity as ready only when both calibrator and metric
+    cases exist.
+
   Tests: `tests/regression/test_copilot_review_findings.py`.
 
 ### Security
