@@ -353,6 +353,9 @@ def _add(repo: Path, relative: str, data: dict[str, Any] | str) -> str:
     return run_git(repo, "rev-parse", "HEAD")
 
 
+REASON = {"supersede_reason": "rerun after driver update"}
+
+
 def _record(run_id: str, **overrides: Any) -> dict[str, Any]:
     return make_record(run_id, **overrides).to_dict()
 
@@ -381,8 +384,10 @@ def test_16_supersedes_must_name_an_existing_run_of_the_same_pair(
 ) -> None:
     repo, base = registry_repo
     _add(repo, "runs/registry/R1.json", _record("R1", seed=1))
-    _add(repo, "runs/registry/R2.json", _record("R2", supersedes="R1"))
-    head = _add(repo, "runs/registry/R3.json", _record("R3", supersedes="R-missing"))
+    _add(repo, "runs/registry/R2.json", _record("R2", supersedes="R1", provenance=REASON))
+    head = _add(
+        repo, "runs/registry/R3.json", _record("R3", supersedes="R-missing", provenance=REASON)
+    )
 
     violations = check_registry_immutable(repo, base, head).violations
 
@@ -395,7 +400,7 @@ def test_16_supersedes_must_name_an_existing_run_of_the_same_pair(
 def test_16_valid_supersede_passes(registry_repo: tuple[Path, str]) -> None:
     repo, base = registry_repo
     _add(repo, "runs/registry/R1.json", _record("R1"))
-    head = _add(repo, "runs/registry/R2.json", _record("R2", supersedes="R1"))
+    head = _add(repo, "runs/registry/R2.json", _record("R2", supersedes="R1", provenance=REASON))
 
     assert check_registry_immutable(repo, base, head).passed
 

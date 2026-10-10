@@ -20,7 +20,7 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from qcal.registry.experiments import Cell, ExperimentsError
+from qcal.registry.experiments import SCALAR_TYPES, Cell, ExperimentsError
 
 
 def cell_id(factors: Mapping[str, Any], *, prefix: str, length: int) -> str:
@@ -43,6 +43,9 @@ def expand_design(design: Mapping[str, Any], *, prefix: str, length: int) -> lis
     for name, values in axes.items():
         if not isinstance(values, list) or not values:
             raise ExperimentsError(f"design.axes.{name} must be a non-empty list")
+        bad = [v for v in values if not isinstance(v, SCALAR_TYPES)]
+        if bad:
+            raise ExperimentsError(f"design.axes.{name} values must be scalars, got {bad!r}")
     rules = design.get("rules", []) or []
     if not isinstance(rules, list):
         raise ExperimentsError("design.rules must be a list")
@@ -81,6 +84,9 @@ def _validate_rule(rule: Any) -> None:
         raise ExperimentsError(f"rule {dict(rule)!r} needs 'fix' or 'drop'")
     if "fix" in rule and not isinstance(rule["fix"], Mapping):
         raise ExperimentsError(f"rule {dict(rule)!r}: 'fix' must be a mapping")
+    bad = [k for k, v in (rule.get("fix") or {}).items() if not isinstance(v, SCALAR_TYPES)]
+    if bad:
+        raise ExperimentsError(f"rule {dict(rule)!r}: 'fix' values must be scalars ({bad})")
     if not isinstance(rule.get("drop", []) or [], list):
         raise ExperimentsError(f"rule {dict(rule)!r}: 'drop' must be a list")
 

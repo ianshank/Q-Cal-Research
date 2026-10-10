@@ -18,7 +18,8 @@ from qcal.config import Config
 from qcal.log import get_logger
 
 _log = get_logger("registry.experiments")
-_SCALARS = (str, int, float, bool, type(None))
+SCALAR_TYPES = (str, int, float, bool, type(None))  # what a cell factor may hold
+_SCALARS = SCALAR_TYPES
 
 
 class ExperimentsError(ValueError):
@@ -86,13 +87,15 @@ def parse_experiments(
     role = data.get(config.str_value("experiments.seed_role_key")) or config.str_value(
         "experiments.default_seed_role"
     )
+    if not isinstance(role, str):
+        raise ExperimentsError(f"seed_role must be a string, got {role!r}")
     cells = _parse_cells(config, data.get(config.str_value("experiments.cells_key")) or [])
     placeholders = tuple(
         find_placeholders(data, config.str_value("experiments.placeholder_marker"))
     )
     if placeholders:
         _log.warning("%s still has %d unfilled placeholder(s)", path.name, len(placeholders))
-    return Experiments(path, data, cells, seeds, str(role), sha256, placeholders)
+    return Experiments(path, data, cells, seeds, role, sha256, placeholders)
 
 
 def _parse_cells(config: Config, raw: Any) -> tuple[Cell, ...]:

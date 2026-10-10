@@ -6,7 +6,7 @@ Replaces the v1 ``ablation-auditor`` agent. It never proposes dropping cells.
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -104,6 +104,10 @@ def bad_supersedes(records: Sequence[RunRecord]) -> list[str]:
     for record in records:
         if not record.supersedes:
             continue
+        cycle = _supersede_cycle(record, by_id)
+        if cycle:
+            problems.append(f"supersede cycle {' -> '.join(cycle)}")
+            continue
         old = by_id.get(record.supersedes)
         if old is None:
             problems.append(f"{record.run_id} supersedes unknown {record.supersedes}")
@@ -113,6 +117,18 @@ def bad_supersedes(records: Sequence[RunRecord]) -> list[str]:
                 f"{old.run_id} ({old.cell_id}@{old.seed})"
             )
     return problems
+
+
+def _supersede_cycle(record: RunRecord, by_id: Mapping[str, RunRecord]) -> list[str]:
+    """The run ids of a cycle that starts at ``record``, or ``[]``."""
+    chain = [record.run_id]
+    current: RunRecord | None = record
+    while current is not None and current.supersedes:
+        if current.supersedes in chain:
+            return [*chain, current.supersedes] if current.supersedes == record.run_id else []
+        chain.append(current.supersedes)
+        current = by_id.get(current.supersedes)
+    return []
 
 
 def audit(config: Config, experiments: Experiments, records: Sequence[RunRecord]) -> AuditReport:

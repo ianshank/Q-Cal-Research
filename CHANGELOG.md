@@ -121,6 +121,13 @@ Each fix has a regression test in `tests/regression/` or `tests/security/`.
   - distinct cells sharing a content-addressed id are an error;
   - `allowed_signers` is no longer exempt from secret scanning.
 
+  Second Copilot review:
+  - supersede cycles are rejected by `registry-immutable` and fail the audit;
+  - `registry-immutable` requires `provenance.supersede_reason` when the base policy does;
+  - an aggregate reference may not name a run twice;
+  - design axis and rule `fix` values must be scalars;
+  - `seed_role` must be a string.
+
   Tests: `tests/regression/test_copilot_review_findings.py`.
 
 ### Security

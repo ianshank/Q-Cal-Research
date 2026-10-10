@@ -62,7 +62,13 @@ def check_registry_immutable(
             report.violations.append(f"{path}: status {status} (records are append-only)")
             continue
         report.added.append(path)
-        problem = _validate_added(repo, head, path, dirs)
+        problem = _validate_added(
+            repo,
+            head,
+            path,
+            dirs,
+            require_reason=config.bool_value("registry.require_supersede_reason"),
+        )
         if problem:
             report.violations.append(f"{path}: {problem}")
     _log.info(
@@ -81,16 +87,20 @@ def _registry_parent(path: str, dirs: list[str]) -> str | None:
     return None
 
 
-def _validate_added(repo: Path, head: str, path: str, dirs: list[str]) -> str | None:
+def _validate_added(
+    repo: Path, head: str, path: str, dirs: list[str], *, require_reason: bool
+) -> str | None:
     parent = _registry_parent(path, dirs)
     if parent is None:
         return "records live directly in the registry directory (the store ignores subfolders)"
     if not path.endswith(".json"):
         return "only <run_id>.json records belong in the registry directory"
-    return _validate_record(repo, head, path, parent)
+    return _validate_record(repo, head, path, parent, require_reason=require_reason)
 
 
-def _validate_record(repo: Path, head: str, path: str, parent: str) -> str | None:
+def _validate_record(
+    repo: Path, head: str, path: str, parent: str, *, require_reason: bool
+) -> str | None:
     text = show_file(head, path, repo)
     if text is None:
         return "cannot read added record"
@@ -101,21 +111,34 @@ def _validate_record(repo: Path, head: str, path: str, parent: str) -> str | Non
     if record.run_id != Path(path).stem:
         return f"run_id {record.run_id!r} does not match the file name"
     if record.supersedes:
+        reason = str(record.provenance.get("supersede_reason") or "").strip()
+        if require_reason and not reason:
+            return f"supersedes {record.supersedes!r} without provenance.supersede_reason"
         return _check_supersedes(repo, head, parent, record)
     return None
 
 
 def _check_supersedes(repo: Path, head: str, parent: str, record: RunRecord) -> str | None:
-    text = show_file(head, f"{parent}/{record.supersedes}.json", repo)
-    if text is None:
-        return f"supersedes {record.supersedes!r}, which is not in the registry"
-    try:
-        old = RunRecord.from_dict(json.loads(text))
-    except (json.JSONDecodeError, RecordError, TypeError) as exc:
-        return f"supersedes {record.supersedes!r}, which is not a valid record ({exc})"
-    if (old.cell_id, old.seed) != (record.cell_id, record.seed):
-        return (
-            f"supersedes {record.supersedes!r} of {old.cell_id}@{old.seed}, "
-            f"not {record.cell_id}@{record.seed}"
-        )
+    """The target is a record of the same pair, and following the chain never comes back:
+    two records that supersede each other would both vanish from the effective registry."""
+    chain = [record.run_id]
+    current: RunRecord = record
+    while current.supersedes:
+        target = current.supersedes
+        if target in chain:
+            return f"supersede cycle {' -> '.join([*chain, target])}"
+        text = show_file(head, f"{parent}/{target}.json", repo)
+        if text is None:
+            return f"supersedes {target!r}, which is not in the registry"
+        try:
+            old = RunRecord.from_dict(json.loads(text))
+        except (json.JSONDecodeError, RecordError, TypeError) as exc:
+            return f"supersedes {target!r}, which is not a valid record ({exc})"
+        if (old.cell_id, old.seed) != (record.cell_id, record.seed):
+            return (
+                f"supersedes {target!r} of {old.cell_id}@{old.seed}, "
+                f"not {record.cell_id}@{record.seed}"
+            )
+        chain.append(target)
+        current = old
     return None

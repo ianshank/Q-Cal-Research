@@ -67,7 +67,11 @@ def _parse_ref(ref: str) -> tuple[str, str, list[str]]:
     if parts[0] == "run" and len(parts) == 3:
         return "mean", parts[2], [parts[1]]
     if parts[0] == "agg" and len(parts) == 4:
-        return parts[1], parts[2], [r for r in parts[3].split("+") if r]
+        run_ids = [r for r in parts[3].split("+") if r]
+        repeated = sorted({r for r in run_ids if run_ids.count(r) > 1})
+        if repeated:
+            raise _RefError(f"{ref} names {', '.join(repeated)} more than once (weights a seed)")
+        return parts[1], parts[2], run_ids
     raise _RefError(
         f"malformed reference {ref!r}; expected run:<id>:<metric> or agg:<fn>:<metric>:<ids>"
     )
