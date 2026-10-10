@@ -9,7 +9,3 @@ useDefault = true
 description = "Environment-variable placeholders are references, not secrets"
 regexTarget = "match"
 regexes = ['''\$\{[A-Z_][A-Z0-9_]*\}''']
-
-[[allowlists]]
-description = "allowed_signers holds public SSH keys only"
-paths = ['''^allowed_signers$''']

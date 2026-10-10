@@ -13,6 +13,7 @@ RUN_ID_PATTERN: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 #: macro arguments, so they are limited to letters, digits and ``_ . @ -``.
 METRIC_NAME_PATTERN: Final = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.@-]*$")
 _REQUIRED: Final = ("run_id", "cell_id", "seed", "status", "started_at", "finished_at")
+_REQUIRED_STRINGS: Final = ("run_id", "cell_id", "status", "started_at", "finished_at")
 
 
 class RecordError(ValueError):
@@ -73,6 +74,8 @@ class RunRecord:
         validate_run_id(self.run_id)
         if self.supersedes is not None:
             validate_run_id(self.supersedes)
+            if self.supersedes == self.run_id:
+                raise RecordError(f"run {self.run_id} cannot supersede itself")
         for name, value in self.metrics.items():
             if not METRIC_NAME_PATTERN.fullmatch(name):
                 raise RecordError(f"metric name {name!r} must match {METRIC_NAME_PATTERN.pattern}")
@@ -121,6 +124,13 @@ class RunRecord:
         missing = [k for k in _REQUIRED if k not in data]
         if missing:
             raise RecordError(f"record is missing {', '.join(missing)}")
+        for key in _REQUIRED_STRINGS:
+            value = data[key]
+            if not isinstance(value, str) or not value.strip():
+                raise RecordError(f"{key} must be a non-empty string, got {value!r}")
+        seed_role = data.get("seed_role")
+        if seed_role is not None and not isinstance(seed_role, str):
+            raise RecordError(f"seed_role must be a string, got {seed_role!r}")
         seed = data["seed"]
         if isinstance(seed, bool) or not isinstance(seed, int):
             raise RecordError("seed must be an integer")
@@ -139,13 +149,13 @@ class RunRecord:
         known = set(cls.__dataclass_fields__) - {"extra"}
         duration = data.get("duration_s")
         return cls(
-            run_id=str(data["run_id"]),
-            cell_id=str(data["cell_id"]),
+            run_id=data["run_id"],
+            cell_id=data["cell_id"],
             seed=seed,
-            status=str(data["status"]),
-            started_at=str(data["started_at"]),
-            finished_at=str(data["finished_at"]),
-            seed_role=str(data.get("seed_role") or ""),
+            status=data["status"],
+            started_at=data["started_at"],
+            finished_at=data["finished_at"],
+            seed_role=seed_role or "",
             supersedes=supersedes or None,
             duration_s=float(duration) if isinstance(duration, int | float) else None,
             provenance=dict(data.get("provenance", {})),

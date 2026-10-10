@@ -114,6 +114,14 @@ Each fix has a regression test in `tests/regression/` or `tests/security/`.
   - a merge that only changed a file's mode passed the net-content rule;
   - a narrowing `disallowedTools` entry removed the whole tool from the policy check.
 - Superseding a run needs a recorded `--reason`.
+- Copilot review:
+  - a record may not supersede itself;
+  - required record fields must be non-empty strings (no `str()` coercion of `null`);
+  - undecodable record files are skipped as malformed;
+  - distinct cells sharing a content-addressed id are an error;
+  - `allowed_signers` is no longer exempt from secret scanning.
+
+  Tests: `tests/regression/test_copilot_review_findings.py`.
 
 ### Security
 

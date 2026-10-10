@@ -58,6 +58,12 @@ def expand_design(design: Mapping[str, Any], *, prefix: str, length: int) -> lis
         if factors is None:
             continue
         cid = cell_id(factors, prefix=prefix, length=length)
+        existing = seen.get(cid)
+        if existing is not None and dict(existing.factors) != factors:
+            raise ExperimentsError(
+                f"cell id {cid} is shared by {dict(existing.factors)} and {factors}; "
+                "raise experiments.cell_id_hash_length"
+            )
         seen.setdefault(cid, Cell(cid, factors))
     return sorted(seen.values(), key=lambda c: c.id)
 

@@ -71,7 +71,7 @@ class RegistryStore:
                 continue
             try:
                 record = self._load(path)
-            except (RecordError, json.JSONDecodeError, OSError) as exc:
+            except (RecordError, json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
                 if strict:
                     raise RecordError(f"{path}: {exc}") from exc
                 _log.warning("skipping malformed record %s: %s", path, exc)
