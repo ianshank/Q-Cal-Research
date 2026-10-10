@@ -90,6 +90,10 @@ Hooks are feedback; signed commits plus CI are the control (plan v2 §1.2).
 | Claims escape hatches | `qcal:ignore` and `\qcalfixed{}` work only in Ian-only files; whole numbers written as results (`7 points`, `3\%`) are flagged | red-team: agents could otherwise hide numbers in files they may edit |
 | Records unsigned, append-only | records are signed *and* append-only | red-team: an unsigned added record could fabricate or hide a result |
 | `X-MCP-Readonly` header | used, unverified | verify with a label write before relying on it; otherwise run the local server with `--read-only` |
+| Hydra configs (`configs/model|data|calib/`) | `configs/lab.toml` over `qcal_lab` defaults (TOML) | one configuration system; the registry refuses free-form overrides, Hydra's main feature |
+| `prior-art-scout` writes `review/prior-art/` | read-only agent; the caller saves the report | the tool policy forbids write and network tools together |
+| `tests/test_splits.py` | `tests/unit/test_lab_splits.py` | tests live in suites (unit, integration, ...) with markers |
+| two-threshold calibrator | the Alg. A.1/A.2 procedure around any calibrator | the paper's two thresholds (u_c, v_c) wrap Platt and isotonic alike |
 
 ## Commands
 
@@ -125,15 +129,19 @@ All values come from `src/qcal/resources/defaults.toml`, overridden by the repos
 
 ## Not implemented here, deliberately
 
-- **Science code.** The plan gates Phase 1 on G0 counsel clearance, and the Review's IP rule
-  keeps Q-Cal code private until then. **This repository is currently public.** Making it
-  private before any calibration code lands is Ian's call and is recommended.
+- **Science code.** The Phase 1 scaffold exists in `src/qcal_lab/` ([LAB.md](LAB.md)). It is
+  generic, published-method infrastructure with no results. The plan gates Phase 1 on G0
+  counsel clearance, and the Review's IP rule keeps Q-Cal code private until then. **This
+  repository is currently public.** Whether to make it private before more Phase 1 code
+  lands is Ian's call.
 - **Ian-only documents.** `EXPERIMENTS.yaml`, `DECISIONS.md`, `CLAIMS.md` and `RESEARCH_LOG.md`
   are templates only. Ian creates them with `qcal init` and fills them in by hand.
-- **Phase 1+ agents and skills.** `paper-reproducer`, `prior-art-scout`, `report-writer`,
-  `hf-publisher` and their skills enter with the gates they serve (plan §3.2, §3.3).
-- **Executor command.** `executor.command` is empty until Phase 1 provides an experiment
-  program; `qcal registry run` explains this instead of guessing.
+- **Later agents and skills.** `report-writer`, `hf-publisher` and their skills enter with
+  the gates they serve (plan §3.2, §3.3). `paper-reproducer` and `prior-art-scout` exist
+  (Phase 1).
+- **Ian's evaluation loop and metrics.** `src/qcal_lab/handwritten/` is Ian's. Until his
+  `eval_loop.py` exists, `python -m qcal_lab run` fails before any detector work, with a
+  message saying so.
 
 ## How the integrity layer was checked
 

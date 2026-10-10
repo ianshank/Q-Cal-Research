@@ -20,7 +20,7 @@ from qcal.registry.records import RunRecord
 REPO_ROOT = Path(__file__).resolve().parents[1]
 _ENV_PREFIXES = ("QCAL_", "QCAL__", "CLAUDE_")
 # Each top-level test directory is a suite with a marker of the same name: `pytest -m security`.
-SUITES = ("unit", "integration", "regression", "security", "e2e")
+SUITES = ("unit", "integration", "regression", "security", "e2e", "parity")
 # On CI a missing tool must fail, never skip: a silently skipped signing test proves nothing.
 REQUIRE_TOOLS_ENV = "CI"
 

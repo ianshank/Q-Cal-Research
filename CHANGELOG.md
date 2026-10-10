@@ -6,7 +6,48 @@ All notable changes to the `qcal` tooling and the agent layer. The format follow
 
 ## [Unreleased]
 
-Phase 0 hardening. Change proposal: `docs/changes/phase-0-hardening.md`.
+### Phase 1 scaffold
+
+Change proposal: `docs/changes/reproduce-kuzucu-eccv24-baselines.md`. Reference:
+`docs/LAB.md`. It holds generic, published-method infrastructure only, with no results. The
+plan gates Phase 1 on G0, which is not yet recorded.
+
+Added:
+- `qcal_lab`, the agent-owned science package:
+  - configuration: packaged defaults < `configs/lab.toml`, hashed into every run and never
+    read from the environment;
+  - a COCO loader;
+  - split manifests whose digests equal `qcal leakage`'s, and which refuse to replace a
+    different split;
+  - a synthetic fixture;
+  - deterministic prediction files with a content-addressed cache.
+- Calibrators following arXiv:2405.20459:
+  - Platt scaling (Eq. 8–9, soft IoU targets, a ≥ 0);
+  - isotonic regression (PAVA);
+  - the two-threshold class-wise procedure (Alg. A.1/A.2), with identity for empty
+    classes.
+- Detectors: a fixture detector, and an MMDetection 3.x adapter (lazy import; unverified
+  until the environment spike).
+- `python -m qcal_lab run`, the experiment program behind `executor.command`. It:
+  - refuses unknown factors and values;
+  - refuses an evaluate split that also fits or selects;
+  - fails before any detector work when Ian's evaluation loop is missing.
+- `make smoke`: six fixture cells through `qcal registry run-batch`, then index, audit
+  `--strict`, leakage, and a byte-for-byte re-run, in seconds.
+- `make lab-status` and `make parity`, with a `tests/parity/` harness for oracle outputs.
+- The agents `paper-reproducer` (worktree; writes only `src/qcal_lab`, `tests`, `configs`)
+  and `prior-art-scout` (read-only; Ian's documents read-denied; anonymous Hugging Face MCP).
+  The skills `/reproduce-check` and `/prior-art`.
+- A `smoke` CI job, the `parity` test suite, and the dataset card `docs/data/coco.md`.
+
+Changed:
+- `qcal.toml` sets `executor.command`.
+- mypy and coverage include `qcal_lab`.
+- `.mcp.json` adds the Hugging Face server (no token).
+
+### Phase 0 hardening
+
+Change proposal: `docs/changes/phase-0-hardening.md`.
 
 ### Added
 

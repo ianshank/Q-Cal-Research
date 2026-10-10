@@ -12,6 +12,7 @@ DOCKER_BUILD_ARGS ?=
 .PHONY: help venv install lint format typecheck test test-fast test-hooks test-unit \
         test-integration test-regression test-security test-e2e test-reports check validate \
         pre-pr integrity agent-layer index tables audit claims leakage licenses reproduce smoke \
+        parity lab-status \
         init lock unlock gitleaks docker-build docker-test nightly clean
 
 help: ## list targets
@@ -105,8 +106,14 @@ reproduce: ## index and tables are reproducible from committed records
 	$(QCAL) registry index --check
 	$(QCAL) registry tables --check
 
-smoke: ## end-to-end FP32 smoke run (arrives with Phase 1)
-	@echo "smoke: no experiment program exists yet; Phase 1 (after G0) adds it." >&2; exit 1
+smoke: ## the Phase 1 loop on a synthetic fixture through the real registry (< 5 min)
+	$(PYTHON) -m qcal_lab smoke
+
+parity: ## parity with the fiveai oracle outputs (tests/parity; skips until they exist)
+	$(PYTHON) -m pytest tests/parity -q $(PYTEST_ARGS)
+
+lab-status: ## what still blocks a registered Phase 1 run
+	$(PYTHON) -m qcal_lab status
 
 init: ## create Ian's document templates if missing
 	$(QCAL) init

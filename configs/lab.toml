@@ -1,0 +1,19 @@
+# Q-Cal science configuration: the repository layer over src/qcal_lab/resources/defaults.toml.
+#
+# The registry hashes this file into every run's config_hash (registry.config_hash_inputs),
+# so changing it changes what a run is. Agents maintain it. The choices that are Ian's to
+# make (DECISIONS.md) stay empty until he makes them; `python -m qcal_lab status` lists them.
+
+[datasets.id]
+# COCO 2017 val from the official download (docs/data/coco.md). Kept under data/raw/ (DVC),
+# never committed. Which images form each split is decided by the manifests in
+# data/manifests/, which Ian chooses: the paper's published minival/minitest, or a seeded
+# partition (`python -m qcal_lab splits`).
+annotations = "data/raw/coco/annotations/instances_val2017.json"
+images_dir = "data/raw/coco/val2017"
+
+[detectors.atss_r50]
+# Set by the environment spike (DECISIONS.md): MMDetection config, checkpoint and its sha256.
+config = ""
+checkpoint = ""
+checkpoint_sha256 = ""

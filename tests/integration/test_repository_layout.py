@@ -161,11 +161,13 @@ def test_ci_workflow_is_read_only_and_runs_the_suite() -> None:
         assert command in runs, command
 
 
-def test_mcp_config_is_read_only_github() -> None:
+def test_mcp_config_is_read_only() -> None:
     servers = json.loads((REPO_ROOT / ".mcp.json").read_text())["mcpServers"]
-    assert set(servers) == {"github"}
+    assert set(servers) == {"github", "huggingface"}
     assert servers["github"]["headers"]["X-MCP-Readonly"] == "true"
     assert "${" in servers["github"]["headers"]["Authorization"]
+    # prior-art-scout's hub access is anonymous: no token, so nothing can be published with it.
+    assert servers["huggingface"] == {"type": "http", "url": "https://huggingface.co/mcp"}
 
 
 def test_repository_policy_overrides(config) -> None:

@@ -50,6 +50,8 @@ C4Container
     ContainerDb(docs, "Ian-only documents", "EXPERIMENTS.yaml, DECISIONS.md, CLAIMS.md, RESEARCH_LOG.md", "Pre-registration and decisions")
     Container(paper, "Paper and tables", "paper/, configs/tables/", "LaTeX with run-tagged numbers")
     Container(policy, "Policy", "qcal.toml over defaults.toml", "Categories, modes, every tunable value")
+    Container(lab, "qcal_lab", "Python package, agent-owned", "Phase 1 science: data, splits, calibrators, detectors, experiment program, smoke")
+    Container(handwritten, "Ian's evaluation loop", "src/qcal_lab/handwritten/ (Ian-only)", "Matching targets, LRP objective, reported metrics")
   }
   System_Boundary(gh, "GitHub Actions") {
     Container(ci, "ci.yml", "head code", "lint, mypy, suites, integrity, gitleaks, container")
@@ -64,6 +66,9 @@ C4Container
   Rel(cli, paper, "Renders tables, verifies claims")
   Rel(cli, docs, "Reads pre-registration")
   Rel(ian, docs, "Writes, signs")
+  Rel(cli, lab, "executor.command runs python -m qcal_lab run")
+  Rel(lab, handwritten, "EvalLoop: targets, threshold_objective, metrics")
+  Rel(ian, handwritten, "Writes by hand")
   Rel(ci, cli, "Runs on head")
   Rel(integrity, cli, "Runs base version on head objects")
 ```
@@ -73,6 +78,7 @@ C4Container
 | Hook guards | feedback | Fail closed: the wrapper turns any crash into exit 2. Stdlib-only, so they run before the venv exists. |
 | qcal CLI | tool | Exit codes: 0 pass, 1 a check or run failed, 2 usage or configuration error. |
 | Run registry | append-only | One immutable JSON per run; `runs/index.csv` is derived and checked for staleness. |
+| qcal_lab | agent-owned | Runs only behind the executor contract; the registry, not `qcal_lab`, writes the record. See [LAB.md](../LAB.md). |
 | ci.yml | head code | Untrusted by design; it can only prove the head is self-consistent. |
 | integrity.yml | base code | `pull_request_target`; the head is fetched as git data and never executed. |
 
@@ -113,6 +119,31 @@ Extension points, all without editing the dispatchers:
 | A check report | implement `passed`, `to_dict()` and `render_text()` (`qcal.reports.CheckReport`) and return `emit_report(...)` |
 | A policy category | add `[policy.categories] name = [...]` in `qcal.toml` (signed) |
 
+## Level 3: components of the `qcal_lab` package
+
+```mermaid
+C4Component
+  title qcal_lab package: components
+  Container_Boundary(lab, "qcal_lab") {
+    Component(labcfg, "config", "qcal_lab.config", "defaults < configs/lab.toml; must be hashed by the registry")
+    Component(data, "data", "qcal_lab.data.coco, splits, fixture", "COCO ground truth, seeded manifests, synthetic fixture")
+    Component(preds, "predictions", "qcal_lab.predictions", "Deterministic JSON Lines; content-addressed cache")
+    Component(models, "models", "qcal_lab.models (DETECTORS)", "fixture detector, MMDetection adapter")
+    Component(calib, "calib", "qcal_lab.calib (CALIBRATORS), two_threshold, thresholds", "identity, Platt, isotonic; Alg. A.1/A.2")
+    Component(evalseam, "evaluation", "qcal_lab.evaluation", "EvalLoop protocol; loads Ian's module")
+    Component(exp, "experiment", "qcal_lab.experiment, cli", "Executor-contract program; plan and split-role checks")
+    Component(smoke, "smoke, status, parity", "qcal_lab.smoke, status, parity", "Fixture loop through the registry; readiness; oracle harness")
+  }
+  Rel(exp, data, "manifests, ground truth")
+  Rel(exp, models, "raw predictions")
+  Rel(exp, preds, "write, cache")
+  Rel(exp, calib, "train on fit/select, apply on evaluate")
+  Rel(calib, evalseam, "targets, threshold objective")
+  Rel(exp, evalseam, "metrics on evaluate only")
+  Rel(smoke, exp, "via qcal registry run-batch")
+  Rel(exp, labcfg, "every science setting")
+```
+
 ## Dynamic view: a pull request
 
 ```mermaid
@@ -147,5 +178,11 @@ sequenceDiagram
 - **Net content from the fork point.** The signature check diffs `merge-base(base, head)..head`, so a
   branch that is merely behind base passes. A merge that drops or rolls back protected
   content still fails.
+- **Science code behind the executor contract.** `qcal_lab` never writes the registry. A
+  result exists only as a record that `qcal registry run` wrote from the program's result
+  file. The fixture stand-ins refuse real datasets, so the smoke test cannot fabricate a
+  number.
+- **One configuration system.** The plan's Hydra configs became TOML layered the same way as
+  `qcal.toml`. The registry refuses free-form overrides, which are Hydra's main feature.
 - **Report-only bootstrap.** `signing.mode` and `review.mode` start as `bootstrap`; Ian
   switches each to `enforce` in a signed commit once keys and reviewers are in place.

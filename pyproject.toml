@@ -36,6 +36,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 qcal = ["resources/*.toml", "resources/templates/*", "py.typed"]
+qcal_lab = ["resources/*.toml", "py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -46,12 +47,13 @@ markers = [
   "regression: one test per fixed review or red-team finding (tests/regression)",
   "security: attacks on the guards and the signed-commit control (tests/security)",
   "e2e: the documented workflow through the real CLI (tests/e2e)",
+  "parity: comparisons with the fiveai oracle outputs (tests/parity)",
   "requires_ssh_keygen: needs ssh-keygen for commit signing",
 ]
 filterwarnings = ["error"]
 
 [tool.coverage.run]
-source = ["qcal"]
+source = ["qcal", "qcal_lab"]
 branch = true
 
 [tool.coverage.report]
@@ -96,7 +98,7 @@ python_version = "3.11"
 strict = true
 warn_unreachable = true
 mypy_path = "src"
-packages = ["qcal"]
+packages = ["qcal", "qcal_lab"]
 
 [[tool.mypy.overrides]]
 module = ["pyarrow", "pyarrow.*"]

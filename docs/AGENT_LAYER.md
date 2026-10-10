@@ -22,6 +22,8 @@ and so that every piece is validated deterministically by `qcal agent-layer`, no
 |---|---|---|---|
 | `adversarial-reviewer` | Read, Grep, Glob | opus | Hostile, read-only review in the `review/TEMPLATE.md` schema. The caller saves it to `review/claude/<branch-slug>.md`. |
 | `data-leakage-checker` | Read, Grep, Glob, Bash | sonnet | Runs `qcal leakage --json`, then greps for test-keyed selection. A frontmatter `PreToolUse` hook (`allow-only`) restricts Bash to that one command. |
+| `paper-reproducer` | Read, Grep, Glob, Edit, Write, Bash | sonnet | Phase 1. Implements published baselines in `src/qcal_lab`, citing equations, and writes oracle parity tests. It runs in its own worktree (`maxTurns: 40`). A `scope-write` hook limits writes to `src/qcal_lab`, `tests` and `configs`; the session guard still refuses `*/handwritten/*`. No network tool. |
+| `prior-art-scout` | Read, Grep, Glob, WebSearch; MCP `huggingface` | sonnet | Phase 1. Novelty re-check. It has no write tool; the caller saves its report to `review/prior-art/<date>.md`. A `deny-read ian_only` hook keeps Ian's private documents out of any prompt-injection path. The Hugging Face server is anonymous. |
 
 ### Skills (`.claude/skills/`)
 
@@ -30,6 +32,8 @@ and so that every piece is validated deterministically by `qcal agent-layer`, no
 | `/weekly-review <week>` | user or model | Gates, hours, WIP and amendments from Ian's documents. Signatures come from `qcal ci verify-signatures`, so the answer does not depend on host git config. |
 | `/pre-pr [--quick]` | user only (`disable-model-invocation`) | Runs `make pre-pr` (or `make validate`) and reports PASS, FAIL or SKIPPED per check. It never edits anything to get green. |
 | `/change-proposal <slug> <goal>` | user only | Drafts `docs/changes/<slug>.md` from the template, with enforcement-surface paths found by `qcal policy check`. |
+| `/reproduce-check` | user or model | Gate G1/K1 report: `make smoke`, `make lab-status`, the leakage checker, `make parity`, the audit. A skipped parity case is NOT ASSESSED. It never edits anything. |
+| `/prior-art <claim>` | user or model | Runs in a fork as `prior-art-scout`; returns a report for `review/prior-art/`. |
 
 ### Hooks (`.claude/settings.json`)
 
@@ -139,10 +143,9 @@ These are proposals, not implemented. Each needs a change proposal and, where it
 
 **Agents**
 
-- `parity-tester`: Phase 1. It may read `*/handwritten/*` but write only under `tests/`,
-  through a `scope-write tests` frontmatter hook.
-- `literature-scout`: read-only with WebFetch and WebSearch, and no write tools (the tool
-  policy enforces this). Every citation is verified or marked `[unverified]`.
+- `parity-tester` and `literature-scout`: done in Phase 1 as `paper-reproducer` (scoped
+  writes) and `prior-art-scout` (read-only).
+- `report-writer` and `hf-publisher`: Phase 5 (plan §3.2).
 
 **Hooks and loops**
 

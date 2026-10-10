@@ -3,8 +3,11 @@
 Research on detector calibration under INT8 edge quantization and domain shift, built on an
 integrity layer that makes every reported number traceable to a pre-registered, recorded run.
 
-> **Status: Phase 0 (integrity tooling).** No science code or results exist yet. Phase 1
-> (calibrators, LaECE metrics, quantization) starts after gate G0. See
+> **Status: Phase 1 scaffolding.** No results exist. The integrity layer (Phase 0) is in
+> place. The clean-room FP32 reproduction pipeline ([docs/LAB.md](docs/LAB.md)) runs end to
+> end on a synthetic fixture. It still waits on Ian's hand-written evaluation loop, the
+> environment spike, the split decision and the oracle outputs; `make lab-status` lists
+> them. The plan gates Phase 1 on G0. See
 > [docs/SDLC_IMPLEMENTATION_PLAN.md](docs/SDLC_IMPLEMENTATION_PLAN.md) and
 > [docs/NEXT_STEPS.md](docs/NEXT_STEPS.md).
 
@@ -17,9 +20,16 @@ integrity layer that makes every reported number traceable to a pre-registered, 
   - Leakage, license and agent-layer audits.
   - Claude Code hook guards.
   - Git-object-only CI checks: signed commits, an append-only registry, cross-review.
+- **`qcal_lab`**: the Phase 1 science package ([docs/LAB.md](docs/LAB.md)).
+  - COCO-format data, deterministic split manifests, a synthetic fixture.
+  - Platt scaling, isotonic regression and the two-threshold class-wise procedure of
+    Kuzucu et al. (arXiv:2405.20459).
+  - Detectors behind `qcal.protocols.Detector`: the fixture, and an MMDetection adapter.
+  - The experiment program that `qcal registry run` executes, `make smoke`, and an
+    oracle-parity harness.
 - **Agent layer**:
   - `CLAUDE.md` and `AGENTS.md`;
-  - two subagents and three skills;
+  - four subagents and five skills;
   - fail-closed hooks.
 
   See [docs/AGENT_LAYER.md](docs/AGENT_LAYER.md).
@@ -33,6 +43,8 @@ integrity layer that makes every reported number traceable to a pre-registered, 
 make venv install          # .venv with the dev extras
 make check                 # lint, mypy --strict, every test suite with the coverage gate, integrity
 make help                  # every target
+make smoke                 # Phase 1 loop on a synthetic fixture through the real registry
+make lab-status            # what still blocks a registered Phase 1 run
 ```
 
 The CLI (exit codes: 0 pass, 1 a check or run failed, 2 usage or configuration error):
@@ -70,7 +82,8 @@ Every tunable value lives in configuration, never in code. The layers are:
 | integration | `make test-integration` | real git, SSH-signed commits, subprocess executors, the hook wrapper |
 | regression | `make test-regression` | one test per fixed review, red-team or peer-review finding |
 | security | `make test-security` | bypass attempts on the guards and the signed-commit control |
-| e2e | `make test-e2e` | the documented workflow and `scripts/nightly.sh` through the real CLI |
+| e2e | `make test-e2e` | the documented workflow, `scripts/nightly.sh` and `make smoke` through the real CLI |
+| parity | `make parity` | `qcal_lab` and Ian's metrics against `fiveai/detection_calibration` outputs; skips, saying why, until those exist |
 
 The branch-coverage gate is set in `pyproject.toml` (`fail_under`).
 
@@ -81,8 +94,8 @@ those tools are installed.
 ## How changes merge
 
 1. Branch `claude/<slug>` (or `gemini/<slug>`), with a change proposal in `docs/changes/`.
-2. `ci.yml` runs on the head: lint, types, all suites, integrity checks, secret scan,
-   container build.
+2. `ci.yml` runs on the head: lint, types, all suites, integrity checks, `make smoke`,
+   secret scan, container build.
 3. `integrity.yml` runs the **base** branch's code on the head's git objects:
    - protected paths changed only in Ian's SSH-signed commits;
    - run records only added;

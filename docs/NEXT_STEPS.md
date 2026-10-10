@@ -22,14 +22,34 @@
 7. Resolve the README overlap with PR #1. Both PRs edit `README.md`; keep both sections
    (this PR's overview and PR #1's "Research review protocol").
 
-### Phase 1 (after G0)
+### Phase 1: what remains (`make lab-status` lists the open items)
 
-- Science code in `src/qcal_lab/`: detector wrappers, calibrators, LaECE metrics, and the
-  quantization pipeline, implementing the `qcal.protocols` shapes.
-- An experiment program that honours the executor's result-file contract, and a real
-  `make smoke`.
-- A container image with the CUDA and TensorRT stack (a separate Dockerfile target).
-- The roadmap skills, agents and hooks in [AGENT_LAYER.md](AGENT_LAYER.md#roadmap-opportunities-identified-in-the-gap-analysis).
+The scaffold is in place ([LAB.md](LAB.md)). Still open:
+
+**Ian (by hand)**
+1. **G0 and repository visibility.** Record G0 in `DECISIONS.md`. The scaffold landed before
+   it, on a public repository; decide whether to make the repository private (plan §1.6).
+2. **Environment spike.** Set `detectors.atss_r50.config`, `checkpoint` and
+   `checkpoint_sha256` in `configs/lab.toml`, and record the mmcv build in `DECISIONS.md`.
+3. **Evaluation loop.** Write `src/qcal_lab/handwritten/eval_loop.py` and `laece.py`.
+   `build(options)` returns an object with `targets`, `threshold_objective` and `metrics`;
+   [LAB.md](LAB.md#ians-evaluation-loop) describes the proposed interface. The metrics are
+   AP, LRP, D-ECE, LaECE0 and LaACE0.
+4. **Splits.** Choose the paper's published minival/minitest membership (from a CC BY-NC-SA
+   repository) or a fresh seeded partition. Write the four manifests with
+   `python -m qcal_lab splits`, and confirm `qcal leakage` reports PASS.
+5. **Oracle outputs.** Run `fiveai/detection_calibration` unmodified on the P40 and commit
+   its outputs as `tests/parity/fixtures/*.json` (schema in `tests/parity/README.md`).
+6. **Pre-registration and reference values.** Add the Phase 1 cells to `EXPERIMENTS.yaml`.
+   Record the published reference values in `docs/reference/kuzucu_eccv24.md` for
+   `/reproduce-check` gate 2.
+7. **Signatures.** Sign the enforcement-surface edits of this change (listed in
+   `docs/changes/reproduce-kuzucu-eccv24-baselines.md`).
+
+**Agents, once those exist**
+- `paper-reproducer`: make every calibrator parity case pass; report each deviation.
+- `/reproduce-check` before K1 (Nov 8); `/prior-art` monthly.
+- Phase 2: a CUDA/TensorRT container target; COCO-C and Foggy shifts; ONNX and TensorRT.
 
 ## Tech-debt register
 
@@ -46,6 +66,11 @@
 | TD-10 | Run records that were never committed can be deleted locally, so rerun-until-favourable is invisible to CI | Supersedes need a recorded reason, but uncommitted runs leave no trace | Commit records promptly (signed). Optionally upload every record to an append-only store from the executor. | M |
 | TD-11 | `guard-bash` recognizes known push spellings only | An unusual spelling can still push from an agent's shell | The ruleset forbidding direct pushes is the control; add spellings as they are found, each with a security test | S |
 | TD-9 | Parquet output is tested only in the dedicated CI job | The main matrix covers CSV only | Acceptable; the parquet job runs on every PR | S |
+| TD-12 | The two-threshold grid (`calibration.grid_*`) is not stated in the paper | Thresholds may differ from the oracle's | Confirm against the oracle outputs (paper-reproducer); record the grid in `configs/lab.toml` | S |
+| TD-13 | Isotonic duplicate-score merging follows scikit-learn's convention as remembered | Tiny differences on tied scores | The calibrator parity cases decide | S |
+| TD-14 | The MMDetection adapter is tested only against fakes | API drift would surface at the first real run | The environment spike runs one image end to end; add an integration test on the GPU runner | M |
+| TD-15 | Calibrators are pure Python | Slower than NumPy at about 10^5 detections | Acceptable now (seconds per fit); move to NumPy if profiling says so | S |
+| TD-16 | Platt scaling uses damped Newton; the paper uses L-BFGS | Same minimiser for a convex objective; iteration traces differ | Parity cases decide; the saved calibrator records iterations and convergence | S |
 
 Closed in this change: every finding of the Phase 0 peer review. Tests named
 `test_<finding>_*` in `tests/regression/test_peer_review_findings.py` and

@@ -7,6 +7,10 @@
         "Authorization": "Bearer ${GITHUB_TOKEN}",
         "X-MCP-Readonly": "true"
       }
+    },
+    "huggingface": {
+      "type": "http",
+      "url": "https://huggingface.co/mcp"
     }
   }
 }

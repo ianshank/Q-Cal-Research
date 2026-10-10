@@ -36,6 +36,8 @@ make test           # pytest with coverage gate
 qcal agent-layer    # validate agents, skills, hooks, .mcp.json
 qcal registry audit # pre-registered coverage
 qcal claims         # every number traces to a run
+make smoke          # Phase 1 loop on a synthetic fixture through the registry
+make lab-status     # what still blocks a registered Phase 1 run
 ```
 
 ## Compute
