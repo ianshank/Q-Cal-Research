@@ -1,8 +1,10 @@
 """Interfaces for the science components that Phase 1 implements.
 
 Only the shapes live here, so infrastructure, tests and later implementations can
-be wired by dependency injection. No detection-calibration logic is implemented in
-Phase 0: that work is gated on G0 (plan §5) and parts of it are Ian-only.
+be wired by dependency injection. Implementations belong in the agent-owned
+``qcal_lab`` package; everything under ``src/qcal/`` is the Ian-signed integrity layer.
+No detection-calibration logic is implemented in Phase 0: that work is gated on G0
+(plan §5) and parts of it are Ian-only.
 """
 
 from __future__ import annotations

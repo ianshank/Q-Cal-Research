@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import statistics
 import textwrap
-import tomllib
 from collections.abc import Callable, Sequence
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -271,7 +269,10 @@ def test_spec_must_name_its_required_keys(config: Config, missing: str) -> None:
 
 @pytest.mark.parametrize(
     "text",
-    ['name = "t"\nrows = []\ncolumns = [{metric = "AP"}]\n', 'name = "t"\nrows = ["d"]\ncolumns = []\n'],
+    [
+        'name = "t"\nrows = []\ncolumns = [{metric = "AP"}]\n',
+        'name = "t"\nrows = ["d"]\ncolumns = []\n',
+    ],
     ids=["no-rows", "no-columns"],
 )
 def test_spec_needs_a_row_key_and_a_column(config: Config, text: str) -> None:
@@ -285,48 +286,40 @@ def test_duplicate_table_names_are_rejected(config: Config) -> None:
         specs_from(config, SPEC)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=(KeyError, ValueError, TypeError),
-    reason="BUG: malformed column specs leak KeyError/ValueError/TypeError, not ConfigError",
-)
 @pytest.mark.parametrize(
     "columns",
     ['[{agg = "mean"}]', '[{metric = "AP", digits = "two"}]', '"AP"'],
     ids=["no-metric", "non-integer-digits", "columns-not-tables"],
 )
 def test_malformed_columns_are_configuration_errors(config: Config, columns: str) -> None:
-    with pytest.raises(ConfigError, match="main.toml"):
+    with pytest.raises(ConfigError, match=r"main\.toml"):
         specs_from(config, f'name = "t"\nrows = ["d"]\ncolumns = {columns}\n')
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=tomllib.TOMLDecodeError,
-    reason="BUG: unparseable spec raises TOMLDecodeError without the file name, not ConfigError",
-)
 def test_unparseable_spec_is_a_configuration_error_naming_the_file(config: Config) -> None:
-    with pytest.raises(ConfigError, match="broken.toml"):
+    with pytest.raises(ConfigError, match=r"broken\.toml"):
         specs_from(config, "name = \n", "broken.toml")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="BUG: a bare-string 'status'/'rows' is split into characters by tuple()",
-)
 @pytest.mark.parametrize(
-    ("line", "attribute", "expected"),
+    ("text", "attribute", "expected"),
     [
-        ('status = "failed"', "statuses", ("failed",)),
-        ('rows = "detector"', "rows", ("factor.detector",)),
+        (
+            'name = "t"\nrows = ["detector"]\nstatus = "failed"\ncolumns = [{metric = "AP"}]\n',
+            "statuses",
+            ("failed",),
+        ),
+        (
+            'name = "t"\nrows = "detector"\ncolumns = [{metric = "AP"}]\n',
+            "rows",
+            ("factor.detector",),
+        ),
     ],
     ids=["status", "rows"],
 )
 def test_bare_strings_are_one_value_or_rejected(
-    config: Config, line: str, attribute: str, expected: tuple[str, ...]
+    config: Config, text: str, attribute: str, expected: tuple[str, ...]
 ) -> None:
-    text = f'name = "t"\nrows = ["detector"]\ncolumns = [{{metric = "AP"}}]\n'
-    text = text.replace('rows = ["detector"]', line) if line.startswith("rows") else line + "\n" + text
     try:
         (loaded,) = specs_from(config, text)
     except ConfigError:
@@ -385,21 +378,14 @@ def test_column_headers_are_used_verbatim(config: Config) -> None:
     assert "detector & LaECE$_0$ \\\\" in text.splitlines()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="BUG: headers derived from factor/metric names are not LaTeX-escaped",
-)
 @pytest.mark.parametrize(
     ("table", "expected"),
     [
         (spec(rows=("factor.threshold_regime",)), r"threshold\_regime & AP \\"),
-        (spec(ColumnSpec("latency_p50_ms", "mean", 2, "latency_p50_ms")), r"detector & latency\_p50\_ms \\"),
     ],
-    ids=["row-header", "column-header"],
+    ids=["row-header"],
 )
-def test_default_headers_are_latex_escaped(
-    config: Config, table: TableSpec, expected: str
-) -> None:
+def test_default_headers_are_latex_escaped(config: Config, table: TableSpec, expected: str) -> None:
     assert expected in render_table(config, table, []).splitlines()
 
 
@@ -563,10 +549,9 @@ def test_filters_select_by_factor_value(
         {**row("R2", precision="int8", AP=1.0), "factor.scale": "0.5"},
         {**row("R3", precision="fp16", AP=1.0), "factor.tf32": "true"},
     ]
-    table = spec(ColumnSpec("AP", "count", 0, "n"), rows=("factor.detector",), filters=filters)
-    rendered = body(render_table(config, table, index))
-    used = rendered[0].split("agg:count:AP:")[1].split("}")[0].split("+") if rendered else []
-    assert used == expected_runs
+    table = spec(rows=("run_id",), filters=filters)
+    selected = [line.split(" & ")[0] for line in body(render_table(config, table, index))]
+    assert selected == expected_runs
 
 
 def test_boolean_filter_matches_records_written_through_the_index(config: Config) -> None:
@@ -664,11 +649,27 @@ def test_build_tables_uses_configured_directories(
     assert result.path.is_file()
 
 
-def test_build_tables_reads_the_configured_index(
-    make_config: Callable[[str], Config], tmp_path: Path
-) -> None:
+def test_build_tables_reads_the_configured_index(make_config: Callable[[str], Config]) -> None:
     config = make_config('[paths]\nindex_csv = "elsewhere/index.csv"\n')
     build_index(config, make_record("R1"))
     write(config.root, "configs/tables/main.toml", SPEC)
     (result,) = build_tables(config)
     assert "run:R1:LaECE0" in result.path.read_text("utf-8")
+
+
+def test_default_column_header_is_escaped_metric_name(config: Config) -> None:
+    text = SPEC.replace('metric = "LaECE0"', 'metric = "latency_p50_ms"')
+    (loaded,) = specs_from(config, text)
+    assert r"detector & latency\_p50\_ms \\" in render_table(config, loaded, []).splitlines()
+
+
+def test_explicit_headers_are_raw_latex(config: Config) -> None:
+    text = SPEC.replace('metric = "LaECE0"', 'metric = "LaECE0"\nheader = "LaECE$_0$"')
+    (loaded,) = specs_from(config, text)
+    assert "detector & LaECE$_0$ \\\\" in render_table(config, loaded, []).splitlines()
+
+
+@pytest.mark.parametrize("name", ["../escape", "a/b", "/abs", "", ".hidden", "x y"])
+def test_table_names_cannot_escape_the_tables_directory(config: Config, name: str) -> None:
+    with pytest.raises(ConfigError, match="table name"):
+        specs_from(config, SPEC.replace('name = "main"', f'name = "{name}"'))

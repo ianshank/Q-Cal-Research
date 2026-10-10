@@ -10,6 +10,7 @@ Stdlib-only.
 
 from __future__ import annotations
 
+import re
 import tomllib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -22,6 +23,7 @@ from qcal.log import get_logger
 from qcal.registry.index import read_index, render_value, superseded_ids
 
 _log = get_logger("registry.tables")
+_TABLE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 _LATEX_ESCAPES = {
     "\\": r"\textbackslash{}",
     "&": r"\&",
@@ -79,7 +81,10 @@ def load_specs(config: Config) -> list[TableSpec]:
         return []
     specs: list[TableSpec] = []
     for path in sorted(directory.glob(config.str_value("tables.spec_glob"))):
-        data = tomllib.loads(path.read_text("utf-8"))
+        try:
+            data = tomllib.loads(path.read_text("utf-8"))
+        except tomllib.TOMLDecodeError as exc:
+            raise ConfigError(f"{path}: cannot parse table spec: {exc}") from exc
         entries = data.get("table", [data])
         if not isinstance(entries, list):
             raise ConfigError(f"{path}: 'table' must be an array of tables")
@@ -91,33 +96,57 @@ def load_specs(config: Config) -> list[TableSpec]:
     return specs
 
 
+def _as_tuple(value: Any) -> tuple[Any, ...]:
+    """A scalar is one value, never a sequence of characters."""
+    if isinstance(value, list | tuple):
+        return tuple(value)
+    return (value,)
+
+
 def _parse_spec(config: Config, data: Mapping[str, Any], origin: Path) -> TableSpec:
     try:
-        name = str(data["name"])
-        rows = tuple(_column_name(config, "factors", r) for r in data["rows"])
-        raw_columns = data["columns"]
+        return _build_spec(config, data, origin)
+    except ConfigError:
+        raise
     except KeyError as exc:
         raise ConfigError(f"{origin}: table spec is missing {exc}") from None
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise ConfigError(f"{origin}: malformed table spec: {exc}") from exc
+
+
+def _build_spec(config: Config, data: Mapping[str, Any], origin: Path) -> TableSpec:
+    name = str(data["name"])
+    if not _TABLE_NAME.fullmatch(name):
+        raise ConfigError(f"{origin}: table name {name!r} must match {_TABLE_NAME.pattern}")
+    rows = tuple(_column_name(config, "factors", str(r)) for r in _as_tuple(data["rows"]))
+    raw_columns = data["columns"]
+    if not isinstance(raw_columns, list) or not all(isinstance(c, Mapping) for c in raw_columns):
+        raise ConfigError(f"{origin}: table {name!r}: 'columns' must be an array of tables")
     columns = tuple(
         ColumnSpec(
             metric=str(c["metric"]),
             agg=str(c.get("agg", config.str_value("tables.default_agg"))),
             digits=int(c.get("digits", config.int_value("tables.default_digits"))),
-            header=str(c.get("header", c["metric"])),
+            header=str(c["header"]) if "header" in c else latex_escape(str(c["metric"])),
         )
         for c in raw_columns
     )
     if not rows or not columns:
         raise ConfigError(f"{origin}: table {name!r} needs at least one row key and one column")
+    filters = data.get("filter", {})
+    if not isinstance(filters, Mapping):
+        raise ConfigError(f"{origin}: table {name!r}: 'filter' must be a table")
     return TableSpec(
         name=name,
         rows=rows,
         columns=columns,
-        row_headers=tuple(str(h) for h in data.get("row_headers", [])),
+        row_headers=tuple(str(h) for h in _as_tuple(data.get("row_headers", []))),
         caption=str(data.get("caption", "")),
         label=str(data.get("label", "")),
-        filters={_column_name(config, "factors", k): v for k, v in data.get("filter", {}).items()},
-        statuses=tuple(data.get("status", [config.str_value("registry.ok_status")])),
+        filters={_column_name(config, "factors", k): v for k, v in filters.items()},
+        statuses=tuple(
+            str(s) for s in _as_tuple(data.get("status", [config.str_value("registry.ok_status")]))
+        ),
         alignment=str(data.get("alignment", "")),
     )
 
@@ -148,7 +177,7 @@ def render_table(config: Config, spec: TableSpec, index: Sequence[Mapping[str, s
         if _selected(row, spec, superseded):
             groups.setdefault(tuple(row.get(k, "") for k in spec.rows), []).append(row)
 
-    headers = list(spec.row_headers) or [r.split(".", 1)[-1] for r in spec.rows]
+    headers = list(spec.row_headers) or [latex_escape(r.split(".", 1)[-1]) for r in spec.rows]
     align = spec.alignment or "l" * len(spec.rows) + "r" * len(spec.columns)
     rule = config.str_value("tables.rule")
     lines = [

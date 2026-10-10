@@ -14,7 +14,7 @@ _log = get_logger("init")
 @dataclass(frozen=True)
 class InitAction:
     path: str
-    action: str  # created | exists | would-create | overwritten
+    action: str  # created | exists | would-create | would-overwrite | overwritten
 
 
 def init_documents(
@@ -32,7 +32,8 @@ def init_documents(
             actions.append(InitAction(relative, "exists"))
             continue
         if dry_run:
-            actions.append(InitAction(relative, "would-create"))
+            planned = "would-overwrite" if target.exists() else "would-create"
+            actions.append(InitAction(relative, planned))
             continue
         existed = target.exists()
         target.parent.mkdir(parents=True, exist_ok=True)

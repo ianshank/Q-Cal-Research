@@ -204,7 +204,7 @@ def test_cell_lookup_returns_registered_cell(experiments: Experiments) -> None:
 
 
 def test_cell_lookup_rejects_unregistered_cell(experiments: Experiments) -> None:
-    with pytest.raises(ExperimentsError, match="'C-z' is not pre-registered in EXPERIMENTS.yaml"):
+    with pytest.raises(ExperimentsError, match=r"'C-z' is not pre-registered in EXPERIMENTS\.yaml"):
         experiments.cell("C-z")
 
 

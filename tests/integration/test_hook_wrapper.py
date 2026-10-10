@@ -73,7 +73,9 @@ def test_protected_paths_are_blocked_in_the_real_repository(relative: str) -> No
     assert result.stderr.startswith("BLOCKED:")
 
 
-@pytest.mark.parametrize("relative", ["src/qcal/calib/platt.py", "docs/notes.md", "AMENDMENTS.md"])
+@pytest.mark.parametrize(
+    "relative", ["src/qcal_lab/calib/platt.py", "docs/notes.md", "AMENDMENTS.md"]
+)
 def test_ordinary_paths_are_allowed(relative: str) -> None:
     result = run_hook(["guard-paths"], edit(REPO_ROOT / relative), REPO_ROOT)
     assert (result.returncode, result.stderr) == (0, "")

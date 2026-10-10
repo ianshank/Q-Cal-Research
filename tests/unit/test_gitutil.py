@@ -209,11 +209,6 @@ def test_is_dirty_with_exclusions_outside_a_repository_is_none(outside: Path) ->
     assert is_dirty(outside, exclude=["runs/index.csv"]) is None
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="BUG: is_dirty builds its pathspec ('.' and ':(exclude)p') relative to cwd, not the "
-    "repo root, so from a subdirectory changes elsewhere in the repo are ignored",
-)
 def test_exclusions_are_repo_relative_when_called_from_a_subdirectory(git_repo: Path) -> None:
     sub = git_repo / "src"
     write(git_repo, "src/keep.py", "x = 1\n")

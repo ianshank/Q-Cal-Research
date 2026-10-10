@@ -352,7 +352,9 @@ def _add_registry(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
 
     aud = sub.add_parser("audit", help="pre-registered coverage versus the registry")
     aud.add_argument(
-        "--strict", action="store_true", help="also fail on missing cells and placeholders"
+        "--strict",
+        action="store_true",
+        help="also fail on missing or failed-only pairs and placeholders",
     )
     _experiments_arg(aud)
     _common(aud)

@@ -137,6 +137,14 @@ def test_adding_an_axis_value_never_renames_existing_cells() -> None:
         ({"axes": {"d": ["a"]}, "rules": [{"when": {"d": "a"}}]}, "needs 'fix' or 'drop'"),
         ({"axes": {"d": ["a"]}, "rules": [{"exclude": "d=a"}]}, "'exclude' must be a mapping"),
         ({"axes": {"d": ["a"]}, "rules": [{"exclude": ["a"]}]}, "'exclude' must be a mapping"),
+        (
+            {"axes": {"d": ["a"]}, "rules": [{"when": {"d": "a"}, "fix": ["x"]}]},
+            "'fix' must be a mapping",
+        ),
+        (
+            {"axes": {"d": ["a"]}, "rules": [{"when": {"d": "a"}, "drop": "x"}]},
+            "'drop' must be a list",
+        ),
     ],
 )
 def test_invalid_designs_are_rejected(design: dict[str, Any], message: str) -> None:

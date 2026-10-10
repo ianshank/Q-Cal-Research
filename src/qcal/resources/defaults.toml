@@ -61,21 +61,18 @@ enforcement_surface = [
   "pyproject.toml",
   "qcal.toml",
   "allowed_signers",
-  "src/qcal/*.py",
-  "src/qcal/hooks/**",
-  "src/qcal/registry/**",
-  "src/qcal/integrity/**",
-  "src/qcal/ci/**",
-  "src/qcal/resources/**",
+  # The whole qcal package: a new sub-package could shadow a module of the same name.
+  # Phase 1 science code lives in the agent-owned src/qcal_lab/ package instead.
+  "src/qcal/**",
   "review/gemini-*",
   # Files that could shadow or reconfigure the code CI runs on a pull request's head.
   "qcal/**",
   "setup.py",
   "setup.cfg",
   "conftest.py",
-  "sitecustomize.py",
-  "usercustomize.py",
-  "*.pth",
+  "**/sitecustomize.py",
+  "**/usercustomize.py",
+  "**/*.pth",
   "ruff.toml",
   ".ruff.toml",
   "mypy.ini",
@@ -104,7 +101,6 @@ signed_categories = ["ian_only", "enforcement_surface", "registry_only"]
 require_committer_match = true
 # Verify with this program regardless of the machine's git configuration.
 ssh_program = "ssh-keygen"
-immutable_categories = ["registry_only"]
 immutable_dirs = ["runs/registry"]
 
 [hooks]

@@ -378,6 +378,17 @@ def test_tagged_whole_number_result_is_not_untagged(scan: Scan, relative: str, l
     assert scan(relative, line) == []
 
 
+def test_overlapping_number_patterns_report_a_number_once(scan: Scan) -> None:
+    extra = "[claims]\ninteger_result_pattern = '-?\\d+(?:\\.\\d+)?\\s*points'\n"
+
+    findings = scan(SECTION, "AP improves by 2.5 points and 3 points", extra=extra)
+
+    assert [f.message for f in findings] == [
+        "number 2.5 has no run reference",
+        "number 3 points has no run reference",
+    ]
+
+
 def test_tex_unescaped_percent_starts_a_comment_not_a_result(scan: Scan) -> None:
     assert scan(SECTION, "half the runs % 50% of runs were excluded") == []
 

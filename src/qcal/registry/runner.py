@@ -114,8 +114,9 @@ class Runner:
             )
         root = self.config.root
         dirty = gitutil.is_dirty(root, self._output_paths())
-        if dirty and self.config.bool_value("registry.require_clean_tree"):
-            raise RunRefusedError("working tree is dirty and registry.require_clean_tree is set")
+        if self.config.bool_value("registry.require_clean_tree") and dirty is not False:
+            state = "dirty" if dirty else "of unknown state (no git work tree?)"
+            raise RunRefusedError(f"working tree is {state} and registry.require_clean_tree is set")
         if dirty:
             _log.warning("working tree is dirty; the record will say git_dirty=true")
 

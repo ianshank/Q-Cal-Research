@@ -92,7 +92,7 @@ def write_index(config: Config, store: RegistryStore, *, check: bool = False) ->
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(text, encoding="utf-8")
         _log.info("wrote %s (%d rows)", target, count)
-    parquet = _maybe_parquet(config, text) if changed or count else None
+    parquet = _maybe_parquet(config, text, csv_changed=changed) if count else None
     return IndexResult(target, count, changed, parquet)
 
 
@@ -108,7 +108,7 @@ def read_index(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(handle))
 
 
-def _maybe_parquet(config: Config, csv_text: str) -> Path | None:
+def _maybe_parquet(config: Config, csv_text: str, *, csv_changed: bool) -> Path | None:
     mode = config.str_value("registry.write_parquet")
     if mode not in {"auto", "always", "never"}:
         raise ConfigError("registry.write_parquet must be auto, always or never")
@@ -123,8 +123,12 @@ def _maybe_parquet(config: Config, csv_text: str) -> Path | None:
     import pyarrow.parquet as pq
 
     target = config.path("index_parquet")
-    if target.is_file() and target.stat().st_mtime >= config.path("index_csv").stat().st_mtime:
-        _log.debug("%s is newer than the CSV; not rewriting", target)
+    csv_path = config.path("index_csv")
+    stale = not target.is_file() or (
+        csv_path.is_file() and target.stat().st_mtime < csv_path.stat().st_mtime
+    )
+    if not csv_changed and not stale:
+        _log.debug("%s is current", target)
         return target
     table = pacsv.read_csv(io.BytesIO(csv_text.encode("utf-8")))
     target.parent.mkdir(parents=True, exist_ok=True)

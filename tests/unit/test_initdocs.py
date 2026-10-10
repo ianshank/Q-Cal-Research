@@ -91,7 +91,9 @@ def test_dry_run_with_force_does_not_touch_existing_documents(config: Config, re
 def test_document_paths_follow_configuration_and_parents_are_created(
     make_config: Callable[[str], Config],
 ) -> None:
-    config = make_config('[paths]\nclaims = "docs/research/CLAIMS.md"\n[init]\nfiles = ["claims"]\n')
+    config = make_config(
+        '[paths]\nclaims = "docs/research/CLAIMS.md"\n[init]\nfiles = ["claims"]\n'
+    )
 
     actions = init_documents(config)
 
@@ -122,4 +124,3 @@ def test_unknown_path_key_is_a_config_error(make_config: Callable[[str], Config]
 
     with pytest.raises(ConfigError, match=r"paths\.nope"):
         init_documents(config)
-

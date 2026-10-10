@@ -6,7 +6,8 @@ is not imported here so it does not load twice). Plan: docs/SDLC_IMPLEMENTATION_
 ## Integrity (non-negotiable)
 0. Hooks are feedback, not permission. Ian's signed commits plus CI are the control.
    Never edit the enforcement surface (`.claude/`, `.github/`, `Makefile`, `pyproject.toml`,
-   `qcal.toml`, `src/qcal/` infrastructure) except through a change proposal in `docs/changes/`.
+   `qcal.toml`, all of `src/qcal/`) except through a change proposal in `docs/changes/`.
+   Phase 1 science code goes in `src/qcal_lab/`, which agents own.
 1. Never fabricate or estimate results. Every number in `paper/`, `README.md` and `CLAIMS.md`
    comes from the run index through `qcal registry tables`, as `\qcalval{run:<id>:<metric>}{value}`
    in LaTeX or `value (run:<id>:<metric>)` in Markdown. `qcal claims` verifies them.

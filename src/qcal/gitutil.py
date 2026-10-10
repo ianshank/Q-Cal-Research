@@ -43,7 +43,7 @@ def head_sha(cwd: Path) -> str | None:
 
 def is_dirty(cwd: Path, exclude: Sequence[str] = ()) -> bool | None:
     """Whether the work tree has changes, ignoring the repo-relative paths in ``exclude``."""
-    pathspec = [".", *(f":(exclude){p}" for p in exclude)] if exclude else []
+    pathspec = [":(top)", *(f":(top,exclude){p}" for p in exclude)] if exclude else []
     status = try_git(
         ["status", "--porcelain", "--", *pathspec] if pathspec else ["status", "--porcelain"], cwd
     )

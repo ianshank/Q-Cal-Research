@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import importlib.metadata
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -51,6 +52,11 @@ def metadata_value(dist: importlib.metadata.Distribution, key: str) -> str:
     return str(values[0]) if values else ""
 
 
+def normalize_name(name: str) -> str:
+    """PEP 503 normalised project name (``Some_Pkg`` and ``some-pkg`` are the same)."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
 def distribution_license(dist: importlib.metadata.Distribution) -> str:
     meta = dist.metadata
     parts = [metadata_value(dist, "License-Expression"), metadata_value(dist, "License")]
@@ -65,11 +71,11 @@ def check_packages(
 ) -> None:
     deny = config.str_list("licenses.deny_license_substrings")
     warn = config.str_list("licenses.warn_license_substrings")
-    denied_packages = {p.lower() for p in config.str_list("licenses.deny_packages")}
+    denied_packages = {normalize_name(p) for p in config.str_list("licenses.deny_packages")}
     for dist in (
         distributions if distributions is not None else list(importlib.metadata.distributions())
     ):
-        name = metadata_value(dist, "Name").lower()
+        name = normalize_name(metadata_value(dist, "Name"))
         report.checked_packages += 1
         if name in denied_packages:
             report.errors.append(f"package {name} is denied by policy")

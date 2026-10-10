@@ -33,7 +33,7 @@ def policy(config) -> Policy:
         ("MultiEdit", "file_path", ".github/workflows/ci.yml", False, "paths.enforcement_surface"),
         ("NotebookEdit", "notebook_path", "notebooks/x.ipynb", True, "paths.ok"),
         ("NotebookEdit", "notebook_path", "notebooks/nbcu.ipynb", False, "paths.clean_room"),
-        ("Write", "file_path", "src/qcal/calib/platt.py", True, "paths.ok"),
+        ("Write", "file_path", "src/qcal_lab/calib/platt.py", True, "paths.ok"),
         ("Write", "path", "docs/notes.md", True, "paths.ok"),
     ],
 )

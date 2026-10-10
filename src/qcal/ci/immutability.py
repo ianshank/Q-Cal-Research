@@ -40,11 +40,15 @@ def check_registry_immutable(
     dirs = config.str_list("signing.immutable_dirs")
     if not dirs:
         return report
-    out = git(["diff", "--name-status", "--no-renames", f"{base}...{head}", "--", *dirs], repo)
-    for line in out.splitlines():
-        if not line.strip():
-            continue
-        status, _, path = line.partition("\t")
+    out = git(
+        ["diff", "-z", "--name-status", "--no-renames", f"{base}...{head}", "--", *dirs], repo
+    )
+    # Records are named by run id ([A-Za-z0-9._-]), so surrounding whitespace is never meaningful.
+    fields = [f.strip() for f in out.split("\0") if f.strip()]
+    if len(fields) % 2:
+        report.violations.append("unparseable git diff output; refusing to judge (fail closed)")
+        fields = fields[:-1]
+    for status, path in zip(fields[0::2], fields[1::2], strict=True):
         if status != "A":
             report.violations.append(f"{path}: status {status} (records are append-only)")
             continue

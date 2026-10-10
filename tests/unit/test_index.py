@@ -63,7 +63,7 @@ def no_pyarrow(monkeypatch: pytest.MonkeyPatch) -> None:
     real_find_spec = importlib.util.find_spec
 
     def find_spec(name: str, package: str | None = None) -> Any:
-        return None if name.split(".")[0] == "pyarrow" else real_find_spec(name, package)
+        return None if name.partition(".")[0] == "pyarrow" else real_find_spec(name, package)
 
     monkeypatch.setattr(importlib.util, "find_spec", find_spec)
 
@@ -398,9 +398,7 @@ def test_superseded_ids_of_no_rows_is_empty() -> None:
 
 
 def test_superseded_ids_agrees_with_the_written_index(config: Config) -> None:
-    write_index(
-        config, store_for(config, make_record("R1"), make_record("R2", supersedes="R1"))
-    )
+    write_index(config, store_for(config, make_record("R1"), make_record("R2", supersedes="R1")))
     assert superseded_ids(read_index(config.path("index_csv"))) == {"R1"}
 
 
@@ -503,10 +501,6 @@ def test_parquet_is_not_written_for_an_empty_registry(
     assert not parquet_config.path("index_parquet").exists()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="BUG: a changed CSV skips the Parquet rewrite when the Parquet mtime is not older",
-)
 def test_parquet_follows_a_changed_csv_regardless_of_timestamps(
     parquet_config: Config, pyarrow_parquet: Any
 ) -> None:

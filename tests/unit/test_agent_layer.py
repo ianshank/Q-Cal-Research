@@ -167,9 +167,7 @@ def test_forbidden_permission_modes_are_configurable(
 
 
 def test_one_file_can_report_several_problems(config: Config, repo: Path) -> None:
-    frontmatter_file(
-        repo, AGENT, "name: other\nbogus: 1\npermissionMode: bypassPermissions\n"
-    )
+    frontmatter_file(repo, AGENT, "name: other\nbogus: 1\npermissionMode: bypassPermissions\n")
 
     assert check_agent_layer(config).errors == [
         f"{AGENT}: unknown frontmatter keys ['bogus'] (Claude Code would ignore them)",
@@ -226,6 +224,15 @@ def test_invalid_skill_frontmatter_is_an_error(
     frontmatter_file(repo, SKILL, front)
 
     assert check_agent_layer(config).errors == [error]
+
+
+def test_skill_with_malformed_yaml_is_an_error(config: Config, repo: Path) -> None:
+    frontmatter_file(repo, SKILL, "description: [unclosed\n")
+
+    errors = check_agent_layer(config).errors
+
+    assert len(errors) == 1
+    assert errors[0].startswith(f"{SKILL}: invalid YAML frontmatter:")
 
 
 def test_only_skill_md_one_level_down_is_a_skill(config: Config, repo: Path) -> None:
@@ -312,7 +319,9 @@ def test_hook_script_that_is_a_directory_is_missing(config: Config, repo: Path) 
 
 def test_non_executable_hook_script_is_an_error(config: Config, repo: Path) -> None:
     script(repo, ".claude/hooks/guard.sh", executable=False)
-    hooks_settings(repo, {"PreToolUse": [command_hook("$CLAUDE_PROJECT_DIR/.claude/hooks/guard.sh")]})
+    hooks_settings(
+        repo, {"PreToolUse": [command_hook("$CLAUDE_PROJECT_DIR/.claude/hooks/guard.sh")]}
+    )
 
     assert check_agent_layer(config).errors == [
         f"{SETTINGS}: PreToolUse hook script .claude/hooks/guard.sh is not executable"
@@ -324,7 +333,10 @@ def test_hook_commands_are_counted_across_events_and_groups(config: Config, repo
     ok = command_hook("$CLAUDE_PROJECT_DIR/.claude/hooks/guard.sh")
     data = {
         "hooks": {
-            "PreToolUse": [{"matcher": "Edit", "hooks": [ok, ok]}, {"matcher": "Bash", "hooks": [ok]}],
+            "PreToolUse": [
+                {"matcher": "Edit", "hooks": [ok, ok]},
+                {"matcher": "Bash", "hooks": [ok]},
+            ],
             "Stop": [{"hooks": [ok]}],
             "SessionStart": [{"matcher": "startup"}],
         }
@@ -361,7 +373,11 @@ def test_settings_file_location_is_configurable(
     make_config: Callable[[str], Config], repo: Path
 ) -> None:
     config = make_config('[agent_layer]\nsettings_file = "conf/settings.json"\n')
-    write(repo, "conf/settings.json", json.dumps({"hooks": {"Stop": [{"hooks": [command_hook("x")]}]}}))
+    write(
+        repo,
+        "conf/settings.json",
+        json.dumps({"hooks": {"Stop": [{"hooks": [command_hook("x")]}]}}),
+    )
 
     assert check_agent_layer(config).errors == [
         "conf/settings.json: Stop hook 'x' should locate its script via $CLAUDE_PROJECT_DIR"
@@ -415,7 +431,11 @@ def test_command_hooks_beside_prompt_hooks_are_still_checked(config: Config, rep
         {"type": "http", "url": "https://example.invalid/mcp"},
         {"type": "sse", "url": "https://example.invalid/sse"},
         {"command": "npx", "args": ["server"]},
-        {"type": "http", "url": "https://x.invalid", "headers": {"Authorization": "Bearer ${TOKEN}"}},
+        {
+            "type": "http",
+            "url": "https://x.invalid",
+            "headers": {"Authorization": "Bearer ${TOKEN}"},
+        },
         {"type": "http", "url": "https://x.invalid", "headers": {"X-Readonly": "true"}},
     ],
 )
@@ -439,7 +459,13 @@ def test_remote_mcp_server_without_type_is_an_error(config: Config, repo: Path) 
 def test_literal_bearer_token_is_an_error(config: Config, repo: Path) -> None:
     mcp(
         repo,
-        {"gh": {"type": "http", "url": "https://x.invalid", "headers": {"Authorization": "Bearer abc123"}}},
+        {
+            "gh": {
+                "type": "http",
+                "url": "https://x.invalid",
+                "headers": {"Authorization": "Bearer abc123"},
+            }
+        },
     )
 
     assert check_agent_layer(config).errors == [f"{MCP}: server 'gh' embeds a literal credential"]

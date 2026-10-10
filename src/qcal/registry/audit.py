@@ -30,7 +30,7 @@ class AuditReport:
     def ok(self, *, strict: bool = False) -> bool:
         problems = bool(self.unregistered_cells or self.unregistered_seeds)
         if strict:
-            problems = problems or bool(self.missing or self.placeholders)
+            problems = problems or bool(self.missing or self.failed_only or self.placeholders)
         return not problems
 
     def to_dict(self) -> dict[str, Any]:

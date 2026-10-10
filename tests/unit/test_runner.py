@@ -131,25 +131,19 @@ def test_default_nonce_has_configured_length(
     hex_length: int,
 ) -> None:
     config = make_config(f"[registry]\nnonce_bytes = {nonce_bytes}\n")
-    runner = Runner(
-        config, load(config), RegistryStore(config.path("registry_dir")), fake_executor
-    )
+    runner = Runner(config, load(config), RegistryStore(config.path("registry_dir")), fake_executor)
     assert re.fullmatch(f"[0-9a-f]{{{hex_length}}}", runner.nonce())
 
 
 def test_default_collectors_come_from_configuration(
     config: Config, fake_executor: FakeExecutor
 ) -> None:
-    runner = Runner(
-        config, load(config), RegistryStore(config.path("registry_dir")), fake_executor
-    )
+    runner = Runner(config, load(config), RegistryStore(config.path("registry_dir")), fake_executor)
     assert runner.collectors == config.str_list("registry.env_collectors")
 
 
 def test_default_clock_is_timezone_aware_utc(config: Config, fake_executor: FakeExecutor) -> None:
-    runner = Runner(
-        config, load(config), RegistryStore(config.path("registry_dir")), fake_executor
-    )
+    runner = Runner(config, load(config), RegistryStore(config.path("registry_dir")), fake_executor)
     assert runner.clock().utcoffset() == timedelta(0)
 
 
@@ -548,9 +542,7 @@ def test_configured_output_locations_are_the_ones_excluded(
 
 
 @pytest.mark.integration
-def test_run_records_the_head_from_before_execution(
-    git_repo: Path, config: Config
-) -> None:
+def test_run_records_the_head_from_before_execution(git_repo: Path, config: Config) -> None:
     experiments = load(config)
     run_git(git_repo, "add", "-A")
     run_git(git_repo, "commit", "-q", "-m", "pre-registration")

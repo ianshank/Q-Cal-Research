@@ -1,9 +1,20 @@
-"""Verify that commits touching protected paths are signed by an allowed key.
+"""Verify that changes to protected paths come from commits signed by an allowed key.
 
 Policy and ``allowed_signers`` are read from the *base* ref, never from the pull
-request head, so a pull request cannot relax the rules that judge it. Merge
-commits are judged only on files that differ from every parent (``--cc``), so a
-routine base merge does not demand a new signature.
+request head, so a pull request cannot relax the rules that judge it.
+
+Two rules, both required:
+
+* **Per commit.** Every non-merge commit in ``base..head`` that changes a protected
+  path relative to its parent must carry a good SSH signature from an allowed key.
+* **Net content.** Every protected path whose content differs between ``base`` and
+  ``head`` must hold content that a *signed* commit in ``base..head`` introduced
+  (changed relative to its first parent). Merges, and commits built on old history,
+  can therefore only carry forward content that Ian signed or that base already had;
+  they cannot delete or roll back protected files.
+
+All git path output is NUL-delimited (``-z``), so unusual file names cannot dodge the
+patterns by being quoted.
 """
 
 from __future__ import annotations
@@ -36,10 +47,14 @@ class SignatureReport:
     mode: str
     keys: int
     verdicts: list[CommitVerdict] = field(default_factory=list)
+    net: list[CommitVerdict] = field(default_factory=list)
 
     @property
     def violations(self) -> list[CommitVerdict]:
-        return [v for v in self.verdicts if v.protected_files and not v.signed]
+        per_commit = [v for v in self.verdicts if v.protected_files and not v.signed]
+        covered = {f for v in per_commit for f in v.protected_files}
+        net = [v for v in self.net if not v.signed and not set(v.protected_files) <= covered]
+        return per_commit + net
 
     @property
     def passed(self) -> bool:
@@ -55,6 +70,7 @@ class SignatureReport:
                 for v in self.violations
             ],
             "checked_commits": len(self.verdicts),
+            "checked_net_paths": len(self.net),
         }
 
 
@@ -67,13 +83,34 @@ def policy_config(repo: Path, policy_ref: str) -> Config:
     )
 
 
+def _nul_split(output: str) -> list[str]:
+    return [part for part in output.split("\0") if part]
+
+
+def parents_of(repo: Path, sha: str) -> list[str]:
+    return git(["rev-list", "--parents", "-n", "1", sha], repo).split()[1:]
+
+
 def changed_files(repo: Path, sha: str) -> list[str]:
-    parents = git(["rev-list", "--parents", "-n", "1", sha], repo).split()[1:]
-    if len(parents) > 1:
-        args = ["diff-tree", "--no-commit-id", "--name-only", "-r", "--no-renames", "--cc", sha]
-    else:
-        args = ["diff-tree", "--no-commit-id", "--name-only", "-r", "--no-renames", "--root", sha]
-    return [line for line in git(args, repo).splitlines() if line.strip()]
+    """Paths a non-merge commit changes relative to its parent (or all paths for a root)."""
+    args = ["diff-tree", "-z", "--no-commit-id", "--name-only", "-r", "--no-renames", "--root", sha]
+    return _nul_split(git(args, repo))
+
+
+def changed_between(repo: Path, base: str, head: str) -> list[str]:
+    return _changed_vs(repo, base, head)
+
+
+def _changed_vs(repo: Path, old: str, new: str) -> list[str]:
+    return _nul_split(git(["diff", "-z", "--name-only", "--no-renames", old, new], repo))
+
+
+def blob_id(repo: Path, ref: str, path: str) -> str | None:
+    """Blob id of ``path`` at ``ref``, or ``None`` when the path does not exist there."""
+    try:
+        return git(["rev-parse", "--verify", "--quiet", f"{ref}:{path}"], repo).strip() or None
+    except GitError:
+        return None
 
 
 def count_keys(text: str | None) -> int:
@@ -105,23 +142,64 @@ def verify_signatures(
         report.keys,
     )
 
+    require_match = config.bool_value("signing.require_committer_match")
+    ssh_program = config.str_value("signing.ssh_program")
     with tempfile.TemporaryDirectory() as tmp:
         signers_file = Path(tmp) / "allowed_signers"
         signers_file.write_text(signers or "", encoding="utf-8")
+        cache: dict[str, tuple[bool, str]] = {}
+
+        def signed(sha: str) -> tuple[bool, str]:
+            if sha not in cache:
+                cache[sha] = _verify_commit(
+                    repo,
+                    sha,
+                    signers_file,
+                    report.keys,
+                    require_match=require_match,
+                    ssh_program=ssh_program,
+                )
+            return cache[sha]
+
+        parents = {sha: parents_of(repo, sha) for sha in commits}
         for sha in commits:
+            if len(parents[sha]) > 1:
+                # A merge may carry content from any parent; the net-content rule below
+                # decides whether what it brings in was authored by a signed commit.
+                merged = _changed_vs(repo, parents[sha][0], sha)
+                touched = [
+                    f
+                    for f in merged
+                    if policy.in_categories(f, categories)
+                    and blob_id(repo, sha, f) != blob_id(repo, base, f)  # base merges are fine
+                ]
+                detail = "merge: judged by net content" if touched else "no protected paths"
+                report.verdicts.append(CommitVerdict(sha, touched, True, detail))
+                continue
             protected = [f for f in changed_files(repo, sha) if policy.in_categories(f, categories)]
             if not protected:
                 report.verdicts.append(CommitVerdict(sha, [], True, "no protected paths"))
                 continue
-            signed, detail = _verify_commit(
-                repo,
-                sha,
-                signers_file,
-                report.keys,
-                require_match=config.bool_value("signing.require_committer_match"),
-                ssh_program=config.str_value("signing.ssh_program"),
+            ok, detail = signed(sha)
+            report.verdicts.append(CommitVerdict(sha, protected, ok, detail))
+
+        for path in changed_between(repo, base, head):
+            if not policy.in_categories(path, categories):
+                continue
+            target = blob_id(repo, head, path)
+            authors = [
+                sha
+                for sha in commits
+                if blob_id(repo, sha, path) == target
+                and (not parents[sha] or blob_id(repo, parents[sha][0], path) != target)
+            ]
+            good = next((sha for sha in authors if signed(sha)[0]), None)
+            detail = (
+                f"content introduced by signed commit {good[:12]}"
+                if good
+                else "net change not introduced by any signed commit in the range"
             )
-            report.verdicts.append(CommitVerdict(sha, protected, signed, detail))
+            report.net.append(CommitVerdict(head, [path], good is not None, detail))
     for violation in report.violations:
         _log.warning(
             "commit %s touches %s without an allowed signature (%s)",
@@ -137,6 +215,11 @@ def _verify_commit(
 ) -> tuple[bool, str]:
     if keys == 0:
         return False, "allowed_signers has no keys on the base ref"
+    kind = signature_kind(repo, sha)
+    if kind == "no":
+        return False, "unsigned"
+    if kind != "ssh":
+        return False, f"{kind} signature; only SSH signatures from allowed_signers count"
     env_args = [
         "-c",
         "gpg.format=ssh",
@@ -144,6 +227,11 @@ def _verify_commit(
         f"gpg.ssh.program={ssh_program}",
         "-c",
         f"gpg.ssh.allowedSignersFile={signers_file}",
+        # Never let git fall back to another verifier chosen by the signature itself.
+        "-c",
+        "gpg.openpgp.program=false",
+        "-c",
+        "gpg.x509.program=false",
     ]
     try:
         git([*env_args, "verify-commit", sha], repo)
@@ -158,6 +246,27 @@ def _verify_commit(
         if signer.lower() != committer.lower():
             return False, f"signed by {signer!r} but committed as {committer!r}"
     return True, "good signature"
+
+
+_SIGNATURE_HEADERS = {
+    "-----BEGIN SSH SIGNATURE-----": "ssh",
+    "-----BEGIN PGP SIGNATURE-----": "openpgp",
+    "-----BEGIN SIGNED MESSAGE-----": "x509",
+}
+
+
+def signature_kind(repo: Path, sha: str) -> str:
+    """``ssh``, ``openpgp``, ``x509``, ``unknown`` or ``no`` from the raw commit object."""
+    header = None
+    for line in git(["cat-file", "commit", sha], repo).splitlines():
+        if not line:
+            break  # end of headers
+        if line.startswith("gpgsig ") or line.startswith("gpgsig-sha256 "):
+            header = line.split(" ", 1)[1].strip()
+            break
+    if header is None:
+        return "no"
+    return _SIGNATURE_HEADERS.get(header, "unknown")
 
 
 def github_annotations(report: SignatureReport) -> Sequence[str]:
@@ -178,8 +287,12 @@ def github_annotations(report: SignatureReport) -> Sequence[str]:
 
 __all__ = [
     "SignatureReport",
+    "blob_id",
+    "changed_between",
     "changed_files",
     "github_annotations",
+    "parents_of",
     "policy_config",
+    "signature_kind",
     "verify_signatures",
 ]

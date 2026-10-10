@@ -70,15 +70,8 @@ def result_file(root: Path, payload: Any) -> Path:
 
 
 def test_placeholders_are_the_documented_set() -> None:
-    assert PLACEHOLDERS == {
-        "run_id",
-        "cell_id",
-        "seed",
-        "seed_role",
-        "result_path",
-        "log_path",
-        "root",
-    }
+    documented = {"run_id", "cell_id", "seed", "seed_role", "result_path", "log_path", "root"}
+    assert documented == PLACEHOLDERS
 
 
 @pytest.mark.parametrize(
@@ -143,7 +136,7 @@ def test_execution_result_ok_needs_zero_exit_and_no_error(
 
 
 def test_empty_command_means_not_configured(tmp_path: Path) -> None:
-    with pytest.raises(ExecutorNotConfiguredError, match="executor.command is empty"):
+    with pytest.raises(ExecutorNotConfiguredError, match=r"executor\.command is empty"):
         make_executor(tmp_path, [])
 
 
@@ -271,6 +264,12 @@ def test_read_result_parses_metrics_environment_and_artifacts(tmp_path: Path) ->
     ]
 
 
+def test_read_result_accepts_documented_metric_names(tmp_path: Path) -> None:
+    names = {"AP@50": 1, "latency_p50_ms": 2, "AP.small": 3, "brier-iou": 4}
+    result = read_result(result_file(tmp_path, {"metrics": names}), tmp_path)
+    assert result.metrics == {k: float(v) for k, v in names.items()}
+
+
 def test_read_result_passes_the_return_code_through(tmp_path: Path) -> None:
     assert read_result(result_file(tmp_path, {}), tmp_path, 3).returncode == 3
 
@@ -309,6 +308,8 @@ def test_read_result_reports_a_missing_file(tmp_path: Path) -> None:
         ('{"metrics": {"AP": Infinity, "x": 1}}', "non-finite or non-numeric metrics: AP"),
         ({"metrics": {"a:b": 1.0}}, "metric names not usable in claim references: a:b"),
         ({"metrics": {"a b": 1.0}}, "metric names not usable in claim references: a b"),
+        ({"metrics": {"AP$_0$": 1.0}}, "metric names not usable in claim references: AP$_0$"),
+        ({"metrics": {"-AP": 1.0}}, "metric names not usable in claim references: -AP"),
         ({"artifacts": {"path": "x"}}, "'artifacts' must be a list"),
         ({"artifacts": ["x"]}, "artifact entries need a 'path'"),
         ({"artifacts": [{"kind": "engine"}]}, "artifact entries need a 'path'"),

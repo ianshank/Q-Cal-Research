@@ -282,7 +282,7 @@ def test_unreadable_entry_is_skipped_leniently(store: RegistryStore) -> None:
 
 def test_unreadable_entry_fails_strict_iteration(store: RegistryStore) -> None:
     (store.directory / "R2.json").mkdir(parents=True)
-    with pytest.raises(RecordError, match="R2.json"):
+    with pytest.raises(RecordError, match=r"R2\.json"):
         store.load_all(strict=True)
 
 

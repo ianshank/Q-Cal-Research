@@ -72,5 +72,8 @@ def check_leakage(config: Config) -> LeakageReport:
         common = sorted(ids[left] & ids[right])
         if common:
             report.overlaps[f"{left}&{right}"] = common
-    _log.info("leakage check: %s", "PASS" if report.passed else "FAIL")
+    if not report.present:
+        _log.info("leakage check: no split manifests found in %s", directory)
+    else:
+        _log.info("leakage check: %s", "PASS" if report.passed else "FAIL")
     return report

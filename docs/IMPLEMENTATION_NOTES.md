@@ -30,14 +30,18 @@ read-only mode. CI: `.github/workflows/ci.yml` and `.github/workflows/integrity.
 
 Hooks are feedback; signed commits plus CI are the control (plan v2 §1.2).
 
-1. **Signed commits.** `qcal ci verify-signatures` lists every commit in `base..head`, finds the
-   ones touching `ian_only`, `enforcement_surface` or `registry_only` paths, and requires a good
-   SSH signature from a key in `allowed_signers` whose principal equals the committer email.
-   Run records are signed too, so a result enters the record only through Ian's signed commit:
-   a pull request cannot add a fabricated run or supersede an inconvenient one. Verification
-   pins `gpg.ssh.program` so the machine's git configuration cannot change the outcome. Merge
-   commits are judged only on files that differ from every parent, so merging the base branch
-   does not demand a new signature.
+1. **Signed commits.** `qcal ci verify-signatures` applies two rules to `ian_only`,
+   `enforcement_surface` and `registry_only` paths, both required:
+   - *per commit:* every non-merge commit in `base..head` that changes such a path needs a
+     good SSH signature from a key in `allowed_signers` whose principal equals the committer
+     email (OpenPGP and X.509 signatures never count);
+   - *net content:* every such path whose content differs between `base` and `head` must hold
+     content that a signed commit in the range introduced. Merges, and commits built on old
+     history, can only carry forward signed or base content; they cannot delete or roll back a
+     protected file. Merging the base branch into a PR needs no signature.
+   Run records are signed too, so a result enters the record only through Ian's signed commit.
+   Git output is read NUL-delimited, and verification pins `gpg.ssh.program`, so neither odd
+   file names nor the machine's git configuration can change the outcome.
 2. **Base-branch judge.** `integrity.yml` runs on `pull_request_target`: the workflow, the
    `qcal` code, `qcal.toml` and `allowed_signers` all come from the base commit. The PR head
    is fetched as git data and never executed, so a PR cannot relax the rules that judge it.
@@ -45,9 +49,11 @@ Hooks are feedback; signed commits plus CI are the control (plan v2 §1.2).
    `runs/registry/`, each a valid record named after its run id.
 4. **Head-side consistency.** `ci.yml` regenerates the index and tables and fails if the
    committed copies differ, and runs the claims, leakage, license and agent-layer checks with
-   `python -I`, so a stray top-level module cannot shadow the package. Files that could shadow
-   or reconfigure that code (`qcal/`, `setup.py`, `conftest.py`, `*.pth`, tool configs,
-   requirement files) are part of the enforcement surface.
+   `python -I`, so a stray top-level module cannot shadow the package. The whole `src/qcal/`
+   package is protected (a new sub-package could shadow a module of the same name), as are
+   files that could shadow or reconfigure it (`qcal/`, `setup.py`, `conftest.py`, `*.pth`,
+   `sitecustomize.py`, tool configs, requirement files). Phase 1 science code therefore lives in
+   the agent-owned `src/qcal_lab/` package.
 5. **Hooks.** `guard-paths` blocks edit tools on protected and clean-room paths (after
    resolving symlinks); `guard-bash` blocks force-pushes and pushes to protected branches;
    the Stop hook runs the claims check. The wrapper converts every crash into exit 2, because
@@ -123,8 +129,12 @@ All values come from `src/qcal/resources/defaults.toml`, overridden by the repos
   audit, tabulate, verify and tamper loop.
 - Two test suites were written by independent subagents against the documented contracts;
   their strict-xfail bug reports were fixed in the source.
-- A `code-review` pass and a red-team agent attacked the guards and the CI controls; every
-  reproduced finding was fixed and has a regression test (`tests/unit/test_regressions.py`).
+- A `code-review` pass, a red-team agent and a `security-review` pass (with independent
+  false-positive filtering) attacked the guards and the CI controls. Every reproduced finding
+  was fixed and has a regression test (`tests/unit/test_regressions.py`,
+  `tests/integration/test_security_regressions.py`), including a crafted merge that deleted
+  `qcal.toml`, quoted file names, OpenPGP signatures, sub-package shadowing and fabricated
+  run records.
 
 ## Ian's next steps
 
@@ -132,8 +142,9 @@ All values come from `src/qcal/resources/defaults.toml`, overridden by the repos
 2. Generate an SSH signing key, add it to `allowed_signers`, and in a signed commit set
    `signing.mode = "enforce"` in `qcal.toml`.
 3. Rename the default branch from `civ` to `main` if wanted (`git.protected_branches` covers both).
-4. Add a branch ruleset on the default branch: require the `integrity` and `ci` checks,
-   linear history, no force-push.
+4. Add a branch ruleset on the default branch: require the `integrity` and `ci` checks
+   (pin the required checks to the GitHub Actions app so a same-named job elsewhere cannot
+   satisfy them), linear history, no force-push.
 5. Run `qcal init`, then write `EXPERIMENTS.yaml` and `DECISIONS.md` by hand.
 6. Commit run records (`runs/registry/`, `runs/index.csv`) in signed commits; in enforce
    mode CI rejects unsigned ones.

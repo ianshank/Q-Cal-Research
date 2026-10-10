@@ -139,9 +139,7 @@ def test_records_for_unregistered_seeds_are_flagged(
     assert report.ok() is False
 
 
-def test_unregistered_failed_runs_are_flagged_too(
-    config: Config, experiments: Experiments
-) -> None:
+def test_unregistered_failed_runs_are_flagged_too(config: Config, experiments: Experiments) -> None:
     report = audit(config, experiments, [failed("X1", "C-zzz", 0)])
     assert report.unregistered_cells == ["X1"]
 
@@ -215,7 +213,7 @@ def test_audit_reports_amendment_count(
         ({}, True, True),
         ({"missing": [("C-a", 0)]}, True, False),
         ({"placeholders": ["seed_role"]}, True, False),
-        ({"failed_only": [("C-a", 0)]}, True, True),
+        ({"failed_only": [("C-a", 0)]}, True, False),
         ({"superseded": ["R1"]}, True, True),
         ({"amendments": 3}, True, True),
         ({"unregistered_cells": ["X1"]}, False, False),

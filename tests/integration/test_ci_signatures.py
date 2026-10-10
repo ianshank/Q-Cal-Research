@@ -634,6 +634,7 @@ def test_report_dict_lists_only_violations() -> None:
         "verdict": "FAIL",
         "violations": [{"sha": "b" * 40, "files": ["Makefile"], "detail": "unsigned"}],
         "checked_commits": 2,
+        "checked_net_paths": 0,
     }
 
 
@@ -676,12 +677,6 @@ def gpg_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
 
 
 @signing
-@pytest.mark.xfail(
-    strict=True,
-    reason="BUG: _verify_commit trusts any signature `git verify-commit` accepts; an OpenPGP "
-    "signature from a key in the runner's gpg keyring (UID = committer email) passes although "
-    "it is not an SSH key in the base allowed_signers",
-)
 def test_openpgp_signature_outside_allowed_signers_is_a_violation(
     project: Path, gpg_key: str
 ) -> None:
