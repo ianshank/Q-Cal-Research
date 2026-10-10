@@ -9,12 +9,19 @@ from __future__ import annotations
 
 import pytest
 
+from qcal.config import load_config
 from qcal_lab.config import load_lab_config
-from qcal_lab.evaluation import HandwrittenMissingError, load_eval_loop
-from qcal_lab.parity import OracleCase, check_calibrator_case, check_metric_case, load_cases
+from qcal_lab.evaluation import HandwrittenMissingError
+from qcal_lab.parity import (
+    OracleCase,
+    check_calibrator_case,
+    check_metric_case_with_repository_loop,
+    load_cases,
+)
 from tests.conftest import REPO_ROOT
 
 LAB = load_lab_config(REPO_ROOT)
+QCAL = load_config(REPO_ROOT, environ={})
 CASES = load_cases(REPO_ROOT / LAB.text("parity.fixtures_dir"))
 
 
@@ -39,9 +46,8 @@ def test_handwritten_metric_matches_the_oracle(case: OracleCase | None) -> None:
     if case is None:
         pytest.skip("no oracle metric outputs yet (tests/parity/README.md)")
     try:
-        loop = load_eval_loop(LAB)
+        problems = check_metric_case_with_repository_loop(case, LAB, QCAL)
     except HandwrittenMissingError:
         pytest.skip("Ian's evaluation loop is not written yet (CLAUDE.md rule 4)")
-    tolerance = LAB.config.float_value("parity.abs_tolerance")
     # A mismatch is reported to Ian; his file is never edited to make it pass.
-    assert check_metric_case(case, loop, tolerance) == []
+    assert problems == []

@@ -12,6 +12,7 @@ from typing import Any
 
 from qcal.config import Config, ConfigError
 from qcal.integrity.leakage import check_leakage
+from qcal.registry.executor import sha256_file
 from qcal.reports import verdict
 from qcal_lab.config import LabConfig
 from qcal_lab.evaluation import HandwrittenMissingError, load_eval_loop
@@ -63,8 +64,13 @@ def _detectors(report: StatusReport, lab: LabConfig) -> None:
             for ok, detail in [_setting_file(lab, f"detectors.{name}.{key}")]
             if not ok
         ]
-        if not settings.get("checkpoint_sha256"):
+        expected = str(settings.get("checkpoint_sha256", ""))
+        if not expected:
             problems.append("checkpoint_sha256 is not set")
+        elif not problems:  # the checkpoint exists: its bytes must match the recorded digest
+            checkpoint = lab.file(f"detectors.{name}.checkpoint")
+            if sha256_file(checkpoint) != expected:
+                problems.append(f"checkpoint_sha256 does not match {checkpoint}")
         report.add(f"detector {name}", ok=not problems, detail="; ".join(problems) or "configured")
 
 
@@ -83,6 +89,8 @@ def build_status(qcal_config: Config, lab: LabConfig) -> StatusReport:
     )
     ok, detail = _setting_file(lab, "datasets.id.annotations")
     report.add("in-domain annotations", ok=ok, detail=detail)
+    ok, detail = _setting_file(lab, "datasets.id.images_dir")
+    report.add("in-domain images", ok=ok, detail=detail)
     leakage = check_leakage(qcal_config)
     detail = f"missing {', '.join(leakage.missing)}" if leakage.missing else verdict(leakage.passed)
     report.add("split manifests", ok=leakage.passed, detail=detail)

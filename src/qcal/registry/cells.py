@@ -36,10 +36,23 @@ def _matches(factors: Mapping[str, Any], condition: Mapping[str, Any]) -> bool:
     return all(k in factors and factors[k] in _as_list(v) for k, v in condition.items())
 
 
-def expand_design(design: Mapping[str, Any], *, prefix: str, length: int) -> list[Cell]:
+def _check_reserved(names: Any, reserved: Sequence[str], where: str) -> None:
+    clash = sorted(str(n) for n in names if n in reserved)
+    if clash:
+        raise ExperimentsError(
+            f"{where} uses reserved key(s) {clash} as factor names; a cell entry already uses "
+            "them for its id or seeds, so the factor would overwrite them"
+        )
+
+
+def expand_design(
+    design: Mapping[str, Any], *, prefix: str, length: int, reserved: Sequence[str] = ()
+) -> list[Cell]:
+    """Expand ``design``; factor names may not be any of ``reserved`` (the id and seeds keys)."""
     axes = design.get("axes")
     if not isinstance(axes, Mapping) or not axes:
         raise ExperimentsError("design.axes must be a non-empty mapping of factor -> values")
+    _check_reserved(axes, reserved, "design.axes")
     for name, values in axes.items():
         if not isinstance(values, list) or not values:
             raise ExperimentsError(f"design.axes.{name} must be a non-empty list")
@@ -51,6 +64,7 @@ def expand_design(design: Mapping[str, Any], *, prefix: str, length: int) -> lis
         raise ExperimentsError("design.rules must be a list")
     for rule in rules:
         _validate_rule(rule)
+        _check_reserved((rule.get("fix") or {}), reserved, f"rule {dict(rule)!r} 'fix'")
 
     names = list(axes)
     seen: dict[str, Cell] = {}
@@ -112,4 +126,6 @@ def summarize(cells: Sequence[Cell]) -> dict[str, dict[str, int]]:
 
 
 def cells_to_yaml_entries(cells: Sequence[Cell], id_key: str) -> list[dict[str, Any]]:
+    for cell in cells:
+        _check_reserved(cell.factors, [id_key], f"cell {cell.id}")
     return [{id_key: c.id, **dict(c.factors)} for c in cells]

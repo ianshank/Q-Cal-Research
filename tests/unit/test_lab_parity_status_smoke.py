@@ -126,6 +126,63 @@ def test_status_of_an_empty_repository(repo: Path) -> None:
     assert report.to_dict()["ready"] is False
 
 
+def test_metric_cases_through_the_repository_loop(repo: Path) -> None:
+    """The path tests/parity uses for metric cases (it skips until oracle outputs exist)."""
+    from qcal_lab.data.fixture import write_fixture
+    from qcal_lab.evaluation import HandwrittenMissingError
+    from qcal_lab.parity import check_metric_case_with_repository_loop
+    from tests.lab_support import fixture_document
+
+    directory = repo / "cases"
+    write_fixture(directory / "gt.json", fixture_document())
+    write_predictions(
+        directory / "p.jsonl", PredictionsHeader("x", "test", "raw", "d", "s", (1, 2, 3)), []
+    )
+    case = load_case(
+        _case(
+            directory,
+            "m",
+            {
+                "kind": "metric",
+                "oracle": ORACLE,
+                "predictions": "p.jsonl",
+                "ground_truth": "gt.json",
+                "metric": "smoke_images",
+                "expected": 0.0,
+            },
+        )
+    )
+    qcal_config = load_config(repo, environ={})
+    with pytest.raises(HandwrittenMissingError):
+        check_metric_case_with_repository_loop(case, lab_config(repo), qcal_config)
+    fixture_loop = lab_config(repo, '[eval_loop]\nmodule = "qcal_lab.fixture_eval"\n')
+    assert check_metric_case_with_repository_loop(case, fixture_loop, qcal_config) == []
+
+
+def test_status_checks_the_checkpoint_digest_and_the_images(repo: Path) -> None:
+    import hashlib
+
+    (repo / "w.pth").write_bytes(b"weights")
+    (repo / "atss.py").write_text("")
+    (repo / "images").mkdir()
+    body = (
+        '[datasets.id]\nimages_dir = "images"\n'
+        '[detectors.atss_r50]\nconfig = "atss.py"\ncheckpoint = "w.pth"\n'
+    )
+    good = hashlib.sha256(b"weights").hexdigest()
+    (repo / "configs").mkdir()
+    for digest, ok in [(good, True), ("0" * 64, False)]:
+        (repo / "configs/lab.toml").write_text(body + f'checkpoint_sha256 = "{digest}"\n')
+        report = build_status(load_config(repo, environ={}), load_lab_config(repo))
+        items = {name: (state, detail) for name, state, detail in report.items}
+        assert items["detector atss_r50"][0] is ok, items["detector atss_r50"]
+        assert items["in-domain images"][0] is True
+    assert "does not match" in items["detector atss_r50"][1]
+    (repo / "images").rmdir()
+    report = build_status(load_config(repo, environ={}), load_lab_config(repo))
+    assert {n: s for n, s, _ in report.items}["in-domain images"] is False
+
+
 def test_status_reports_broken_loops_and_cases(repo: Path) -> None:
     (repo / "configs").mkdir()
     (repo / "configs/lab.toml").write_text('[eval_loop]\nmodule = "json"\nfactory = "build"\n')

@@ -178,6 +178,13 @@ Each fix has a regression test in `tests/regression/` or `tests/security/`.
   - design axis and rule `fix` values must be scalars;
   - `seed_role` must be a string.
 
+  Third Copilot review (Phase 1 scaffold):
+  - a design may not use the cell id key or the seeds key as a factor name (`qcal registry
+    cells` refused nothing and the emitted factor overwrote the content-addressed id);
+  - the oracle-parity metric test called the evaluation-loop loader with the old signature;
+  - `make lab-status` verifies the checkpoint against its recorded sha256 and reports the
+    image directory.
+
   Tests: `tests/regression/test_copilot_review_findings.py`.
 
 ### Security

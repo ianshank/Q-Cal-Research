@@ -32,10 +32,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
+from qcal.config import Config
 from qcal_lab.calib import build_calibrator
 from qcal_lab.config import LabConfig
 from qcal_lab.data.coco import load_coco
-from qcal_lab.evaluation import EvalLoop
+from qcal_lab.evaluation import EvalLoop, load_eval_loop
 from qcal_lab.predictions import read_predictions
 
 KINDS: Final = ("calibrator", "metric")
@@ -149,12 +150,24 @@ def check_metric_case(case: OracleCase, eval_loop: EvalLoop, default_tolerance: 
     return compare([float(metrics[metric])], [float(expected)], case.tolerance(default_tolerance))
 
 
+def check_metric_case_with_repository_loop(
+    case: OracleCase, lab: LabConfig, qcal_config: Config
+) -> list[str]:
+    """Load the configured evaluation loop (Ian's) and check one metric case against it.
+
+    Raises :class:`qcal_lab.evaluation.HandwrittenMissingError` while the loop is unwritten.
+    """
+    loop = load_eval_loop(lab, qcal_config).loop
+    return check_metric_case(case, loop, lab.config.float_value("parity.abs_tolerance"))
+
+
 __all__ = [
     "KINDS",
     "OracleCase",
     "ParityError",
     "check_calibrator_case",
     "check_metric_case",
+    "check_metric_case_with_repository_loop",
     "compare",
     "load_case",
     "load_cases",

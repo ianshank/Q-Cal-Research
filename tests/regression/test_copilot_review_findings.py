@@ -201,3 +201,46 @@ def test_seed_role_must_be_a_string_in_the_pre_registration(config, bad: Any) ->
 
     with pytest.raises(ExperimentsError, match="seed_role must be a string"):
         parse_experiments(config, data, path=Path("EXPERIMENTS.yaml"))
+
+
+# --- third Copilot review (bfe4c4d) ----------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "design",
+    [
+        {"axes": {"id": ["a", "b"], "detector": ["x"]}},
+        {"axes": {"seeds": [0, 1]}},
+        {"axes": {"detector": ["x"]}, "rules": [{"when": {"detector": "x"}, "fix": {"id": "y"}}]},
+    ],
+)
+def test_reserved_keys_cannot_be_factor_names(design: dict[str, Any]) -> None:
+    with pytest.raises(ExperimentsError, match="reserved key"):
+        expand_design(design, prefix="C-", length=10, reserved=["id", "seeds"])
+
+
+def test_an_emitted_cell_never_loses_its_id_to_a_factor() -> None:
+    from qcal.registry.cells import cells_to_yaml_entries
+    from qcal.registry.experiments import Cell
+
+    with pytest.raises(ExperimentsError, match="reserved key"):
+        cells_to_yaml_entries([Cell("C-1", {"id": "factor", "d": "a"})], "id")
+
+
+def test_the_cells_command_refuses_a_reserved_factor(config) -> None:
+    import io
+
+    import yaml
+
+    from qcal import cli
+    from tests.conftest import write
+
+    write(
+        config.root,
+        "EXPERIMENTS.yaml",
+        yaml.safe_dump({"version": 2, "seeds": [0], "design": {"axes": {"id": ["a"]}}}),
+    )
+    out = io.StringIO()
+    code = cli.main(["--root", str(config.root), "registry", "cells", "--emit"], out=out)
+    assert code != 0
+    assert "id:" not in out.getvalue()

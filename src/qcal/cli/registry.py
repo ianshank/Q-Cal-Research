@@ -122,6 +122,10 @@ def cmd_cells(args: argparse.Namespace, config: Config, out: TextIO) -> int:
         design,
         prefix=config.str_value("experiments.cell_id_prefix"),
         length=config.int_value("experiments.cell_id_hash_length"),
+        reserved=[
+            config.str_value("experiments.cell_id_key"),
+            config.str_value("experiments.seeds_key"),
+        ],
     )
     threshold = config.int_value("experiments.max_cells_warning")
     if len(cells) > threshold:
