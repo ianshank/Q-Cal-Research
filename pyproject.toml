@@ -1,0 +1,105 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qcal"
+dynamic = ["version"]  # single source: qcal.__version__
+description = "Q-Cal research integrity tooling: run registry, claims checking, agent guards and CI integrity checks."
+readme = "docs/IMPLEMENTATION_NOTES.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Ian Cruickshank" }]
+dependencies = ["PyYAML>=6.0"]
+
+[project.optional-dependencies]
+parquet = ["pyarrow>=14"]
+dev = [
+  "pytest>=8",
+  "pytest-cov>=5",
+  "hypothesis>=6.100",
+  "ruff>=0.6",
+  "mypy>=1.10",
+  "types-PyYAML>=6.0",
+]
+
+[project.scripts]
+qcal = "qcal.cli:main"
+qcal-registry = "qcal.cli:registry_main"
+qcal-claims = "qcal.cli:claims_main"
+
+[tool.setuptools.dynamic]
+version = { attr = "qcal.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+qcal = ["resources/*.toml", "resources/templates/*", "py.typed"]
+qcal_lab = ["resources/*.toml", "py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
+markers = [
+  "unit: fast, in-process tests of one module (tests/unit)",
+  "integration: exercises real subprocesses, git, or the hook wrapper",
+  "regression: one test per fixed review or red-team finding (tests/regression)",
+  "security: attacks on the guards and the signed-commit control (tests/security)",
+  "e2e: the documented workflow through the real CLI (tests/e2e)",
+  "parity: comparisons with the fiveai oracle outputs (tests/parity)",
+  "requires_ssh_keygen: needs ssh-keygen for commit signing",
+]
+filterwarnings = ["error"]
+
+[tool.coverage.run]
+source = ["qcal", "qcal_lab"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 95  # measured 99% (98.9% without the parquet extra) when raised
+show_missing = true
+skip_covered = true
+exclude_also = [
+  "if TYPE_CHECKING:",
+  "raise NotImplementedError",
+  "if __name__ == .__main__.:",
+  "\\.\\.\\.",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+  "E", "F", "W", "I", "B", "UP", "SIM", "RUF", "PL", "PT", "S", "C4", "RET", "TID",
+  "NPY", "PERF", "FURB", "ERA", "T20", "PTH", "ARG", "BLE", "FBT", "PIE", "G", "LOG",
+  "FLY", "ISC",
+]
+ignore = [
+  "PLR0913",  # explicit DI constructors take many collaborators by design
+  "PLR2004",  # magic values in comparisons are tested constants
+  "S603",     # subprocess calls use argument lists, never a shell
+  "S607",     # git/ssh-keygen are resolved from PATH on purpose
+  "PLC0415",  # lazy imports keep hook start-up stdlib-only and CLI start-up fast
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+  "S101", "S105", "S106", "S108", "PLR0915", "PLR0917", "PLC0415",
+  "FBT",     # parametrized expectations are positional booleans
+  "ARG",     # fixtures are often requested only for their side effects
+]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unreachable = true
+mypy_path = "src"
+packages = ["qcal", "qcal_lab"]
+
+[[tool.mypy.overrides]]
+module = ["pyarrow", "pyarrow.*"]
+ignore_missing_imports = true

@@ -1,0 +1,50 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Tool caches and reports
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.dmypy.json
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+reports/
+signatures.json
+review.json
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Claude Code local state: per-machine settings and agent worktrees
+.claude/settings.local.json
+.claude/worktrees/
+
+# Run outputs: immutable records and the derived index are committed; logs,
+# results and binary artifacts stay local or go to DVC.
+runs/*
+!runs/registry/
+!runs/index.csv
+
+# Data and large artifacts (DVC-tracked, never committed)
+data/raw/
+data/derived/
+*.onnx
+*.engine
+*.plan
+*.hef
+*.trt
+
+# Secrets
+.env
+.env.*

@@ -1,0 +1,53 @@
+# qcal.toml: Q-Cal repository policy.
+#
+# Part of the enforcement surface: changes need Ian's signed commit once
+# signing.mode is "enforce". Only overrides live here; every key and its default
+# is documented in src/qcal/resources/defaults.toml. Inspect the merged result
+# with `qcal config`.
+
+[git]
+# `civ` is the current default branch; the plan recommends renaming it to `main`.
+protected_branches = ["main", "civ"]
+
+[signing]
+# bootstrap: CI reports unsigned protected-path commits but does not fail.
+# Switch to "enforce" in a commit signed with a key listed in allowed_signers.
+mode = "bootstrap"
+signed_categories = ["ian_only", "ian_data", "enforcement_surface", "registry_only", "cross_review"]
+
+[policy.categories]
+# Ian's data decisions and the oracle the science code is graded against: the split
+# manifests, the fiveai oracle outputs, and the published reference values for gate 2.
+# Agents read them; only Ian's signed commits change them.
+ian_data = ["data/manifests/**", "tests/parity/fixtures/**", "docs/reference/**"]
+# The prediction cache feeds registered runs, so edit tools may not write it either.
+registry_only = ["runs/index.csv", "runs/index.parquet", "runs/registry/**", "runs/cache/**"]
+
+[policy.messages]
+ian_data = "is Ian's data decision or oracle output; agents read it but never write it."
+
+[hooks]
+deny_categories = ["ian_only", "ian_data", "registry_only", "enforcement_surface", "git_internals"]
+
+[registry]
+# The packaged qcal_lab defaults hold science settings too, so they are part of config_hash.
+config_hash_inputs = [
+  "configs/**/*.yaml",
+  "configs/**/*.yml",
+  "configs/**/*.toml",
+  "src/qcal_lab/resources/*.toml",
+]
+
+[executor]
+# The Phase 1 experiment program (src/qcal_lab, `python -m qcal_lab run`). `-I` keeps a
+# stray module in the working directory from shadowing the installed package.
+command = ["python3", "-I", "-m", "qcal_lab", "--root", "{root}", "run", "--run-id", "{run_id}", "--cell-id", "{cell_id}", "--seed", "{seed}", "--result-path", "{result_path}"]
+
+[licenses]
+# Dataset-card licenses accepted for public release (plan Appendix E.4). Ian confirms in DECISIONS.md.
+dataset_allowed = ["CC-BY-4.0", "Flickr-Terms-of-Use", "Cityscapes-Non-Commercial-Research", "Apache-2.0"]
+dataset_denied = ["BDD100K"]
+
+[agent_layer]
+# The guards must stay wired as PreToolUse hooks (checked by `qcal agent-layer`).
+required_pretooluse_hooks = ["guard-paths", "guard-bash"]

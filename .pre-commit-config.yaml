@@ -1,0 +1,31 @@
+# Local hooks use the project's own tool versions (installed with `make install`).
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: ruff check --fix
+        language: system
+        types: [python]
+      - id: ruff-format
+        name: ruff format
+        entry: ruff format
+        language: system
+        types: [python]
+      - id: gitleaks
+        name: no secrets in the commit (gitleaks)
+        entry: gitleaks git --pre-commit --staged --redact --no-banner --config .gitleaks.toml
+        language: system
+        pass_filenames: false
+      - id: qcal-agent-layer
+        name: agent layer and documented commands are valid
+        entry: python -m qcal agent-layer
+        language: system
+        pass_filenames: false
+        files: ^(\.claude/|\.github/|\.mcp\.json$|CLAUDE\.md$|AGENTS\.md$|Makefile$|docs/|scripts/|README\.md$)
+      - id: qcal-claims
+        name: every number traces to a run
+        entry: python -m qcal claims
+        language: system
+        pass_filenames: false
+        files: ^(paper/|README\.md$|CLAIMS\.md$|runs/index\.csv$)

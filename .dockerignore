@@ -1,0 +1,36 @@
+# Keep the build context small and free of secrets, history and local state.
+.git
+.venv
+**/__pycache__
+**/*.py[cod]
+*.egg-info
+build
+dist
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.hypothesis
+.coverage
+.coverage.*
+coverage.xml
+htmlcov
+reports
+
+# Local agent state and worktrees
+.claude/worktrees
+.claude/settings.local.json
+
+# Run outputs, data and model artifacts (never needed to build or test)
+runs/*
+!runs/registry
+!runs/index.csv
+data
+*.onnx
+*.engine
+*.plan
+*.hef
+*.trt
+
+# Secrets
+.env
+.env.*

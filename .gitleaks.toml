@@ -1,0 +1,11 @@
+# gitleaks configuration: the default rules plus narrow, documented allowlists.
+# Run locally with `make gitleaks`; CI runs the same scan on every push and PR.
+title = "q-cal"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Environment-variable placeholders are references, not secrets"
+regexTarget = "match"
+regexes = ['''\$\{[A-Z_][A-Z0-9_]*\}''']

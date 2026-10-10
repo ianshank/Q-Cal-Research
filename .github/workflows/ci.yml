@@ -1,0 +1,156 @@
+name: ci
+
+# Head code checks: lint, strict types, the full test suite, and integrity checks that
+# need the PR's own code (claims, index and table consistency, licenses, agent layer).
+# The trust-sensitive checks (signatures, registry immutability, cross-review) live in
+# integrity.yml, which runs the *base* branch's code under pull_request_target. Head-side
+# checks run with `python -I` so a stray top-level module cannot shadow the installed package.
+
+on:
+  pull_request:
+  push:
+    branches-ignore: ["claude/**", "gemini/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  # Tool-backed tests (ssh-keygen, gpg) fail instead of skipping when CI is set.
+  CI: "true"
+
+jobs:
+  quality:
+    name: lint and types
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: python -m pip install -e ".[dev]"
+      - run: ruff check --output-format=github .
+      - run: ruff format --check .
+      - run: mypy
+
+  tests:
+    name: tests (python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: python -m pip install -e ".[dev]"
+      - name: full suite (unit, integration, regression, security, e2e) with the coverage gate
+        run: >-
+          python -m pytest --cov --cov-report=term-missing
+          --cov-report=xml:reports/coverage.xml
+          --junitxml=reports/junit-${{ matrix.python }}.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-reports-${{ matrix.python }}
+          path: reports/
+          if-no-files-found: ignore
+
+  parquet:
+    name: tests with the optional parquet extra
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: python -m pip install -e ".[dev,parquet]"
+      - run: python -m pytest tests/unit/test_index.py -q
+
+  integrity:
+    name: integrity checks (head)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: python -m pip install -e .
+      - name: agent layer is valid (frontmatter, tool policy, hooks, command drift)
+        run: python -I -m qcal agent-layer
+      - name: run index matches the records
+        run: python -I -m qcal registry index --check
+      - name: tables match the index
+        run: python -I -m qcal registry tables --check
+      - name: every number traces to a run
+        run: python -I -m qcal claims
+      - name: split manifests are disjoint
+        run: python -I -m qcal leakage --if-present
+      - name: licenses and forbidden imports
+        run: python -I -m qcal licenses
+
+  smoke:
+    name: smoke (synthetic fixture through the registry)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: python -m pip install -e .
+      - name: the Phase 1 loop end to end (< 5 min)
+        run: make smoke PYTHON=python
+
+  secrets:
+    name: secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GITLEAKS_VERSION: "8.28.0"
+      # From the release's gitleaks_8.28.0_checksums.txt (linux_x64).
+      GITLEAKS_SHA256: a65b5253807a68ac0cafa4414031fd740aeb55f54fb7e55f386acb52e6a840eb
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: install gitleaks (pinned and checksum-verified)
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/gitleaks.tar.gz" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP" gitleaks
+      - name: scan history and working tree
+        run: make gitleaks GITLEAKS="$RUNNER_TEMP/gitleaks"
+
+  container:
+    name: container build and suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - name: build the image
+        run: make docker-build IMAGE=qcal:ci
+      - name: run the suite inside the image
+        run: make docker-test IMAGE=qcal:ci
