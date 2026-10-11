@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 EXIT_OK: Final = 0
 EXIT_FAILED: Final = 1
 EXIT_USAGE: Final = 2
+EXIT_INTERRUPTED: Final = 130  # 128 + SIGINT, as shells report it
 
 Handler: TypeAlias = Callable[[argparse.Namespace, Config, TextIO], int]
 # argparse exposes no public name for the object add_subparsers() returns.

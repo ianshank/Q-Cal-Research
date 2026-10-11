@@ -221,7 +221,8 @@ def test_the_executor_child_sees_no_configuration_variables(
     dump = tmp_path / "dump_env.py"
     dump.write_text(
         "import json, os, sys\n"
-        "json.dump({'metrics': {}, 'environment': {'seen': sorted(k for k in os.environ"
+        "ENVELOPE = {'format': 'qcal.executor_result', 'version': 1, 'status': 'ok'}\n"
+        "json.dump({**ENVELOPE, 'metrics': {}, 'environment': {'seen': sorted(k for k in os.environ"
         " if k.startswith('QCAL'))}}, open(sys.argv[1], 'w'))\n"
     )
     command = json.dumps(["python3", str(dump), "{result_path}"])

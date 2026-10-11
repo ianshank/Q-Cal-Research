@@ -69,3 +69,27 @@ def test_a_record_names_its_interpreter_variables_and_launcher_keys(
     assert record.provenance["environment_variables"]["CUDA_DEVICE_ORDER"] is None
     assert "launcher.python" in record.environment
     assert record.environment["trt_version"] == "test"  # the program's own key, unprefixed
+
+
+FAILS_WITH_AN_ENVELOPE = """
+import json, sys
+json.dump({"format": "qcal.executor_result", "version": 1, "status": "failed",
+           "failure_kind": "cuda_oom", "error": "CUDA out of memory", "metrics": {"AP": 1.0},
+           "environment": {"torch": "2.9"}}, open(sys.argv[1], "w"))
+sys.exit(1)
+"""
+
+
+def test_a_failed_run_records_why_and_what_the_program_saw(tmp_path: Path) -> None:
+    """Gap: a failed record kept neither the program's environment nor a failure kind."""
+    program = tmp_path / "fails.py"
+    program.write_text(FAILS_WITH_AN_ENVELOPE, encoding="utf-8")
+    root = _project(tmp_path)
+    command = json.dumps([sys.executable, str(program), "{result_path}"])
+    (root / "qcal.toml").write_text(f"[executor]\ncommand = {command}\n", encoding="utf-8")
+    record = _runner(root).run("C-a", 0)
+    assert (record.status, record.failure_kind) == ("failed", "cuda_oom")
+    assert record.error is not None
+    assert record.error.endswith(": CUDA out of memory")
+    assert dict(record.metrics) == {}
+    assert record.environment["torch"] == "2.9"

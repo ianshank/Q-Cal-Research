@@ -35,7 +35,9 @@ def test_a1_environment_overrides_are_refused_and_logging_ones_recorded(repo: Pa
     write(repo, "EXPERIMENTS.yaml", experiments_yaml([{"id": "C-a"}], seeds=[0]))
     script = repo / "prog.py"
     script.write_text(
-        "import json, sys\njson.dump({'metrics': {'AP': 1.0}}, open(sys.argv[1], 'w'))\n"
+        "import json, sys\n"
+        "ENVELOPE = {'format': 'qcal.executor_result', 'version': 1, 'status': 'ok'}\n"
+        "json.dump({**ENVELOPE, 'metrics': {'AP': 1.0}}, open(sys.argv[1], 'w'))\n"
     )
     (repo / "qcal.toml").write_text(
         f'[executor]\ncommand = ["{sys.executable}", "{script}", "{{result_path}}"]\n'

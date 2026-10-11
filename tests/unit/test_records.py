@@ -409,3 +409,15 @@ def test_effective_ignores_order_of_records() -> None:
 def test_effective_ignores_supersession_of_unknown_run() -> None:
     records = [make_record("R1"), make_record("R2", supersedes="R0")]
     assert [r.run_id for r in effective(records)] == ["R1", "R2"]
+
+
+def test_failure_kind_round_trips_and_is_absent_when_unset() -> None:
+    record = make_record(status="failed", failure_kind="timeout")
+    assert RunRecord.from_dict(record.to_dict()).failure_kind == "timeout"
+    assert "failure_kind" not in make_record().to_dict()
+    assert RunRecord.from_dict(make_record().to_dict()).failure_kind is None
+
+
+def test_failure_kind_must_be_a_string() -> None:
+    with pytest.raises(RecordError, match="failure_kind must be a string or null"):
+        RunRecord.from_dict({**make_record().to_dict(), "failure_kind": 3})

@@ -35,7 +35,7 @@ from qcal.config import REPO_CONFIG_NAME, Config, ConfigError, environment_probl
 from qcal.integrity.leakage import check_leakage
 from qcal.log import get_logger
 from qcal.protocols import Detector, ImageDetections
-from qcal.registry.executor import sha256_file
+from qcal.registry.executor import STATUS_FAILED, STATUS_OK, result_envelope, sha256_file
 from qcal.registry.experiments import Experiments, load_experiments
 from qcal.registry.gates import INPUTS_READ_KEY
 from qcal_lab import __version__
@@ -106,11 +106,13 @@ class ExperimentResult:
     environment: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "metrics": self.metrics,
-            "artifacts": self.artifacts,
-            "environment": self.environment,
-        }
+        """The executor's result envelope for a successful run."""
+        return result_envelope(
+            STATUS_OK,
+            metrics=self.metrics,
+            artifacts=self.artifacts,
+            environment=self.environment,
+        )
 
 
 def _factor_names(lab: LabConfig) -> dict[str, str]:
@@ -353,8 +355,13 @@ def run_experiment(
     qcal_config: Config | None = None,
     lab: LabConfig | None = None,
     eval_loop: EvalLoop | None = None,
+    progress: list[dict[str, str]] | None = None,
 ) -> ExperimentResult:
-    """Run one cell and seed. ``eval_loop`` injects a loop for tests (recorded as injected)."""
+    """Run one cell and seed. ``eval_loop`` injects a loop for tests (recorded as injected).
+
+    Artifacts are appended to ``progress`` as they are written, so a run that fails part way
+    can still report what it produced.
+    """
     qcal_config = qcal_config or load_config(request.root)
     refused = environment_problems(qcal_config)
     if refused:  # the registry strips these; a swapped executor might not
@@ -387,6 +394,7 @@ def run_experiment(
         dataset,
         _artifact_dir(lab, qcal_config, request.run_id),
         images_dir,
+        artifacts=progress if progress is not None else [],
     )
     detector = build_detector(
         lab, plan.detector, dataset, precision=plan.precision, images_dir=images_dir
@@ -497,12 +505,34 @@ def _write_outputs(
     ctx.add_artifact(path, f"predictions_calibrated_{split}")
 
 
-def write_result(path: Path, result: ExperimentResult) -> None:
-    """Write the executor contract's result JSON atomically."""
+def _write_envelope(path: Path, envelope: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(result.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    tmp.write_text(json.dumps(envelope, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     tmp.replace(path)
+
+
+def write_result(path: Path, result: ExperimentResult) -> None:
+    """Write the executor contract's result envelope for a successful run, atomically."""
+    _write_envelope(path, result.to_dict())
+
+
+def write_failure(
+    path: Path,
+    *,
+    failure_kind: str,
+    error: str,
+    artifacts: Sequence[Mapping[str, str]] = (),
+) -> None:
+    """Write the result envelope of a failed run: no metrics, the artifacts written so far."""
+    envelope = result_envelope(
+        STATUS_FAILED,
+        failure_kind=failure_kind,
+        error=error,
+        artifacts=artifacts,
+        environment={"program_python": sys.executable},
+    )
+    _write_envelope(path, envelope)
 
 
 __all__ = [
@@ -517,5 +547,6 @@ __all__ = [
     "run_experiment",
     "source_digest",
     "split_roles",
+    "write_failure",
     "write_result",
 ]

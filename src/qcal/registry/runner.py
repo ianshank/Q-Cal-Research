@@ -201,15 +201,12 @@ class Runner:
         if supersedes:
             provenance["supersede_reason"] = reason.strip()
         _log.info("starting %s (cell=%s seed=%s)", run_id, cell.id, seed)
-        try:
-            result = self.executor.execute(spec)
-        except Exception as exc:  # noqa: BLE001 - a crash is recorded as a failed run, never lost
-            _log.exception("executor %s raised for %s", type(self.executor).__name__, run_id)
-            result = ExecutionResult(-1, error=f"executor raised {type(exc).__name__}: {exc}")
+        result, interrupted = self._execute(spec)
         reported = result.environment.get(INPUTS_READ_KEY)
         changed = input_mismatches(launch, reported)
         if changed and result.ok:
             result.error = "; ".join(changed)
+            result.failure_kind = "config"
             _log.error("run %s: %s", run_id, result.error)
         provenance["inputs_unverified"] = unverified_inputs(launch, reported)
         finished = self.clock()
@@ -239,15 +236,34 @@ class Runner:
             factors=dict(cell.factors),
             metrics=result.metrics if result.ok else {},
             environment=environment,
-            artifacts=tuple(result.artifacts) if result.ok else (),
+            artifacts=tuple(result.artifacts),  # a failed run keeps its partial artifacts
             log_path=_relative(spec.log_path, root),
             error=result.error,
+            failure_kind=None if result.ok else (result.failure_kind or "unknown"),
             schema_version=SCHEMA_VERSION,
         )
         self.store.write(record)
         if not result.ok:
-            _log.error("run %s failed: %s", run_id, result.error)
+            _log.error("run %s failed (%s): %s", run_id, record.failure_kind, result.error)
+        if interrupted is not None:
+            raise interrupted
         return record
+
+    def _execute(self, spec: RunSpec) -> tuple[ExecutionResult, BaseException | None]:
+        """Run the program; a crash becomes a failed result, and an interrupt (Ctrl-C,
+        ``SystemExit``) is returned so the caller records the run before re-raising it."""
+        try:
+            return self.executor.execute(spec), None
+        except Exception as exc:  # noqa: BLE001 - a crash is recorded as a failed run, never lost
+            _log.exception("executor %s raised for %s", type(self.executor).__name__, spec.run_id)
+            error = f"executor raised {type(exc).__name__}: {exc}"
+            return ExecutionResult(-1, error=error, failure_kind="unknown"), None
+        except BaseException as exc:  # noqa: BLE001 - recorded here, re-raised by run()
+            _log.error(
+                "run %s interrupted (%s); recording it first", spec.run_id, type(exc).__name__
+            )
+            error = f"interrupted by {type(exc).__name__}"
+            return ExecutionResult(-1, error=error, failure_kind="interrupted"), exc
 
     def _check_not_duplicate(self, cell_id: str, seed: int, supersedes: str | None) -> None:
         """One current ok run per (cell, seed): a second one needs an explicit supersede."""

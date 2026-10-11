@@ -188,6 +188,8 @@ kind = "subprocess"                   # registered executor used when --executor
 command = []                          # argv template; placeholders: {python} {run_id} {cell_id} {seed} {seed_role} {result_path} {log_path} {root}
 # {python} is the launcher's own interpreter: no machine path enters the hashed command.
 timeout_s = 0                         # 0 disables the timeout
+kill_grace_s = 30                     # after a timeout or interrupt: SIGTERM, wait this long, SIGKILL
+poll_interval_s = 0.2                 # how often the launcher checks on the program
 result_filename = "{run_id}.json"
 log_filename = "{run_id}.log"
 env_prefix = "QCAL_RUN_"

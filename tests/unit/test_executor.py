@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
+import subprocess
 import sys
+import time
 import zlib
 from collections.abc import Callable
 from pathlib import Path
@@ -20,6 +23,10 @@ from qcal.registry import executor as executor_module
 from qcal.registry.executor import (
     EXECUTORS,
     PLACEHOLDERS,
+    RESULT_FORMAT,
+    RESULT_VERSION,
+    STATUS_FAILED,
+    STATUS_OK,
     ExecutionResult,
     Executor,
     ExecutorNotConfiguredError,
@@ -27,6 +34,7 @@ from qcal.registry.executor import (
     SubprocessExecutor,
     build_executor,
     read_result,
+    result_envelope,
     sha256_file,
     validate_template,
 )
@@ -59,9 +67,18 @@ def script(tmp_path: Path, body: str, name: str = "program.py") -> Path:
     return write(tmp_path, name, body)
 
 
-def result_file(root: Path, payload: Any) -> Path:
+ENVELOPE = {"format": RESULT_FORMAT, "version": RESULT_VERSION, "status": STATUS_OK}
+#: The same envelope as the start of a JSON text, for documents json.dumps cannot write.
+ENVELOPE_TEXT = '{"format": "qcal.executor_result", "version": 1, "status": "ok", '
+
+
+def result_file(root: Path, payload: Any, *, envelope: bool = True) -> Path:
+    """Write ``payload`` as a result file; a mapping is wrapped in an ok envelope unless it
+    sets the envelope fields itself or ``envelope`` is false."""
     path = root / "result.json"
     path.parent.mkdir(parents=True, exist_ok=True)
+    if not isinstance(payload, str) and envelope:
+        payload = {**ENVELOPE, **payload}
     path.write_text(payload if isinstance(payload, str) else json.dumps(payload), "utf-8")
     return path
 
@@ -307,8 +324,14 @@ def test_read_result_reports_a_missing_file(tmp_path: Path) -> None:
         ({"metrics": None}, "'metrics' must be an object"),
         ({"metrics": {"AP": True}}, "non-finite or non-numeric metrics: AP"),
         ({"metrics": {"AP": "41"}}, "non-finite or non-numeric metrics: AP"),
-        ('{"metrics": {"AP": NaN}}', "non-finite or non-numeric metrics: AP"),
-        ('{"metrics": {"AP": Infinity, "x": 1}}', "non-finite or non-numeric metrics: AP"),
+        (
+            ENVELOPE_TEXT + '"metrics": {"AP": NaN}}',
+            "non-finite or non-numeric metrics: AP",
+        ),
+        (
+            ENVELOPE_TEXT + '"metrics": {"AP": Infinity, "x": 1}}',
+            "non-finite or non-numeric metrics: AP",
+        ),
         ({"metrics": {"a:b": 1.0}}, "metric names not usable in claim references: a:b"),
         ({"metrics": {"a b": 1.0}}, "metric names not usable in claim references: a b"),
         ({"metrics": {"AP$_0$": 1.0}}, "metric names not usable in claim references: AP$_0$"),
@@ -384,7 +407,8 @@ def test_execute_passes_spec_environment_and_runs_in_root(tmp_path: Path, config
         import json, os, sys
         env = {k: v for k, v in os.environ.items() if k.startswith("QCAL_RUN_")}
         env["cwd"] = os.getcwd()
-        json.dump({"metrics": {}, "environment": env}, open(sys.argv[1], "w"))
+        json.dump({"format": "qcal.executor_result", "version": 1, "status": "ok",
+                   "metrics": {}, "environment": env}, open(sys.argv[1], "w"))
         """,
     )
     executor = make_executor(config.root, [sys.executable, str(program), "{result_path}"])
@@ -403,7 +427,8 @@ def test_execute_captures_stdout_and_stderr_in_the_log(tmp_path: Path, config: C
         import json, sys
         print("to stdout", flush=True)
         print("to stderr", file=sys.stderr, flush=True)
-        json.dump({"metrics": {"AP": 1}}, open(sys.argv[1], "w"))
+        json.dump({"format": "qcal.executor_result", "version": 1, "status": "ok",
+                   "metrics": {"AP": 1}}, open(sys.argv[1], "w"))
         """,
     )
     spec = make_spec(config.root)
@@ -419,7 +444,10 @@ def test_execute_reports_non_zero_exit(tmp_path: Path, config: Config) -> None:
     spec = make_spec(config.root)
     result = make_executor(config.root, [sys.executable, str(program)]).execute(spec)
     assert (result.returncode, result.ok, result.metrics) == (3, False, {})
-    assert result.error == f"exit code 3; see {spec.log_path}"
+    assert result.error is not None
+    assert result.error.startswith(f"exit code 3; see {spec.log_path}: ")
+    assert "wrote no result file" in result.error
+    assert result.failure_kind == "unknown"
     assert "oops" in spec.log_path.read_text("utf-8")
 
 
@@ -440,6 +468,7 @@ def test_execute_reports_timeout(tmp_path: Path, config: Config) -> None:
     executor = make_executor(config.root, [sys.executable, str(program)], timeout_s=0.25)
     result = executor.execute(make_spec(config.root))
     assert (result.returncode, result.error) == (-1, "timed out after 0.25s")
+    assert result.failure_kind == "timeout"
 
 
 @pytest.mark.integration
@@ -449,3 +478,288 @@ def test_execute_reports_missing_program(tmp_path: Path, config: Config) -> None
     assert result.returncode == -1
     assert result.error is not None
     assert result.error.startswith(f"cannot start {missing}:")
+
+
+# -- the result envelope (PR-A2) ----------------------------------------------------------
+
+
+def test_result_envelope_has_every_field() -> None:
+    assert result_envelope(STATUS_OK, metrics={"AP": 1.0}) == {
+        "format": RESULT_FORMAT,
+        "version": RESULT_VERSION,
+        "status": STATUS_OK,
+        "failure_kind": None,
+        "error": None,
+        "metrics": {"AP": 1.0},
+        "artifacts": [],
+        "environment": {},
+    }
+
+
+@pytest.mark.parametrize(
+    ("status", "kind", "error"),
+    [
+        ("done", None, None),
+        (STATUS_OK, "timeout", None),
+        (STATUS_OK, None, "x"),
+        (STATUS_FAILED, None, "x"),
+        (STATUS_FAILED, "boom", "x"),
+    ],
+    ids=["bad-status", "ok-with-kind", "ok-with-error", "failed-without-kind", "unknown-kind"],
+)
+def test_result_envelope_refuses_inconsistent_fields(
+    status: str, kind: str | None, error: str | None
+) -> None:
+    with pytest.raises(ValueError, match=r"status|failure_kind|error"):
+        result_envelope(status, failure_kind=kind, error=error)
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        ({"metrics": {"AP": 1.0}}, "is not a qcal.executor_result version 1 envelope"),
+        ({**ENVELOPE, "version": 2}, "version=2"),
+        ({**ENVELOPE, "status": "done"}, "result status must be one of"),
+        (
+            {**ENVELOPE, "status": STATUS_FAILED, "failure_kind": "boom"},
+            "failure_kind must be one of",
+        ),
+        ({**ENVELOPE, "error": 3}, "result error must be a string or null"),
+    ],
+    ids=["no-envelope", "newer-version", "bad-status", "bad-kind", "bad-error"],
+)
+def test_read_result_refuses_a_malformed_envelope(
+    tmp_path: Path, payload: dict[str, Any], message: str
+) -> None:
+    result = read_result(result_file(tmp_path, payload, envelope=False), tmp_path)
+    assert result.ok is False
+    assert result.error is not None
+    assert message in result.error
+    assert (result.metrics, result.failure_kind) == ({}, "unknown")
+
+
+def test_a_failed_envelope_keeps_environment_and_existing_artifacts_but_no_metrics(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    write(tmp_path, "runs/results/partial.jsonl", "P")
+    payload = {
+        **ENVELOPE,
+        "status": STATUS_FAILED,
+        "failure_kind": "cuda_oom",
+        "error": "OutOfMemoryError: CUDA out of memory",
+        "metrics": {"AP": 1.0},
+        "artifacts": [
+            {"path": "runs/results/partial.jsonl", "kind": "raw"},
+            {"path": "runs/results/never-written.jsonl", "kind": "calibrated"},
+        ],
+        "environment": {"torch": "2.9"},
+    }
+    with caplog.at_level(logging.WARNING, logger="qcal"):
+        result = read_result(result_file(tmp_path, payload), tmp_path, 1)
+    assert result.ok is False
+    assert (result.failure_kind, result.error) == (
+        "cuda_oom",
+        "OutOfMemoryError: CUDA out of memory",
+    )
+    assert result.metrics == {}
+    assert [a.path for a in result.artifacts] == ["runs/results/partial.jsonl"]
+    assert result.environment == {"torch": "2.9"}
+    assert "never-written.jsonl does not exist" in caplog.text
+
+
+def test_an_ok_envelope_with_a_non_zero_exit_is_a_failure(tmp_path: Path) -> None:
+    result = read_result(result_file(tmp_path, {"metrics": {"AP": 1.0}}), tmp_path, 1)
+    assert (result.ok, result.metrics, result.failure_kind) == (False, {}, "unknown")
+
+
+def test_a_failed_envelope_without_details_is_named_unknown(tmp_path: Path) -> None:
+    payload = {**ENVELOPE, "status": STATUS_FAILED, "artifacts": "not a list"}
+    result = read_result(result_file(tmp_path, payload), tmp_path, 1)
+    assert (result.failure_kind, result.error, result.artifacts) == (
+        "unknown",
+        "the program reported a failure",
+        [],
+    )
+
+
+def test_invalid_ok_sections_keep_the_programs_environment(tmp_path: Path) -> None:
+    payload = {"metrics": {"AP": "x"}, "environment": {"torch": "2.9"}}
+    result = read_result(result_file(tmp_path, payload), tmp_path)
+    assert (result.ok, result.environment, result.failure_kind) == (
+        False,
+        {"torch": "2.9"},
+        "unknown",
+    )
+
+
+# -- process groups (PR-A2) ---------------------------------------------------------------
+
+
+def _alive(pid: int) -> bool:
+    """A process that exists and is not a zombie (zombies may wait for a slow reaper)."""
+    status = Path(f"/proc/{pid}/status")
+    try:
+        lines = status.read_text().splitlines()
+        state = next(line for line in lines if line.startswith("State:"))
+    except (FileNotFoundError, ProcessLookupError, StopIteration):
+        return False
+    return "Z" not in state.split()[1]
+
+
+def _wait_until_dead(pid: int, seconds: float = 5.0) -> bool:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if not _alive(pid):
+            return True
+        time.sleep(0.05)
+    return False
+
+
+SPAWNS_A_GRANDCHILD = """
+import subprocess, sys, time
+child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+open(sys.argv[1], "w").write(str(child.pid))
+time.sleep(60)
+"""
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not Path("/proc").is_dir(), reason="needs /proc (Linux)")
+def test_a_timeout_kills_the_programs_children_too(tmp_path: Path, config: Config) -> None:
+    program = script(tmp_path, SPAWNS_A_GRANDCHILD)
+    pid_file = tmp_path / "grandchild.pid"
+    executor = make_executor(
+        config.root, [sys.executable, str(program), str(pid_file)], timeout_s=1.0
+    )
+    result = executor.execute(make_spec(config.root))
+    assert result.failure_kind == "timeout"
+    assert _wait_until_dead(int(pid_file.read_text()))
+
+
+IGNORES_SIGTERM = """
+import signal, time
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+time.sleep(60)
+"""
+
+
+@pytest.mark.integration
+def test_a_program_ignoring_sigterm_is_killed_after_the_grace_period(
+    tmp_path: Path, config: Config
+) -> None:
+    program = script(tmp_path, IGNORES_SIGTERM)
+    executor = SubprocessExecutor(
+        [sys.executable, str(program)],
+        timeout_s=0.5,
+        env_prefix="QCAL_RUN_",
+        root=config.root,
+        kill_grace_s=0.5,
+        poll_interval_s=0.05,
+    )
+    started = time.monotonic()
+    result = executor.execute(make_spec(config.root))
+    assert result.failure_kind == "timeout"
+    assert time.monotonic() - started < 10
+
+
+RECORDS_ON_SIGTERM = """
+import json, signal, sys, time
+def stop(signum, frame):
+    json.dump({"format": "qcal.executor_result", "version": 1, "status": "failed",
+               "failure_kind": "interrupted", "error": "SIGTERM", "metrics": {"AP": 1},
+               "environment": {"torch": "2.9"}}, open(sys.argv[1], "w"))
+    sys.exit(1)
+signal.signal(signal.SIGTERM, stop)
+time.sleep(60)
+"""
+
+
+@pytest.mark.integration
+def test_a_timed_out_run_keeps_what_the_program_reported(tmp_path: Path, config: Config) -> None:
+    program = script(tmp_path, RECORDS_ON_SIGTERM)
+    executor = make_executor(
+        config.root, [sys.executable, str(program), "{result_path}"], timeout_s=0.5
+    )
+    result = executor.execute(make_spec(config.root))
+    assert (result.failure_kind, result.error) == ("timeout", "timed out after 0.5s")
+    assert (result.metrics, result.environment) == ({}, {"torch": "2.9"})
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not Path("/proc").is_dir(), reason="needs /proc (Linux)")
+@pytest.mark.parametrize("interrupts", [1, 2], ids=["ctrl-c", "ctrl-c-twice"])
+def test_an_interrupted_launcher_kills_the_program_and_re_raises(
+    tmp_path: Path, config: Config, monkeypatch: pytest.MonkeyPatch, interrupts: int
+) -> None:
+    """One interrupt: SIGTERM, then the group is reaped. A second one during that wait goes
+    straight to SIGKILL. Either way the program and its children are gone."""
+    program = script(tmp_path, SPAWNS_A_GRANDCHILD)
+    pid_file = tmp_path / "grandchild.pid"
+    executor = make_executor(config.root, [sys.executable, str(program), str(pid_file)])
+    real_sleep = time.sleep
+    remaining = [interrupts]
+
+    def interrupt_once_the_grandchild_exists(seconds: float) -> None:
+        if remaining[0] and pid_file.is_file() and pid_file.read_text():
+            remaining[0] -= 1
+            raise KeyboardInterrupt
+        real_sleep(seconds)
+
+    monkeypatch.setattr(executor_module.time, "sleep", interrupt_once_the_grandchild_exists)
+    with pytest.raises(KeyboardInterrupt):
+        executor.execute(make_spec(config.root))
+    assert remaining == [0]
+    assert _wait_until_dead(int(pid_file.read_text()))
+
+
+@pytest.mark.integration
+def test_execute_reports_what_the_program_cost(tmp_path: Path, config: Config) -> None:
+    executor = make_executor(config.root, executor_command(experiment_script(tmp_path)))
+    resources = executor.execute(make_spec(config.root)).resources
+    assert set(resources) == {"wall_s", "cpu_user_s", "cpu_sys_s", "peak_rss_kib"}
+    assert resources["wall_s"] > 0
+    assert resources["peak_rss_kib"] > 0
+
+
+def test_from_config_reads_the_kill_settings(make_config: Callable[[str], Config]) -> None:
+    config = make_config(
+        """
+        [executor]
+        command = ["prog"]
+        kill_grace_s = 4
+        poll_interval_s = 0.5
+        """
+    )
+    executor = SubprocessExecutor.from_config(config)
+    assert (executor.kill_grace_s, executor.poll_interval_s) == (4.0, 0.5)
+
+
+# -- reaping edge cases -------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_reap_reports_a_leader_reaped_elsewhere(tmp_path: Path) -> None:
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    os.waitpid(proc.pid, 0)  # someone else reaped it
+    assert executor_module._reap(proc, block=False) == (-1, None)
+    proc.returncode = 0  # keep Popen from waiting again
+
+
+def test_reap_returns_a_known_exit_code_without_waiting() -> None:
+    class Done:
+        pid = -1
+        returncode = 7
+
+    assert executor_module._reap(Done(), block=True) == (7, None)  # type: ignore[arg-type]
+
+
+def test_a_group_we_may_not_signal_counts_as_alive(monkeypatch: pytest.MonkeyPatch) -> None:
+    def denied(_group: int, _signum: int) -> None:
+        raise PermissionError
+
+    monkeypatch.setattr(executor_module.os, "killpg", denied)
+    assert executor_module._group_alive(12345) is True
+
+
+def test_resources_without_rusage_have_wall_time_only() -> None:
+    assert executor_module._resources(1.23456, None) == {"wall_s": 1.235}

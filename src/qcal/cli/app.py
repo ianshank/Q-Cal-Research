@@ -16,7 +16,7 @@ from typing import Final, TextIO
 
 from qcal import __version__, gitutil
 from qcal.cli import checks, ci, inspection, registry
-from qcal.cli.common import EXIT_FAILED, EXIT_USAGE, Handler, SubParsers
+from qcal.cli.common import EXIT_FAILED, EXIT_INTERRUPTED, EXIT_USAGE, Handler, SubParsers
 from qcal.config import ConfigError, load_config, load_defaults
 from qcal.log import configure_logging, get_logger, is_truthy
 
@@ -99,6 +99,9 @@ def main(
         handler: Handler = args.handler
         with gitutil.timeout_scope(config.float_value("git.timeout_s")):
             return handler(args, config, stream)
+    except KeyboardInterrupt:
+        sys.stderr.write("interrupted; any run in progress was recorded as failed\n")
+        return EXIT_INTERRUPTED
     except Exception as exc:  # the CLI boundary: report, never traceback unless debugging
         if debug:
             raise

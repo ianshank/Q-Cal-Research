@@ -53,6 +53,19 @@ class ArtifactRef:
         )
 
 
+#: Why a run failed, as the executor result envelope and a failed record name it.
+FAILURE_KINDS: Final = (
+    "timeout",
+    "cuda_oom",
+    "host_oom",
+    "cuda_error",
+    "plan",
+    "config",
+    "interrupted",
+    "unknown",
+)
+
+
 @dataclass(frozen=True)
 class RunRecord:
     run_id: str
@@ -71,6 +84,7 @@ class RunRecord:
     artifacts: tuple[ArtifactRef, ...] = ()
     log_path: str | None = None
     error: str | None = None
+    failure_kind: str | None = None  # one of FAILURE_KINDS for a failed run (schema 1, added)
     schema_version: int = SCHEMA_VERSION
     extra: Mapping[str, Any] = field(default_factory=dict)
 
@@ -110,6 +124,8 @@ class RunRecord:
             "log_path": self.log_path,
             "error": self.error,
         }
+        if self.failure_kind is not None:  # absent from records written before it existed
+            data["failure_kind"] = self.failure_kind
         data.update({k: v for k, v in self.extra.items() if k not in data})
         return data
 
@@ -144,6 +160,9 @@ class RunRecord:
         artifacts = data.get("artifacts", [])
         if not isinstance(artifacts, list) or not all(isinstance(a, Mapping) for a in artifacts):
             raise RecordError("artifacts must be a list of objects")
+        failure_kind = data.get("failure_kind")
+        if failure_kind is not None and not isinstance(failure_kind, str):
+            raise RecordError("failure_kind must be a string or null")
         supersedes = data.get("supersedes")
         if supersedes is not None and not isinstance(supersedes, str):
             raise RecordError("supersedes must be a run id string or null")
@@ -174,6 +193,7 @@ class RunRecord:
             artifacts=tuple(ArtifactRef.from_dict(a) for a in artifacts),
             log_path=data.get("log_path"),
             error=data.get("error"),
+            failure_kind=failure_kind,
             schema_version=version,
             extra={k: v for k, v in data.items() if k not in known},
         )

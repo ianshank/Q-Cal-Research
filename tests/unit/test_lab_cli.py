@@ -4,11 +4,18 @@ from __future__ import annotations
 
 import io
 import json
+import os
+import signal
+import time
 from pathlib import Path
 
 import pytest
 
+from qcal.config import ConfigError
+from qcal.registry.experiments import ExperimentsError
+from qcal.registry.records import FAILURE_KINDS
 from qcal_lab import cli
+from qcal_lab.experiment import PlanError
 from tests.conftest import write
 from tests.lab_support import coco_doc, fixture_project
 
@@ -39,15 +46,27 @@ def test_run_writes_the_result_file(project: tuple[Path, list[str]]) -> None:
     args = ["--root", str(root), "run", "--run-id", "R1", "--cell-id", cells[0], "--seed", "0"]
     assert lab(*args, "--result-path", str(result))[0] == cli.EXIT_OK
     data = json.loads(result.read_text())
-    assert set(data) == {"metrics", "artifacts", "environment"}
+    assert (data["format"], data["version"], data["status"]) == ("qcal.executor_result", 1, "ok")
+    assert set(data) == {
+        "format",
+        "version",
+        "status",
+        "failure_kind",
+        "error",
+        "metrics",
+        "artifacts",
+        "environment",
+    }
 
 
-def test_run_failures_exit_1_and_write_nothing(project: tuple[Path, list[str]]) -> None:
+def test_run_failures_exit_1_and_write_a_failed_envelope(project: tuple[Path, list[str]]) -> None:
     root, _ = project
     result = root / "runs/results/R1.json"
     args = ["--root", str(root), "run", "--run-id", "R1", "--cell-id", "C-x", "--seed", "0"]
     assert lab(*args, "--result-path", str(result))[0] == cli.EXIT_FAILED
-    assert not result.exists()
+    data = json.loads(result.read_text())
+    assert (data["status"], data["failure_kind"], data["metrics"]) == ("failed", "plan", {})
+    assert "C-x" in data["error"]
 
 
 def test_configuration_errors_exit_2(project: tuple[Path, list[str]]) -> None:
@@ -55,6 +74,7 @@ def test_configuration_errors_exit_2(project: tuple[Path, list[str]]) -> None:
     (root / "configs/lab.toml").write_text("[broken\n")
     args = ["--root", str(root), "run", "--run-id", "R1", "--cell-id", cells[0], "--seed", "0"]
     assert lab(*args, "--result-path", str(root / "r.json"))[0] == cli.EXIT_USAGE
+    assert json.loads((root / "r.json").read_text())["failure_kind"] == "config"
 
 
 def test_status(project: tuple[Path, list[str]], repo: Path) -> None:
@@ -127,3 +147,93 @@ def test_smoke_text_in_a_temporary_directory(repo: Path) -> None:
     code, text = lab("--root", str(repo), "smoke")
     assert code == cli.EXIT_OK
     assert text.startswith("smoke: PASS")
+
+
+# -- failure kinds and SIGTERM (PR-A2) ----------------------------------------------------
+
+
+class OutOfMemoryError(RuntimeError):  # stands in for torch.cuda.OutOfMemoryError
+    pass
+
+
+class AcceleratorError(RuntimeError):  # torch >= 2.8
+    pass
+
+
+class CudaError(RuntimeError):
+    pass
+
+
+class DeviceAssertError(CudaError):  # matched through its base class
+    pass
+
+
+@pytest.mark.parametrize(
+    ("exc", "kind"),
+    [
+        (KeyboardInterrupt(), "interrupted"),
+        (cli.RunInterrupted("signal 15"), "interrupted"),
+        (ConfigError("x"), "config"),
+        (PlanError("x"), "plan"),
+        (ExperimentsError("x"), "plan"),
+        (MemoryError(), "host_oom"),
+        (OutOfMemoryError("CUDA out of memory"), "cuda_oom"),
+        (AcceleratorError("x"), "cuda_error"),
+        (DeviceAssertError("x"), "cuda_error"),
+        (ValueError("x"), "unknown"),
+    ],
+)
+def test_failure_kind_names_what_ended_the_run(exc: BaseException, kind: str) -> None:
+    assert cli.failure_kind(exc) == kind
+    assert kind in FAILURE_KINDS
+
+
+def test_sigterm_becomes_an_interrupt_and_the_handler_is_restored() -> None:
+    before = signal.getsignal(signal.SIGTERM)
+
+    def terminated() -> None:
+        with cli._sigterm_interrupts():
+            os.kill(os.getpid(), signal.SIGTERM)
+            time.sleep(5)  # the handler raises long before this ends
+
+    with pytest.raises(cli.RunInterrupted):
+        terminated()
+    assert signal.getsignal(signal.SIGTERM) == before
+
+
+def test_an_unexpected_error_writes_unknown_then_propagates(
+    project: tuple[Path, list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, cells = project
+
+    def boom(*_args: object, **_kwargs: object) -> None:
+        raise ZeroDivisionError("a bug")
+
+    monkeypatch.setattr(cli, "run_experiment", boom)
+    result = root / "runs/results/R1.json"
+    args = ["--root", str(root), "run", "--run-id", "R1", "--cell-id", cells[0], "--seed", "0"]
+    with pytest.raises(ZeroDivisionError):
+        lab(*args, "--result-path", str(result))
+    data = json.loads(result.read_text())
+    assert (data["status"], data["failure_kind"]) == ("failed", "unknown")
+    assert data["error"] == "ZeroDivisionError: a bug"
+
+
+def test_a_failed_run_reports_the_artifacts_it_wrote(
+    project: tuple[Path, list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, cells = project
+
+    def partial(request: object, *, progress: list[dict[str, str]]) -> None:
+        progress.append({"path": "runs/results/R1/raw_val.jsonl", "kind": "predictions_raw_val"})
+        raise MemoryError
+
+    monkeypatch.setattr(cli, "run_experiment", partial)
+    result = root / "runs/results/R1.json"
+    args = ["--root", str(root), "run", "--run-id", "R1", "--cell-id", cells[0], "--seed", "0"]
+    assert lab(*args, "--result-path", str(result))[0] == cli.EXIT_FAILED
+    data = json.loads(result.read_text())
+    assert data["failure_kind"] == "host_oom"
+    assert data["artifacts"] == [
+        {"path": "runs/results/R1/raw_val.jsonl", "kind": "predictions_raw_val"}
+    ]

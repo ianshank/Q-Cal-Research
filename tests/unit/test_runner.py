@@ -326,20 +326,57 @@ def test_run_records_artifacts_of_successful_runs(config: Config) -> None:
     assert make_runner(config, executor).run("C-a", 0).artifacts == (artifact,)
 
 
-def test_run_records_failures_without_metrics_or_artifacts(config: Config) -> None:
+def test_run_records_failures_without_metrics_but_with_partial_artifacts(config: Config) -> None:
     artifact = ArtifactRef("x", "h")
-    executor = FakeExecutor(
-        [ExecutionResult(0, metrics={"AP": 1.0}, artifacts=[artifact], error="bad result")]
+    result = ExecutionResult(
+        0, metrics={"AP": 1.0}, artifacts=[artifact], error="bad result", failure_kind="cuda_oom"
     )
-    runner = make_runner(config, executor)
+    runner = make_runner(config, FakeExecutor([result]))
     record = runner.run("C-a", 0)
     assert (record.status, record.error, dict(record.metrics), record.artifacts) == (
         "failed",
         "bad result",
         {},
-        (),
+        (artifact,),
     )
+    assert record.failure_kind == "cuda_oom"
     assert runner.store.exists(record.run_id)
+
+
+def test_a_failure_without_a_kind_is_recorded_as_unknown(config: Config) -> None:
+    record = make_runner(config, FakeExecutor([FAILED])).run("C-a", 0)
+    assert record.failure_kind == "unknown"
+
+
+def test_an_ok_run_has_no_failure_kind(config: Config, fake_executor: FakeExecutor) -> None:
+    record = make_runner(config, fake_executor).run("C-a", 0)
+    assert record.failure_kind is None
+    assert "failure_kind" not in record.to_dict()
+
+
+class InterruptingExecutor(FakeExecutor):
+    def __init__(self, exc: BaseException) -> None:
+        super().__init__()
+        self.exc = exc
+
+    def execute(self, spec: RunSpec) -> ExecutionResult:
+        raise self.exc
+
+
+@pytest.mark.parametrize("exc", [KeyboardInterrupt(), SystemExit(3)], ids=["ctrl-c", "exit"])
+def test_an_interrupted_run_is_recorded_then_re_raised(config: Config, exc: BaseException) -> None:
+    runner = make_runner(config, InterruptingExecutor(exc))
+    with pytest.raises(type(exc)):
+        runner.run("C-a", 0)
+    (record,) = runner.store.load_all()
+    assert (record.status, record.failure_kind) == ("failed", "interrupted")
+    assert record.error == f"interrupted by {type(exc).__name__}"
+
+
+def test_a_crashing_executor_is_recorded_as_unknown(config: Config) -> None:
+    runner = make_runner(config, InterruptingExecutor(RuntimeError("boom")))
+    record = runner.run("C-a", 0)
+    assert (record.failure_kind, record.error) == ("unknown", "executor raised RuntimeError: boom")
 
 
 def test_run_logs_failures(config: Config, caplog: pytest.LogCaptureFixture) -> None:

@@ -204,7 +204,9 @@ def experiment_script(tmp_path: Path) -> Path:
         import json, sys, zlib
         cell, seed, out = sys.argv[1], int(sys.argv[2]), sys.argv[3]
         base = (zlib.crc32(cell.encode()) % 1000) / 100.0
-        json.dump({"metrics": {"LaECE0": round(base + seed, 4), "AP": round(40 + seed / 10, 4)},
+        json.dump({"format": "qcal.executor_result", "version": 1, "status": "ok",
+                   "failure_kind": None, "error": None, "artifacts": [],
+                   "metrics": {"LaECE0": round(base + seed, 4), "AP": round(40 + seed / 10, 4)},
                    "environment": {"trt_version": "test"}}, open(out, "w"))
     """),
         encoding="utf-8",
