@@ -8,7 +8,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from importlib import metadata
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from qcal.components import ComponentRegistry
 from qcal.config import ConfigError
@@ -36,6 +36,17 @@ class DetectorContext:
 
 DetectorFactory = Callable[[DetectorContext], Detector]
 DETECTORS: ComponentRegistry[DetectorFactory] = ComponentRegistry("detector kind")
+#: The deployment targets each detector kind produces predictions for. A cell whose target
+#: its detector's kind does not produce is refused, never served another target's predictions.
+KIND_TARGETS: Final[Mapping[str, frozenset[str]]] = {
+    "fixture": frozenset({"torch_fp32"}),
+    "mmdet": frozenset({"torch_fp32"}),
+}
+
+
+def detector_targets(lab: LabConfig, name: str) -> frozenset[str]:
+    """The targets the configured detector ``name`` can produce."""
+    return KIND_TARGETS.get(str(detector_settings(lab, name)["kind"]), frozenset())
 
 
 def detector_settings(lab: LabConfig, name: str) -> Mapping[str, Any]:
@@ -124,6 +135,7 @@ def setting_int(settings: Mapping[str, Any], key: str) -> int:
 
 __all__ = [
     "DETECTORS",
+    "KIND_TARGETS",
     "DetectorContext",
     "DetectorError",
     "DetectorFactory",
@@ -131,6 +143,7 @@ __all__ = [
     "detector_fingerprint",
     "detector_settings",
     "detector_spec",
+    "detector_targets",
     "setting_int",
     "setting_number",
 ]

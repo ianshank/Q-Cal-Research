@@ -23,6 +23,19 @@ from qcal.globs import first_match
 LAB_CONFIG_FILE: Final = "configs/lab.toml"
 _DEFAULTS_PACKAGE: Final = "qcal_lab.resources"
 _DEFAULTS_RESOURCE: Final = "defaults.toml"
+# Tooling settings (smoke, fixture stand-ins): packaged beside the defaults, never hashed.
+_TOOLING_RESOURCE: Final = "tooling.toml"
+#: Tables that left the science configuration, and where they went. The repository layer is
+#: refused if it still sets one: it would be ignored silently, and still be hashed.
+MOVED_TABLES: Final[Mapping[str, str]] = {
+    "smoke": f"smoke settings are tooling now (qcal_lab/resources/{_TOOLING_RESOURCE})",
+}
+
+
+def load_tooling() -> dict[str, Any]:
+    """The packaged tooling settings (smoke test, fixture stand-ins); never run inputs."""
+    text = resources.files(_DEFAULTS_PACKAGE).joinpath(_TOOLING_RESOURCE).read_text("utf-8")
+    return tomllib.loads(text)
 
 
 def load_lab_defaults() -> dict[str, Any]:
@@ -65,6 +78,9 @@ def parse_lab_config(root: Path, text: str | None, *, origin: str = "<text>") ->
             layer = tomllib.loads(text)
         except tomllib.TOMLDecodeError as exc:
             raise ConfigError(f"cannot parse {origin}: {exc}") from exc
+        moved = [f"[{name}]: {where}" for name, where in MOVED_TABLES.items() if name in layer]
+        if moved:
+            raise ConfigError(f"{origin} sets tables that moved: {'; '.join(moved)}")
         data = deep_merge(data, layer)
         sources.append(origin)
         digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -118,10 +134,12 @@ def require_hashed(lab: LabConfig, qcal_config: Config) -> None:
 
 __all__ = [
     "LAB_CONFIG_FILE",
+    "MOVED_TABLES",
     "LabConfig",
     "defaults_path",
     "load_lab_config",
     "load_lab_defaults",
+    "load_tooling",
     "parse_lab_config",
     "require_hashed",
 ]

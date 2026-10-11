@@ -26,31 +26,44 @@ import yaml
 
 from qcal import cli as qcal_cli
 from qcal import gitutil
-from qcal.config import ConfigError, load_config, without_config_environment
+from qcal.config import ConfigError, deep_merge, load_config, without_config_environment
 from qcal.log import get_logger
 from qcal.registry.executor import sha256_file
 from qcal.registry.store import RegistryStore
 from qcal.reports import verdict
-from qcal_lab.config import LAB_CONFIG_FILE, LabConfig, parse_lab_config
+from qcal_lab.config import (
+    LAB_CONFIG_FILE,
+    LabConfig,
+    load_lab_defaults,
+    load_tooling,
+    parse_lab_config,
+)
 from qcal_lab.data.fixture import build_fixture, write_fixture
 from qcal_lab.data.splits import manifest_path, partition, write_manifest
-from qcal_lab.experiment import RunRequest, run_experiment
+from qcal_lab.experiment import (
+    CALIBRATED_PREDICTIONS_KIND,
+    CALIBRATION_KIND,
+    RAW_PREDICTIONS_KIND,
+    RunRequest,
+    run_experiment,
+)
 
 _log = get_logger("lab.smoke")
 
 FIXTURE_ANNOTATIONS = "data/fixture/annotations.json"
 CELL_PREFIX = "C-smoke-"
 QcalMain = Callable[[list[str]], tuple[int, str]]
-# Every successful smoke run records these (the default split names; see [splits]).
-EXPECTED_ARTIFACTS = frozenset(
-    {
-        "predictions_raw_calibrator_fit_split",
-        "predictions_raw_val",
-        "predictions_raw_test",
-        "calibration",
-        "predictions_calibrated_test",
-    }
-)
+
+
+def expected_artifacts(roles: Mapping[str, str]) -> frozenset[str]:
+    """The artifact kinds every successful run records, for split ``roles`` (role -> split)."""
+    raw = {RAW_PREDICTIONS_KIND.format(split=split) for split in roles.values()}
+    calibrated = CALIBRATED_PREDICTIONS_KIND.format(split=roles["evaluate"])
+    return frozenset({*raw, CALIBRATION_KIND, calibrated})
+
+
+# The smoke project keeps the default split roles ([splits] in the packaged defaults).
+EXPECTED_ARTIFACTS = expected_artifacts(load_lab_defaults()["splits"])
 
 
 @dataclass
@@ -98,13 +111,26 @@ def _qcal(project: Path) -> QcalMain:
     return run
 
 
-def _settings(lab: LabConfig) -> Mapping[str, Any]:
-    return lab.table("smoke")
+def smoke_settings(overrides: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """The smoke settings (``tooling.toml``), with ``overrides`` merged over them.
+
+    They are tooling, not run inputs: changing them never changes a registered run's identity.
+    """
+    return deep_merge(load_tooling()["smoke"], overrides or {})
 
 
-def write_project(project: Path, lab: LabConfig, python: str) -> list[str]:
-    """Create the throwaway project; returns the cell ids it pre-registers."""
-    s = _settings(lab)
+def write_project(
+    project: Path,
+    lab: LabConfig,  # noqa: ARG001 - kept for callers; smoke settings are tooling
+    python: str,
+    *,
+    settings: Mapping[str, Any] | None = None,
+) -> list[str]:
+    """Create the throwaway project; returns the cell ids it pre-registers.
+
+    ``settings`` overrides individual smoke settings (tests use it).
+    """
+    s = smoke_settings(settings)
     if project.exists() and any(project.iterdir()):
         raise ConfigError(f"{project} is not empty; the smoke test builds a fresh project")
     project.mkdir(parents=True, exist_ok=True)
@@ -246,12 +272,19 @@ def _check_determinism(report: SmokeReport, project: Path, record: Any) -> None:
     )
 
 
-def run_smoke(lab: LabConfig, workdir: Path, *, python: str = sys.executable) -> SmokeReport:
+def run_smoke(
+    lab: LabConfig,
+    workdir: Path,
+    *,
+    python: str = sys.executable,
+    settings: Mapping[str, Any] | None = None,
+) -> SmokeReport:
     started = time.monotonic()
     project = workdir / "project"
     report = SmokeReport(project=str(project))
-    cells = write_project(project, lab, python)
-    seeds = len(_settings(lab)["seeds"])
+    s = smoke_settings(settings)
+    cells = write_project(project, lab, python, settings=settings)
+    seeds = len(s["seeds"])
     qcal = _qcal(project)
 
     code, out = qcal(["registry", "run-batch", f"{CELL_PREFIX}*"])
@@ -274,11 +307,19 @@ def run_smoke(lab: LabConfig, workdir: Path, *, python: str = sys.executable) ->
     if records:
         _check_determinism(report, project, records[0])
     report.seconds = time.monotonic() - started
-    budget = float(_settings(lab)["max_seconds"])
+    budget = float(s["max_seconds"])
     report.add(
         "time budget", ok=report.seconds <= budget, detail=f"{report.seconds:.1f}s of {budget:.0f}s"
     )
     return report
 
 
-__all__ = ["CELL_PREFIX", "FIXTURE_ANNOTATIONS", "SmokeReport", "run_smoke", "write_project"]
+__all__ = [
+    "CELL_PREFIX",
+    "FIXTURE_ANNOTATIONS",
+    "SmokeReport",
+    "expected_artifacts",
+    "run_smoke",
+    "smoke_settings",
+    "write_project",
+]

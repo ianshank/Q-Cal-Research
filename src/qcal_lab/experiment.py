@@ -19,6 +19,7 @@ The registry, not this program, writes the run record.
 from __future__ import annotations
 
 import collections
+import dataclasses
 import functools
 import hashlib
 import itertools
@@ -52,7 +53,7 @@ from qcal_lab.config import LabConfig, defaults_path, load_lab_config, require_h
 from qcal_lab.data.coco import GroundTruth, load_coco
 from qcal_lab.data.splits import draw, read_split, split_digest
 from qcal_lab.evaluation import EvalLoop, check_metrics, load_eval_loop
-from qcal_lab.models import build_detector, detector_fingerprint
+from qcal_lab.models import build_detector, detector_fingerprint, detector_targets
 from qcal_lab.predictions import (
     CacheEntry,
     PredictionCache,
@@ -74,7 +75,21 @@ _FACTOR_ROLES: Final = (
     "calibrator_fit_split_size",
     "shift",
     "precision",
+    "target",
+    "quant_path",
+    "fit_precision",
+    "threshold_regime",
+    "split_design",
 )
+#: Where a role's detections come from: the detector itself (Phase 2 adds a replay file).
+LIVE_SOURCE: Final = "live"
+#: Artifact file names and kinds, inside the run's artifact directory.
+RAW_PREDICTIONS_FILE: Final = "raw_{split}.jsonl"
+CALIBRATION_FILE: Final = "calibration.json"
+CALIBRATED_PREDICTIONS_FILE: Final = "calibrated_{split}.jsonl"
+RAW_PREDICTIONS_KIND: Final = "predictions_raw_{split}"
+CALIBRATION_KIND: Final = "calibration"
+CALIBRATED_PREDICTIONS_KIND: Final = "predictions_calibrated_{split}"
 
 
 class PlanError(ValueError):
@@ -91,6 +106,17 @@ class RunRequest:
 
 
 @dataclass(frozen=True)
+class RoleSpec:
+    """What one role (fit, select, evaluate) reads: Phase 1 gives every role the same."""
+
+    dataset: str
+    detector: str
+    precision: str
+    target: str
+    source: str
+
+
+@dataclass(frozen=True)
 class RunPlan:
     detector: str
     calibrator: str
@@ -98,6 +124,17 @@ class RunPlan:
     fit_size: int | None
     shift: str
     precision: str
+    target: str = "torch_fp32"
+    quant_path: str = "none"
+    fit_precision: str = "fp32"
+    threshold_regime: str = "reuse_fp32"
+    split_design: str = "disjoint"
+
+    def roles(self) -> dict[str, RoleSpec]:
+        """Each role's source of detections. Phase 2 lets them differ (for example a fit on
+        FP32 detections and an evaluation on INT8 ones); Phase 1 reads one source for all."""
+        spec = RoleSpec(self.shift, self.detector, self.precision, self.target, LIVE_SOURCE)
+        return dict.fromkeys(ROLES, spec)
 
 
 @dataclass
@@ -128,6 +165,13 @@ def resolve_plan(factors: Mapping[str, Any], lab: LabConfig) -> RunPlan:
     names = _factor_names(lab)
     defaults = lab.table("factors.defaults")
     supported = lab.table("factors.supported")
+    not_roles = sorted((set(defaults) | set(supported)) - set(_FACTOR_ROLES))
+    if not_roles:
+        raise ConfigError(
+            f"factors.defaults/supported name {not_roles}, which are not roles this program "
+            f"honours ({', '.join(_FACTOR_ROLES)}); a validated but ignored factor would "
+            "label runs it never ran"
+        )
     passthrough = set(lab.config.str_list("factors.passthrough"))
     unknown = sorted(
         k
@@ -165,9 +209,12 @@ def resolve_plan(factors: Mapping[str, Any], lab: LabConfig) -> RunPlan:
     if not isinstance(shift, str) or not isinstance(datasets, Mapping) or shift not in datasets:
         raise PlanError(f"shift {shift!r} has no datasets.{shift} entry")
     precision = value("precision")
-    if not isinstance(precision, str):
-        raise PlanError("precision must be a string")
-    return RunPlan(detector, calibrator, str(scope), size, shift, precision)
+    labels = {r: value(r) for r in ("target", "quant_path", "fit_precision", "threshold_regime")}
+    labels["split_design"] = value("split_design")
+    for role, label in {"precision": precision, **labels}.items():
+        if not isinstance(label, str) or not label:
+            raise PlanError(f"{names[role]} must be a non-empty string, got {label!r}")
+    return RunPlan(detector, calibrator, str(scope), size, shift, str(precision), **labels)
 
 
 def split_roles(lab: LabConfig, qcal_config: Config) -> dict[str, str]:
@@ -321,7 +368,7 @@ def _raw_predictions(
     if entry is not None and images is not None:
         _log.info("using raw predictions for %s cached by %s", split, entry.produced_by)
         ctx.cache_use[split] = {"hit": True, "produced_by": entry.produced_by}
-        ctx.add_artifact(entry.path, f"predictions_raw_{split}")
+        ctx.add_artifact(entry.path, RAW_PREDICTIONS_KIND.format(split=split))
         return images
     _log.info("running %s on %d %s images", ctx.plan.detector, len(ids), split)
     images = tuple(detector.predict(list(ids)))
@@ -329,12 +376,12 @@ def _raw_predictions(
         raise PlanError(f"{ctx.plan.detector} returned images out of order or incomplete")
     path = cache.path(key)
     if path is None:
-        path = ctx.artifact_dir / f"raw_{split}.jsonl"
+        path = ctx.artifact_dir / RAW_PREDICTIONS_FILE.format(split=split)
         write_predictions(path, header, images)
     else:
         cache.put(key, header, images, produced_by=ctx.request.run_id)
     ctx.cache_use[split] = {"hit": False, "produced_by": ctx.request.run_id}
-    ctx.add_artifact(path, f"predictions_raw_{split}")
+    ctx.add_artifact(path, RAW_PREDICTIONS_KIND.format(split=split))
     return images
 
 
@@ -377,6 +424,12 @@ def run_experiment(
     if request.seed not in experiments.seeds_for(cell):
         raise PlanError(f"seed {request.seed} is not pre-registered for {cell.id}")
     plan = resolve_plan(cell.factors, lab)
+    produced = detector_targets(lab, plan.detector)
+    if plan.target not in produced:
+        raise PlanError(
+            f"detector {plan.detector!r} does not produce target {plan.target!r} "
+            f"(it produces: {sorted(produced)}); refusing rather than relabelling its predictions"
+        )
     roles = split_roles(lab, qcal_config)
     if eval_loop is None:  # fail before any detector work if Ian's loop is missing
         loaded = load_eval_loop(lab, qcal_config)
@@ -449,6 +502,7 @@ def run_experiment(
         },
         "detector": _fingerprint(lab, plan),
         "detector_runtime": dict(getattr(detector, "runtime", {})),
+        "roles": {role: dataclasses.asdict(spec) for role, spec in plan.roles().items()},
         "prediction_cache": ctx.cache_use,
         "calibration": {
             key: saved[key]
@@ -494,11 +548,11 @@ def _write_outputs(
     evaluated: Sequence[ImageDetections],
 ) -> None:
     ctx.artifact_dir.mkdir(parents=True, exist_ok=True)
-    calibration_path = ctx.artifact_dir / "calibration.json"
+    calibration_path = ctx.artifact_dir / CALIBRATION_FILE
     calibration_path.write_text(
         json.dumps(calibration.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    ctx.add_artifact(calibration_path, "calibration")
+    ctx.add_artifact(calibration_path, CALIBRATION_KIND)
     header = PredictionsHeader(
         detector=ctx.plan.detector,
         split=split,
@@ -507,9 +561,9 @@ def _write_outputs(
         split_sha256=split_digest(ids),
         category_ids=ctx.dataset.category_ids,
     )
-    path = ctx.artifact_dir / f"calibrated_{split}.jsonl"
+    path = ctx.artifact_dir / CALIBRATED_PREDICTIONS_FILE.format(split=split)
     write_predictions(path, header, evaluated)
-    ctx.add_artifact(path, f"predictions_calibrated_{split}")
+    ctx.add_artifact(path, CALIBRATED_PREDICTIONS_KIND.format(split=split))
 
 
 def _write_envelope(path: Path, envelope: Mapping[str, Any]) -> None:
@@ -547,6 +601,7 @@ __all__ = [
     "ROLES",
     "ExperimentResult",
     "PlanError",
+    "RoleSpec",
     "RunPlan",
     "RunRequest",
     "check_disjoint",

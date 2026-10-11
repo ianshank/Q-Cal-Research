@@ -10,8 +10,10 @@ import pytest
 from qcal.config import ConfigError, load_config
 from qcal_lab.config import (
     LAB_CONFIG_FILE,
+    MOVED_TABLES,
     load_lab_config,
     load_lab_defaults,
+    load_tooling,
     parse_lab_config,
     require_hashed,
 )
@@ -90,3 +92,20 @@ def test_environment_variables_never_change_science_settings(
     monkeypatch.setenv("QCAL__SPLITS__EVALUATE", '"val"')
     monkeypatch.setenv("QCAL_LAB__SPLITS__EVALUATE", '"val"')
     assert load_lab_config(repo).config.str_value("splits.evaluate") == "test"
+
+
+# -- tooling settings (docs/changes/run-identity-and-formats.md) ------------------------------
+
+
+def test_tooling_settings_are_not_science_settings() -> None:
+    """Smoke and fixture stand-in settings live outside the hashed defaults."""
+    tooling = load_tooling()
+    assert {"smoke", "fixture_eval"} <= set(tooling)
+    assert not set(tooling) & set(load_lab_defaults())
+
+
+@pytest.mark.parametrize("table", sorted(MOVED_TABLES))
+def test_a_repository_layer_setting_a_moved_table_is_refused(repo: Path, table: str) -> None:
+    """It would otherwise be ignored silently, and still change the run's config hash."""
+    with pytest.raises(ConfigError, match=rf"\[{table}\]: .*tooling"):
+        parse_lab_config(repo, f"[{table}]\nimages = 3\n")

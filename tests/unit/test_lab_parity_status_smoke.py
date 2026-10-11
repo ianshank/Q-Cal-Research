@@ -21,7 +21,7 @@ from qcal_lab.parity import (
     load_cases,
 )
 from qcal_lab.predictions import PredictionsHeader, write_predictions
-from qcal_lab.smoke import SmokeReport, run_smoke
+from qcal_lab.smoke import SmokeReport, expected_artifacts, run_smoke, smoke_settings
 from qcal_lab.status import build_status
 from tests.lab_support import det, image, lab_config
 
@@ -203,8 +203,12 @@ def test_smoke_report_rendering() -> None:
 
 
 def test_smoke_detects_a_failing_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    lab = lab_config(tmp_path, '[smoke]\ncalibrators = ["none"]\n')
-    report = run_smoke(lab, tmp_path / "w", python=str(tmp_path / "no-such-python"))
+    report = run_smoke(
+        lab_config(tmp_path),
+        tmp_path / "w",
+        python=str(tmp_path / "no-such-python"),
+        settings={"calibrators": ["none"]},
+    )
     assert not report.passed
     failed = {name for name, ok, _ in report.checks if not ok}
     assert "every pre-registered run succeeded" in failed
@@ -228,4 +232,23 @@ def test_smoke_refuses_split_sizes_larger_than_the_fixture(tmp_path: Path) -> No
     from qcal_lab.data.splits import SplitError
 
     with pytest.raises(SplitError, match="only 20 exist"):
-        run_smoke(lab_config(tmp_path, "[smoke.split_sizes]\ntest = 100\n"), tmp_path / "w")
+        run_smoke(lab_config(tmp_path), tmp_path / "w", settings={"split_sizes": {"test": 100}})
+
+
+def test_smoke_settings_are_tooling_with_overrides() -> None:
+    settings = smoke_settings({"split_sizes": {"test": 3}, "seeds": [0, 1]})
+    assert settings["split_sizes"]["test"] == 3
+    assert settings["split_sizes"]["val"] == smoke_settings()["split_sizes"]["val"]  # deep merge
+    assert settings["seeds"] == [0, 1]
+    assert smoke_settings()["seeds"] == [0]  # overrides never leak into the packaged settings
+
+
+def test_expected_artifacts_follow_the_split_roles() -> None:
+    roles = {"fit": "a", "select": "b", "evaluate": "c"}
+    assert expected_artifacts(roles) == {
+        "predictions_raw_a",
+        "predictions_raw_b",
+        "predictions_raw_c",
+        "calibration",
+        "predictions_calibrated_c",
+    }

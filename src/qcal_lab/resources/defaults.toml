@@ -13,23 +13,36 @@ calibrator_scope = "calibrator_scope"
 calibrator_fit_split_size = "calibrator_fit_split_size"
 shift = "shift"
 precision = "precision"
+target = "target"                 # where the detector runs: torch_fp32 (Phase 2 adds TensorRT)
+quant_path = "quant_path"         # how a quantised model was produced (none in Phase 1)
+fit_precision = "fit_precision"   # the precision of the detections calibrators fit on
+threshold_regime = "threshold_regime"
+split_design = "split_design"     # disjoint fit/select/evaluate splits (D1 may add `paper`)
 # Factors accepted with any value because they only label a cell.
 passthrough = ["note"]
 
 [factors.defaults]
-# Used when a cell omits the factor.
+# Used when a cell omits the factor. Every key here and in [factors.supported] is a role
+# above: a factor the program validated and then ignored would label runs it never ran.
 calibrator = "none"
 calibrator_scope = "per_class"
 shift = "id"
 precision = "fp32"
+target = "torch_fp32"
+quant_path = "none"
+fit_precision = "fp32"
+threshold_regime = "reuse_fp32"
+split_design = "disjoint"
 
 [factors.supported]
 # Phase 1 is the FP32 reproduction: any other value is refused, never silently ignored.
 # Later phases extend these lists in configs/lab.toml.
 precision = ["fp32", "fp32_tf32_off"]
 target = ["torch_fp32"]
+quant_path = ["none"]
 fit_precision = ["fp32"]
 threshold_regime = ["reuse_fp32"]
+split_design = ["disjoint"]
 calibrator_scope = ["per_class", "global"]
 
 [splits]
@@ -106,22 +119,6 @@ cache_dir = "runs/cache/predictions"   # content-addressed raw predictions; "" d
 fingerprint_file_settings = ["config", "checkpoint"]
 fingerprint_packages = ["torch", "torchvision", "mmdet", "mmcv", "mmengine", "numpy"]
 artifact_dir = "{results_dir}/{run_id}"
-
-[smoke]
-images = 20
-categories = 3
-max_objects_per_image = 4
-seed = 0
-image_width = 640
-image_height = 480
-max_seconds = 300
-seeds = [0]
-# Fixture split sizes; they must sum to at most `images`.
-split_sizes = { trt_calib_images = 2, calibrator_fit_split = 8, val = 4, test = 6 }
-calibrator_fit_split_size = 6
-calibrators = ["none", "platt", "isotonic"]
-# The smoke project's registry probes only what is cheap and always present.
-env_collectors = ["python", "packages"]
 
 [parity]
 fixtures_dir = "tests/parity/fixtures"

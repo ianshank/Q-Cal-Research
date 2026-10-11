@@ -55,11 +55,14 @@ In order, each step a separate commit:
      roles. `split_design` supports only `disjoint` until Ian decides D1.
    - The keys of `factors.supported` and `factors.defaults` must be roles.
    - A detector kind declares the targets it can produce, so a `trt_jetson` cell is refused.
-   - `[smoke]`, `[detectors.fixture]` and the fixture loop's hit IoU move to an unhashed
-     `resources/tooling.toml`. `[parity]` stays hashed, because its tolerance is a G1 gate
-     value.
+   - `RunPlan.roles()` names what each role (fit, select, evaluate) reads: dataset,
+     detector, precision, target and source. Phase 1 gives every role the same.
+   - `[smoke]` and the fixture loop's hit IoU move to an unhashed `resources/tooling.toml`.
+     The fixture loop reads its hit IoU when it is built, never while it evaluates.
+   - Two tables stay hashed. `[parity]`, because its tolerance is a G1 gate value.
+     `[detectors.fixture]`, because it decides the fixture runs' predictions, so it is an
+     input of those runs; it is looked up like every other detector.
    - Artifact file names become code constants.
-   - Dataset entries gain kind, split namespace and label map.
 3. **Strict formats.**
    - Predictions version 2. The header gains precision, target, quant path, shift, score
      definition, model sha256 and the effective `test_cfg`. Rows reserve `source_index`,
@@ -120,14 +123,19 @@ In order, each step a separate commit:
 
   `cell_id`, `split_digest`, `rank_key`, `draw`, `config_hash` and the fixture bytes do not
   change.
-- Config keys: new `[numerics.regimes.*]`, `[tooling]` resources and dataset fields; no key is
-  removed from a hashed file without its replacement.
+- Config keys: new roles under `[factors]`, `[numerics.regimes.*]`, and a packaged
+  `resources/tooling.toml` (`[smoke]`, `[fixture_eval]`). `[smoke]` leaves the hashed
+  defaults; a `[smoke]` table in `configs/lab.toml` is refused with a pointer to the new file.
+  Tests override smoke settings through `run_smoke(..., settings=...)`.
 - Records: the program's environment gains keys; schema 1 only gains fields.
 - Cache: every existing cache entry misses once. No registered run exists.
 - Parity fixtures: none committed yet; the parity-case envelope applies from the first one.
 
 ## Out of scope
 - The split design (`paper`) waits for D1 and its rule 3 rewording.
+- Dataset kind, split namespace and label-map fields under `[datasets.*]`. The label-map
+  check reads the categories in the annotations file, so no field is needed yet; Phase 2's
+  shifted datasets add them with their first use.
 - The EvalLoop v2 code waits for Ian's acceptance.
 - A development-run command (`DEV-` ids) is deferred to the next lab change.
 

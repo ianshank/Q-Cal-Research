@@ -133,9 +133,11 @@ def test_cache_key() -> None:
 
 
 def test_lab_config_effective_digest() -> None:
+    # Re-pinned by docs/changes/run-identity-and-formats.md step 2: five roles added under
+    # [factors], and [smoke] moved to the unhashed tooling.toml. Nothing else changed.
     lab = load_lab_config(REPO_ROOT)
     assert _effective_digest(lab) == (
-        "d10350f08925addc61157b1ba957eb0ed24cf3d530dbec1eafaa2ba7494a40aa"
+        "46a15c74800c4c5f4a0a401315df20bab25fda2500d2bc51d057553338c47c98"
     )
 
 

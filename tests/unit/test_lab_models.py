@@ -13,7 +13,14 @@ from qcal.config import ConfigError
 from qcal.protocols import Detector
 from qcal_lab.data.coco import parse_coco
 from qcal_lab.data.fixture import NotFixtureError, build_fixture, fixture_bytes, is_fixture
-from qcal_lab.models import DetectorError, build_detector, detector_spec
+from qcal_lab.models import (
+    DETECTORS,
+    KIND_TARGETS,
+    DetectorError,
+    build_detector,
+    detector_spec,
+    detector_targets,
+)
 from qcal_lab.models import mmdet as mmdet_module
 from qcal_lab.models.base import setting_int, setting_number
 from qcal_lab.models.fixture import FixtureDetector
@@ -320,3 +327,20 @@ def test_fingerprint_follows_file_contents_and_package_versions(tmp_path: Path) 
     assert first["packages"]["pytest"] == pytest.__version__
     weights.write_bytes(b"v2")  # replaced at the same path
     assert fingerprint()["files"]["checkpoint"] != first["files"]["checkpoint"]
+
+
+# --- deployment targets ----------------------------------------------------------------------
+
+
+def test_every_registered_kind_declares_its_targets() -> None:
+    """A kind without targets could run no cell; a target for no kind is a typo."""
+    assert set(KIND_TARGETS) == set(DETECTORS.names())
+    assert all(KIND_TARGETS.values())
+
+
+def test_detector_targets_follow_the_configured_kind(tmp_path: Path) -> None:
+    lab = lab_config(tmp_path, '[detectors.mystery]\nkind = "onnx"\n')
+    assert detector_targets(lab, "fixture") == {"torch_fp32"}
+    assert detector_targets(lab, "mystery") == frozenset()  # an unknown kind produces nothing
+    with pytest.raises(ConfigError, match="not configured"):
+        detector_targets(lab, "absent")

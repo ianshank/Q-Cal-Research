@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
 from qcal.config import ConfigError, load_config
 from qcal.protocols import ImageDetections
@@ -15,7 +16,12 @@ from qcal_lab.config import load_lab_config
 from qcal_lab.data.coco import GroundTruth
 from qcal_lab.evaluation import HandwrittenMissingError
 from qcal_lab.experiment import (
+    CALIBRATED_PREDICTIONS_FILE,
+    CALIBRATION_FILE,
+    RAW_PREDICTIONS_FILE,
+    ROLES,
     PlanError,
+    RoleSpec,
     RunRequest,
     resolve_plan,
     run_experiment,
@@ -70,6 +76,9 @@ def test_plan_reads_every_role(tmp_path: Path) -> None:
         ({"detector": "a", "precision": "ptq_entropy"}, "precision='ptq_entropy' is not supported"),
         ({"detector": "a", "target": "trt_jetson"}, "target='trt_jetson'"),
         ({"detector": "a", "threshold_regime": "reselect_int8"}, "threshold_regime"),
+        ({"detector": "a", "quant_path": "ptq_minmax"}, "quant_path='ptq_minmax'"),
+        ({"detector": "a", "fit_precision": "int8"}, "fit_precision='int8'"),
+        ({"detector": "a", "split_design": "paper"}, "split_design='paper'"),
         ({"detector": "a", "calibrator": "temperature"}, "unknown calibrator"),
         ({"detector": "a", "calibrator_scope": "image"}, "calibrator_scope='image'"),
         ({"detector": "a", "calibrator_fit_split_size": 0}, "positive integer"),
@@ -93,8 +102,49 @@ def test_plan_configuration_errors(tmp_path: Path) -> None:
     lab = lab_config(
         tmp_path, "[factors.defaults]\nprecision = 32\n[factors.supported]\nprecision = [32]\n"
     )
-    with pytest.raises(PlanError, match="precision must be a string"):
+    with pytest.raises(PlanError, match="precision must be a non-empty string"):
         resolve_plan({"detector": "a"}, lab)
+
+
+def test_every_pre_registered_axis_is_a_role_with_a_default(tmp_path: Path) -> None:
+    plan = resolve_plan({"detector": "atss_r50"}, lab_config(tmp_path))
+    assert (
+        plan.target,
+        plan.quant_path,
+        plan.fit_precision,
+        plan.threshold_regime,
+        plan.split_design,
+    ) == ("torch_fp32", "none", "fp32", "reuse_fp32", "disjoint")
+
+
+def test_plan_roles_name_what_each_role_reads(tmp_path: Path) -> None:
+    plan = resolve_plan(
+        {"detector": "atss_r50", "precision": "fp32_tf32_off"}, lab_config(tmp_path)
+    )
+    spec = RoleSpec("id", "atss_r50", "fp32_tf32_off", "torch_fp32", "live")
+    assert plan.roles() == dict.fromkeys(ROLES, spec)
+
+
+@pytest.mark.parametrize("table", ["defaults", "supported"])
+def test_a_factor_that_is_not_a_role_is_a_configuration_error(tmp_path: Path, table: str) -> None:
+    """A validated but ignored factor would label runs with something they never ran."""
+    value = '"x"' if table == "defaults" else '["x"]'
+    lab = lab_config(tmp_path, f"[factors.{table}]\nbatch_size = {value}\n")
+    with pytest.raises(ConfigError, match=r"\['batch_size'\], which are not roles"):
+        resolve_plan({"detector": "a"}, lab)
+
+
+@pytest.mark.parametrize("role", ["target", "quant_path", "fit_precision", "split_design"])
+def test_role_labels_must_be_non_empty_strings(tmp_path: Path, role: str) -> None:
+    lab = lab_config(tmp_path, f'[factors.supported]\n{role} = [""]\n')
+    with pytest.raises(PlanError, match=f"{role} must be a non-empty string"):
+        resolve_plan({"detector": "a", role: ""}, lab)
+
+
+def test_artifact_file_names_are_per_split_templates() -> None:
+    assert RAW_PREDICTIONS_FILE.format(split="val") == "raw_val.jsonl"
+    assert CALIBRATED_PREDICTIONS_FILE.format(split="test") == "calibrated_test.jsonl"
+    assert "{" not in CALIBRATION_FILE
 
 
 # --- split roles ------------------------------------------------------------------------------
@@ -330,6 +380,36 @@ def test_injected_loops_are_recorded_as_injected(project: tuple[Path, list[str]]
     root, cells = project
     result = run_experiment(_request(root, cells[0]), eval_loop=FixtureEvalLoop())
     assert result.environment["eval_loop"] == {"module": "injected:FixtureEvalLoop"}
+
+
+def test_a_target_the_detector_does_not_produce_is_refused_before_detector_work(
+    project: tuple[Path, list[str]],
+) -> None:
+    """Supporting a target in configuration does not make a detector produce it."""
+    root, _ = project
+    lab_file = root / "configs/lab.toml"
+    lab_file.write_text(
+        lab_file.read_text() + '[factors.supported]\ntarget = ["torch_fp32", "trt_jetson"]\n'
+    )
+    experiments = yaml.safe_load((root / "EXPERIMENTS.yaml").read_text())
+    experiments["cells"].append({"id": "C-jetson", "detector": "fixture", "target": "trt_jetson"})
+    (root / "EXPERIMENTS.yaml").write_text(yaml.safe_dump(experiments, sort_keys=False))
+    with pytest.raises(PlanError, match="does not produce target 'trt_jetson'"):
+        run_experiment(_request(root, "C-jetson"))
+    assert not (root / "runs/cache").exists()
+
+
+def test_a_run_records_each_roles_source(project: tuple[Path, list[str]]) -> None:
+    root, cells = project
+    roles = run_experiment(_request(root, cells[0])).environment["roles"]
+    assert set(roles) == set(ROLES)
+    assert roles["fit"] == {
+        "dataset": "id",
+        "detector": "fixture",
+        "precision": "fp32",
+        "target": "torch_fp32",
+        "source": "live",
+    }
 
 
 def test_unregistered_seed_or_cell_is_refused(project: tuple[Path, list[str]]) -> None:
