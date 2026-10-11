@@ -27,6 +27,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import signal
 import string
 import subprocess
@@ -213,6 +214,9 @@ class SubprocessExecutor:
     @classmethod
     def from_config(cls, config: Config) -> SubprocessExecutor:
         timeout = config.float_value("executor.timeout_s")
+        for key in ("executor.kill_grace_s", "executor.poll_interval_s"):
+            if not config.float_value(key) > 0:
+                raise ConfigError(f"{key} must be a positive number of seconds")
         return cls(
             config.str_list("executor.command"),
             timeout_s=timeout if timeout > 0 else None,
@@ -259,6 +263,7 @@ class SubprocessExecutor:
                 -1, error=f"cannot start {argv[0]}: {exc}", failure_kind=UNKNOWN_KIND
             )
         returncode, usage, timed_out = self._wait(proc)
+        self._end_stragglers(proc.pid)  # before any artifact is hashed
         measured = _resources(time.monotonic() - started, usage)
         result = read_result(spec.result_path, self.root, returncode)
         result.resources = {**result.resources, **measured}  # measured values always win
@@ -312,6 +317,19 @@ class SubprocessExecutor:
         )
         _signal_group(group, signal.SIGKILL)
         return reaped if reaped is not None else _reap(proc, block=True) or (-signal.SIGKILL, None)
+
+    def _end_stragglers(self, group: int) -> None:
+        """End processes the program left in its group (DataLoader workers, a daemon): they
+        could keep the GPU, or write to an artifact after the launcher hashed it."""
+        if not _group_alive(group):
+            return
+        _log.warning("process group %d outlived its leader; terminating what is left", group)
+        _signal_group(group, signal.SIGTERM)
+        deadline = time.monotonic() + self.kill_grace_s
+        while _group_alive(group) and time.monotonic() < deadline:
+            time.sleep(self.poll_interval_s)
+        if _group_alive(group):
+            _signal_group(group, signal.SIGKILL)
 
     def _await_group(self, proc: subprocess.Popen[bytes], group: int) -> tuple[int, Any] | None:
         """Wait up to the grace period for the leader to exit and the group to empty."""
@@ -401,6 +419,10 @@ def _parse_metrics(raw: Any) -> dict[str, float]:
     return {k: float(v) for k, v in raw.items()}
 
 
+#: An artifact entry's optional ``sha256``: the program's digest of the bytes it wrote or read.
+SHA256_PATTERN: Final = re.compile(r"[0-9a-f]{64}")
+
+
 def _parse_artifacts(raw: Any, root: Path) -> list[ArtifactRef]:
     if not isinstance(raw, list):
         raise _ResultError("'artifacts' must be a list")
@@ -417,14 +439,32 @@ def _parse_artifacts(raw: Any, root: Path) -> list[ArtifactRef]:
             if absolute.is_relative_to(root)
             else str(absolute)
         )
+        digest = sha256_file(absolute)
+        reported = entry.get("sha256")
+        if reported is not None and not (
+            isinstance(reported, str) and SHA256_PATTERN.fullmatch(reported)
+        ):
+            raise _ResultError(f"artifact {entry['path']}: sha256 must be 64 lowercase hex digits")
+        if reported is not None and reported != digest:
+            # The record is written after the program exits; bytes changed in between are not
+            # what the program produced or read, and a record must never vouch for them.
+            raise _ResultError(
+                f"artifact {entry['path']} changed after the program wrote or read it "
+                f"(the program reported sha256 {reported[:12]}, the file now has {digest[:12]})"
+            )
         kind = str(entry.get("kind", ""))
-        artifacts.append(ArtifactRef(shown, sha256_file(absolute), kind, absolute.stat().st_size))
+        artifacts.append(ArtifactRef(shown, digest, kind, absolute.stat().st_size))
     return artifacts
 
 
 def _parse_envelope(data: Mapping[str, Any]) -> tuple[str, str | None, str | None]:
     """(status, failure_kind, error) of a well-formed envelope; anything else is refused."""
-    if data.get("format") != RESULT_FORMAT or data.get("version") != RESULT_VERSION:
+    version = data.get("version")
+    if (
+        data.get("format") != RESULT_FORMAT
+        or isinstance(version, bool)
+        or version != RESULT_VERSION
+    ):
         raise _ResultError(
             f"result file is not a {RESULT_FORMAT} version {RESULT_VERSION} envelope "
             f"(format={data.get('format')!r}, version={data.get('version')!r})"
@@ -436,6 +476,8 @@ def _parse_envelope(data: Mapping[str, Any]) -> tuple[str, str | None, str | Non
         raise _ResultError(f"failure_kind must be one of {FAILURE_KINDS}, got {kind!r}")
     if error is not None and not isinstance(error, str):
         raise _ResultError("result error must be a string or null")
+    if status == STATUS_OK and (kind is not None or error is not None):
+        raise _ResultError("an ok result carries no failure_kind or error")
     return status, kind, error
 
 
@@ -489,15 +531,18 @@ def read_result(path: Path, root: Path, returncode: int = 0) -> ExecutionResult:
     )
 
 
+def _reportable(value: Any) -> bool:
+    """None, a string or a finite number; never a boolean, NaN or infinity."""
+    if value is None or isinstance(value, str):
+        return True
+    return isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value)
+
+
 def _reported_resources(raw: Any) -> dict[str, Any]:
     """The program's resource figures: allowlisted keys with scalar values only."""
     if not isinstance(raw, Mapping):
         return {}
-    kept = {
-        k: v
-        for k, v in raw.items()
-        if k in CHILD_RESOURCE_KEYS and (v is None or isinstance(v, str | int | float))
-    }
+    kept = {k: v for k, v in raw.items() if k in CHILD_RESOURCE_KEYS and _reportable(v)}
     dropped = sorted(set(map(str, raw)) - set(kept))
     if dropped:
         _log.warning("program resources ignored (not reportable): %s", ", ".join(dropped))

@@ -141,6 +141,44 @@ Each step is a separate commit:
 - Artifact storage (PR-G).
 - The device-used fields, which the lab program reports (PR-D1).
 
+## Adversarial review (advisory) and what changed
+`adversarial-reviewer` on the wave-2 head (`f57816f`): **block**. The full report, with how
+each finding was handled, is in `review/claude/claude-sdlc-agents-implementation-plan-gmb29t.md`.
+The launcher's three blocking findings, each fixed with a test that fails without its fix:
+- **B1, a record vouching for bytes the program never wrote.** The launcher hashed artifacts
+  only when it wrote the record, possibly hours after the program wrote them. The program now
+  reports each artifact's sha256 in the envelope (optional key, `[0-9a-f]{64}`). A file that
+  differs fails the run, and a failed run drops it from its partial artifacts.
+- **B5, an interrupt after the program finished.** A Ctrl-C while the collectors ran (torch,
+  `nvidia-smi`, git) lost the record, and the `finally` deleted the in-flight marker. SIGINT,
+  SIGTERM and SIGHUP are now held from the program's exit to the record write, then delivered.
+  They are held by swapping handlers, not by a thread mask, which other live threads defeat.
+  The marker is removed only once the record exists.
+- **B6, a launcher killed by `kill` or a closed terminal.** The program runs in its own
+  session, so it outlived the launcher unrecorded and kept the GPU. While a program runs,
+  SIGTERM and SIGHUP now raise `LauncherSignal` (a `KeyboardInterrupt`): the group is
+  terminated, the run recorded, and the launcher exits 130. SIGKILL of the launcher still
+  orphans the program; `PR_SET_PDEATHSIG` would cover it and is left out (it needs `ctypes`
+  and a pre-exec hook).
+
+Non-blocking findings applied:
+- N6: envelopes must be self-consistent (an ok status with a failure kind or error is
+  refused; a boolean version is refused; resource figures are finite numbers, strings or
+  null).
+- N7: processes the program leaves in its group are terminated before artifacts are hashed.
+- N16: `executor.kill_grace_s` and `poll_interval_s` must be positive.
+- N5: an empty `data.datasets` is a configuration error.
+
+Follow-ups, not in this change:
+- N1: an interrupted run drops the program's envelope (partial artifacts, environment).
+- N4: tables compare only `config_inputs_sha256`, not the policy and pre-registration
+  digests the audit also compares.
+- N5: the leakage check and split reads use the first dataset only; Phase 2 needs per-dataset
+  manifests read by the cells that use them.
+- N8: the audit's lock probe can make a launcher's non-blocking lock fail.
+- N12: a table-spec directory covering `configs/` can exclude the lab file from the hash
+  while `require_hashed` accepts it.
+
 ## Ian decisions requested
 1. Sign this change in session 1 (Oct 17).
 2. Set `executor.timeout_s` in `qcal.toml`; 14400 (4 h) is suggested. Agents do not set it.

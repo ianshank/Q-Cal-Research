@@ -815,3 +815,111 @@ def test_measured_resources_override_what_the_program_says(tmp_path: Path, confi
     resources = executor.execute(make_spec(config.root)).resources
     assert resources["cache_misses"] == 2
     assert resources["wall_s"] > 0
+
+
+# -- artifacts the program vouched for (wave-2 review, B1) ----------------------------------
+
+
+def _artifact_result(tmp_path: Path, sha256: object, *, status: str = "ok") -> Path:
+    write(tmp_path, "runs/results/p.jsonl", "written by the program")
+    entry: dict[str, Any] = {"path": "runs/results/p.jsonl", "kind": "predictions"}
+    if sha256 is not None:
+        entry["sha256"] = sha256
+    payload: dict[str, Any] = {"metrics": {"AP": 1.0}, "artifacts": [entry]}
+    if status != "ok":
+        payload.update(status="failed", failure_kind="plan", error="refused")
+    return result_file(tmp_path, payload)
+
+
+def test_an_artifact_matching_the_programs_digest_is_kept(tmp_path: Path) -> None:
+    digest = hashlib.sha256(b"written by the program").hexdigest()
+    result = read_result(_artifact_result(tmp_path, digest), tmp_path)
+    assert result.ok
+    assert result.artifacts[0].sha256 == digest
+
+
+def test_an_artifact_changed_after_the_program_wrote_it_fails_the_run(tmp_path: Path) -> None:
+    """A record must never vouch for bytes the program did not write or read."""
+    result = read_result(_artifact_result(tmp_path, "0" * 64), tmp_path)
+    assert not result.ok
+    assert result.metrics == {}
+    assert "changed after the program wrote or read it" in (result.error or "")
+
+
+@pytest.mark.parametrize("bad", ["ABC", 7, "g" * 64])
+def test_a_malformed_artifact_digest_fails_the_run(tmp_path: Path, bad: object) -> None:
+    result = read_result(_artifact_result(tmp_path, bad), tmp_path)
+    assert not result.ok
+    assert "sha256 must be 64 lowercase hex digits" in (result.error or "")
+
+
+def test_a_failed_run_drops_artifacts_that_changed(tmp_path: Path) -> None:
+    result = read_result(_artifact_result(tmp_path, "0" * 64, status="failed"), tmp_path, 1)
+    assert not result.ok
+    assert result.artifacts == []  # never listed with bytes the program did not produce
+
+
+# -- wave-2 review, non-blocking findings -----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"failure_kind": "plan"}, "an ok result carries no failure_kind or error"),
+        ({"error": "it broke"}, "an ok result carries no failure_kind or error"),
+        ({"version": True}, "version=True"),
+    ],
+    ids=["ok-with-kind", "ok-with-error", "boolean-version"],
+)
+def test_an_inconsistent_envelope_fails_the_run(
+    tmp_path: Path, changes: dict[str, Any], message: str
+) -> None:
+    result = read_result(result_file(tmp_path, {"metrics": {"AP": 1.0}, **changes}), tmp_path)
+    assert not result.ok
+    assert result.metrics == {}
+    assert message in (result.error or "")
+
+
+def test_reported_resources_are_finite_numbers_strings_or_null(tmp_path: Path) -> None:
+    payload = {"resources": {"cache_hits": True, "gpu_s": float("nan"), "cache_misses": 2}}
+    path = tmp_path / "r.json"
+    path.write_text(
+        json.dumps({**ENVELOPE, "metrics": {"AP": 1.0}, **payload}, allow_nan=True), "utf-8"
+    )
+    assert read_result(path, tmp_path).resources == {"cache_misses": 2}
+
+
+@pytest.mark.parametrize("key", ["kill_grace_s", "poll_interval_s"])
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_the_kill_settings_must_be_positive(
+    make_config: Callable[[str], Config], key: str, value: str
+) -> None:
+    with pytest.raises(ConfigError, match=f"executor.{key} must be a positive number"):
+        SubprocessExecutor.from_config(make_config(f"[executor]\n{key} = {value}\n"))
+
+
+LEAVES_A_WORKER_BEHIND = """
+import json, subprocess, sys
+worker = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+open(sys.argv[1], "w").write(str(worker.pid))
+json.dump({"format": "qcal.executor_result", "version": 1, "status": "ok", "failure_kind": None,
+           "error": None, "metrics": {"AP": 1.0}, "artifacts": [], "environment": {}},
+          open(sys.argv[2], "w"))
+"""
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not Path("/proc").is_dir(), reason="needs /proc (Linux)")
+def test_workers_a_finished_program_left_behind_end_with_it(tmp_path: Path, config: Config) -> None:
+    program = script(tmp_path, LEAVES_A_WORKER_BEHIND)
+    pid_file = tmp_path / "worker.pid"
+    executor = SubprocessExecutor(
+        [sys.executable, str(program), str(pid_file), "{result_path}"],
+        timeout_s=None,
+        env_prefix="QCAL_RUN_",
+        root=config.root,
+        kill_grace_s=2,
+        poll_interval_s=0.05,
+    )
+    assert executor.execute(make_spec(config.root)).ok
+    assert _wait_until_dead(int(pid_file.read_text()))

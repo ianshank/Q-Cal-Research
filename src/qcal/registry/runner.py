@@ -8,7 +8,9 @@ import hashlib
 import json
 import os
 import secrets
+import signal
 import sys
+import threading
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -60,6 +62,71 @@ class PlannedRun:
     cell: Cell
     seed: int
     supersedes: str | None = None
+
+
+class LauncherSignal(KeyboardInterrupt):
+    """SIGTERM or SIGHUP to the launcher while a program runs (``kill``, a closed terminal).
+
+    Handled like Ctrl-C: the program's process group is terminated, the run is recorded, and
+    the launcher exits 130. The program runs in its own session, so without this it would
+    outlive the launcher unrecorded.
+    """
+
+
+#: Signals that end a launcher. While a program runs they interrupt it; while its record is
+#: written they wait.
+LAUNCHER_SIGNALS: Final = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+
+
+def _in_main_thread() -> bool:
+    return threading.current_thread() is threading.main_thread()
+
+
+@contextlib.contextmanager
+def _signals_interrupt() -> Iterator[None]:
+    """Turn SIGTERM and SIGHUP into :class:`LauncherSignal` (SIGINT already interrupts)."""
+    if not _in_main_thread():  # only the main thread may set handlers
+        yield
+        return
+
+    def interrupt(signum: int, _frame: Any) -> None:
+        raise LauncherSignal(f"signal {signal.Signals(signum).name}")
+
+    previous = {s: signal.signal(s, interrupt) for s in (signal.SIGTERM, signal.SIGHUP)}
+    try:
+        yield
+    finally:
+        for number, handler in previous.items():
+            signal.signal(number, handler)
+
+
+@contextlib.contextmanager
+def _signals_held() -> Iterator[None]:
+    """Hold :data:`LAUNCHER_SIGNALS` until the block ends; the first one is raised afterwards.
+
+    The handlers are swapped rather than the signals masked: a mask covers one thread only,
+    and with any other thread alive the kernel delivers the signal there while Python still
+    runs the handler in the main thread.
+    """
+    if not _in_main_thread():
+        yield
+        return
+    pending: list[int] = []
+
+    def defer(signum: int, _frame: Any) -> None:
+        pending.append(signum)
+
+    previous = {s: signal.signal(s, defer) for s in LAUNCHER_SIGNALS}
+    try:
+        yield
+    finally:
+        for number, handler in previous.items():
+            signal.signal(number, handler)
+        if pending:
+            _log.warning(
+                "delivering %s now that the run is recorded", signal.Signals(pending[0]).name
+            )
+            signal.raise_signal(pending[0])
 
 
 @dataclass
@@ -244,12 +311,10 @@ class Runner:
         if supersedes:
             provenance["supersede_reason"] = reason.strip()
         marker = self._mark_inflight(run_id, cell.id, seed, started)
-        try:
+        with _signals_interrupt():  # SIGTERM/SIGHUP end the run like Ctrl-C, and record it
             return self._execute_and_record(
-                spec, started, provenance, launch, supersedes=supersedes
+                spec, started, provenance, launch, marker, supersedes=supersedes
             )
-        finally:
-            marker.unlink(missing_ok=True)
 
     def _execute_and_record(
         self,
@@ -257,12 +322,38 @@ class Runner:
         started: datetime,
         provenance: dict[str, Any],
         launch: Mapping[str, str],
+        marker: Path,
         *,
         supersedes: str | None,
     ) -> RunRecord:
-        run_id, cell, root = spec.run_id, spec.cell, self.config.root
-        _log.info("starting %s (cell=%s seed=%s)", run_id, cell.id, spec.seed)
+        run_id = spec.run_id
+        _log.info("starting %s (cell=%s seed=%s)", run_id, spec.cell.id, spec.seed)
         result, interrupted = self._execute(spec)
+        # From here to the record write, an interrupt waits: losing the record of a run that
+        # finished (or the marker the audit would report) is worse than a short delay.
+        with _signals_held():
+            record = self._record(
+                spec, started, provenance, launch=launch, result=result, supersedes=supersedes
+            )
+            self.store.write(record)
+            marker.unlink(missing_ok=True)  # only once the record exists
+        if not result.ok:
+            _log.error("run %s failed (%s): %s", run_id, record.failure_kind, result.error)
+        if interrupted is not None:
+            raise interrupted
+        return record
+
+    def _record(
+        self,
+        spec: RunSpec,
+        started: datetime,
+        provenance: dict[str, Any],
+        *,
+        launch: Mapping[str, str],
+        result: ExecutionResult,
+        supersedes: str | None,
+    ) -> RunRecord:
+        run_id, cell, root = spec.run_id, spec.cell, self.config.root
         reported = result.environment.get(INPUTS_READ_KEY)
         changed = input_mismatches(launch, reported)
         if changed and result.ok:
@@ -283,7 +374,7 @@ class Runner:
             _log.warning("rerun %s failed; it does not supersede %s", run_id, supersedes)
             supersedes = None
         status_key = "registry.ok_status" if result.ok else "registry.failed_status"
-        record = RunRecord(
+        return RunRecord(
             run_id=run_id,
             cell_id=cell.id,
             seed=spec.seed,
@@ -304,12 +395,6 @@ class Runner:
             resources=dict(result.resources),
             schema_version=SCHEMA_VERSION,
         )
-        self.store.write(record)
-        if not result.ok:
-            _log.error("run %s failed (%s): %s", run_id, record.failure_kind, result.error)
-        if interrupted is not None:
-            raise interrupted
-        return record
 
     # -- concurrency --------------------------------------------------------------
     @contextlib.contextmanager

@@ -6,10 +6,14 @@ import fcntl
 import hashlib
 import itertools
 import logging
+import os
 import platform
 import re
+import signal
 import subprocess
 import sys
+import threading
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -23,7 +27,13 @@ from qcal.registry.executor import ExecutionResult, RunSpec, SubprocessExecutor
 from qcal.registry.experiments import Experiments, ExperimentsError, load_experiments
 from qcal.registry.gates import config_inputs, digest_of
 from qcal.registry.records import SCHEMA_VERSION, ArtifactRef, effective
-from qcal.registry.runner import PlannedRun, Runner, RunRefusedError, merge_environment
+from qcal.registry.runner import (
+    LauncherSignal,
+    PlannedRun,
+    Runner,
+    RunRefusedError,
+    merge_environment,
+)
 from qcal.registry.store import MARKER_SUFFIX, RegistryStore, pair_lock_name
 from tests.conftest import (
     FakeExecutor,
@@ -988,3 +998,73 @@ def test_a_record_carries_what_the_run_cost(config: Config) -> None:
     result = ExecutionResult(0, resources={"wall_s": 2.0, "cache_hits": 1})
     record = make_runner(config, FakeExecutor([result])).run("C-a", 0)
     assert dict(record.resources) == {"wall_s": 2.0, "cache_hits": 1}
+
+
+# -- signals around a run (wave-2 review, B5 and B6) ------------------------------------------
+
+
+class SignallingExecutor(FakeExecutor):
+    """Sends the launcher a signal while the program "runs", as `kill` or a closed terminal."""
+
+    def __init__(self, number: int) -> None:
+        super().__init__()
+        self.number = number
+
+    def execute(self, spec: RunSpec) -> ExecutionResult:
+        os.kill(os.getpid(), self.number)
+        time.sleep(5)  # the handler interrupts this
+        raise AssertionError("the signal did not interrupt the run")
+
+
+@pytest.mark.parametrize("number", [signal.SIGTERM, signal.SIGHUP], ids=["sigterm", "sighup"])
+def test_sigterm_and_sighup_end_a_run_like_ctrl_c(config: Config, number: int) -> None:
+    previous = signal.getsignal(number)
+    runner = make_runner(config, SignallingExecutor(number))
+    with pytest.raises(LauncherSignal):
+        runner.run("C-a", 0)
+    (record,) = runner.store.load_all()
+    assert (record.status, record.failure_kind) == ("failed", "interrupted")
+    assert signal.getsignal(number) is previous  # the launcher's own handler is restored
+
+
+def test_an_interrupt_while_recording_waits_for_the_record(
+    config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ctrl-C after the program finished (while collectors import torch) used to lose it."""
+    from qcal.registry import runner as runner_module
+
+    def collect_then_interrupt(*_: Any, **__: Any) -> dict[str, Any]:
+        os.kill(os.getpid(), signal.SIGINT)
+        return {}
+
+    monkeypatch.setattr(runner_module, "collect_environment", collect_then_interrupt)
+    runner = make_runner(config, FakeExecutor())
+    # Another live thread, as a launcher may have: the kernel can deliver the signal to it,
+    # so masking the main thread alone would not hold it.
+    done = threading.Event()
+    other = threading.Thread(target=done.wait, daemon=True)
+    other.start()
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            runner.run("C-a", 0)
+    finally:
+        done.set()
+        other.join()
+    (record,) = runner.store.load_all()
+    assert record.status == "ok"  # the run finished; the record says so
+    assert list(config.path("inflight_dir").glob(f"*{MARKER_SUFFIX}")) == []
+
+
+def test_the_marker_stays_when_the_record_cannot_be_written(
+    config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The audit reports a run that left no record; deleting its marker would hide it."""
+    runner = make_runner(config, FakeExecutor())
+
+    def full_disk(_: Any) -> None:
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(runner.store, "write", full_disk)
+    with pytest.raises(OSError, match="no space"):
+        runner.run("C-a", 0)
+    assert len(list(config.path("inflight_dir").glob(f"*{MARKER_SUFFIX}"))) == 1

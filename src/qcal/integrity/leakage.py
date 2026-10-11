@@ -81,7 +81,12 @@ def manifest_path(config: Config, split: str, dataset: str | None = None) -> Pat
         raise ConfigError(
             f"data.manifest_pattern uses {unknown}; allowed: {sorted(MANIFEST_PLACEHOLDERS)}"
         )
-    name = dataset if dataset is not None else config.str_list("data.datasets")[0]
+    if dataset is None:
+        datasets = config.str_list("data.datasets")
+        if not datasets:
+            raise ConfigError("data.datasets is empty; name at least the in-domain dataset")
+        dataset = datasets[0]
+    name = dataset
     return config.path("manifests_dir") / pattern.format(split=split, dataset=name)
 
 

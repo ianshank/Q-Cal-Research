@@ -268,3 +268,11 @@ def test_leakage_reads_dataset_scoped_manifests(make_config: Callable[[str], Con
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(ids + "\n")
     assert check_leakage(config).passed
+
+
+def test_an_empty_dataset_list_is_a_configuration_error(
+    make_config: Callable[[str], Config],
+) -> None:
+    config = make_config("[data]\ndatasets = []\n")
+    with pytest.raises(ConfigError, match=r"data\.datasets is empty"):
+        manifest_path(config, "val")
