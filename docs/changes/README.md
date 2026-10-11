@@ -15,6 +15,7 @@ A proposal that edits the enforcement surface (`.claude/`, `.github/`, `Makefile
 | [cycle-2026-10-g1-readiness](cycle-2026-10-g1-readiness.md) | G0, G1 | plan only | proposed (PR #4) |
 | [registry-run-gates](registry-run-gates.md) | G0 | enforcement | proposed (PR #4); needs Ian's signature |
 | [registry-run-contract](registry-run-contract.md) | G1 | enforcement | proposed (PR #4); needs Ian's signature |
+| [guard-bash-redirection-segments](guard-bash-redirection-segments.md) | G0 | enforcement | proposed (PR #4); needs Ian's signature |
 | [run-identity-and-formats](run-identity-and-formats.md) | G1 | `src/qcal_lab`, `configs/` | proposed (PR #4) |
 | [evalloop-v2](evalloop-v2.md) | G1 | `src/qcal_lab`, docs; one signed `qcal.toml` line | proposed (PR #4); interface for Ian to accept |
 

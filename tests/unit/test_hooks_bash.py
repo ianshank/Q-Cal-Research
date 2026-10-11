@@ -143,6 +143,24 @@ def test_tokenize_splits_on_shell_operators() -> None:
         tokenize('echo "x')
 
 
+def test_tokenize_drops_a_segment_that_was_only_a_redirection() -> None:
+    """It crashed the guard (IndexError, failing closed) on here-document lines like this."""
+    assert tokenize("assert max(abs(g)) < 1e-9") == [["assert", "max"], ["abs"], ["g"]]
+    assert tokenize("a; > out; b") == [["a"], ["b"]]
+
+
+HEREDOC_THAT_CRASHED = """cat >> t.py <<'EOF'
+def test_x() -> None:
+    assert max(abs(ga), abs(gb)) < 1e-9
+EOF
+.venv/bin/ruff check src tests && echo ok"""
+
+
+def test_the_command_that_crashed_the_guard_is_analysed() -> None:
+    assert run(HEREDOC_THAT_CRASHED) is None
+    assert run(HEREDOC_THAT_CRASHED + " && git push origin main") == "bash.push_protected"
+
+
 def test_current_branch_in_a_repository(git_repo: Path) -> None:
     assert current_branch(str(git_repo)) == "main"
 
