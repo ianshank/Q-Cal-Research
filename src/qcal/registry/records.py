@@ -53,6 +53,12 @@ class ArtifactRef:
         )
 
 
+#: Program-reported environment key: false when the seed changed nothing the run computed
+#: (every seed is then the same run, and a spread over seeds measures nothing).
+SEED_EFFECTIVE_KEY: Final = "seed_effective"
+#: Index column with the digest of the configuration files a run read.
+CONFIG_INPUTS_COLUMN: Final = "config_inputs_sha256"
+
 #: Why a run failed, as the executor result envelope and a failed record name it.
 FAILURE_KINDS: Final = (
     "timeout",
@@ -218,6 +224,9 @@ class RunRecord:
             "git_sha": self.provenance.get("git_sha"),
             "git_dirty": self.provenance.get("git_dirty"),
             "config_hash": self.provenance.get("config_hash"),
+            CONFIG_INPUTS_COLUMN: self.provenance.get(CONFIG_INPUTS_COLUMN),
+            "batch_id": self.provenance.get("batch_id"),
+            "failure_kind": self.failure_kind,
         }
         for group, values in (
             ("factors", self.factors),

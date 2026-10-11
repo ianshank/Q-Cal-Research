@@ -434,3 +434,17 @@ def test_resources_round_trip_flatten_and_are_absent_when_empty() -> None:
 def test_resources_must_be_an_object() -> None:
     with pytest.raises(RecordError, match="resources must be an object"):
         RunRecord.from_dict({**make_record().to_dict(), "resources": [1]})
+
+
+def test_flat_rows_carry_the_identity_columns() -> None:
+    record = make_record(
+        status="failed",
+        failure_kind="timeout",
+        provenance={"config_inputs_sha256": "c" * 64, "batch_id": "B1"},
+    )
+    row = record.flat({})
+    assert (row["config_inputs_sha256"], row["batch_id"], row["failure_kind"]) == (
+        "c" * 64,
+        "B1",
+        "timeout",
+    )

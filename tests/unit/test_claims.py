@@ -676,3 +676,37 @@ def test_prose_after_a_layout_command_is_still_checked(scan: Scan) -> None:
     findings = scan(SECTION, r"\definecolor{shade}{rgb}{0.9,0.9,0.95} AP is 41.0")
 
     assert [f.message for f in findings] == ["number 41.0 has no run reference"]
+
+
+# -- unsound aggregates (PR-A2) -----------------------------------------------------------
+
+
+def test_a_claim_averaging_runs_under_different_configurations_fails(
+    configure: Callable[[str], Config],
+) -> None:
+    config = configure("")
+    build_index(
+        config,
+        [
+            make_record("R1", metrics={"AP": 1.0}, provenance={"config_inputs_sha256": "a" * 64}),
+            make_record("R2", metrics={"AP": 3.0}, provenance={"config_inputs_sha256": "b" * 64}),
+        ],
+    )
+    write(config.root, SECTION, r"\qcalval{agg:mean:AP:R1+R2}{2.0}")
+    (finding,) = check_claims(config)
+    assert "ran under different configuration files" in finding.message
+
+
+def test_a_claimed_spread_over_identical_runs_fails(configure: Callable[[str], Config]) -> None:
+    config = configure("")
+    identical = {"seed_effective": False}
+    build_index(
+        config,
+        [
+            make_record("R1", metrics={"AP": 1.0}, environment=identical),
+            make_record("R2", metrics={"AP": 1.0}, environment=identical),
+        ],
+    )
+    write(config.root, SECTION, r"\qcalval{agg:std:AP:R1+R2}{0.0}")
+    (finding,) = check_claims(config)
+    assert "false zero variance" in finding.message

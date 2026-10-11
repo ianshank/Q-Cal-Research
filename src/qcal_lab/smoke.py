@@ -33,7 +33,7 @@ from qcal.registry.store import RegistryStore
 from qcal.reports import verdict
 from qcal_lab.config import LAB_CONFIG_FILE, LabConfig, parse_lab_config
 from qcal_lab.data.fixture import build_fixture, write_fixture
-from qcal_lab.data.splits import partition, write_manifest
+from qcal_lab.data.splits import manifest_path, partition, write_manifest
 from qcal_lab.experiment import RunRequest, run_experiment
 
 _log = get_logger("lab.smoke")
@@ -140,9 +140,7 @@ def write_project(project: Path, lab: LabConfig, python: str) -> list[str]:
     ids = [str(image["id"]) for image in fixture["images"]]
     parts = partition(ids, [(split, int(sizes[split])) for split in splits], int(s["seed"]))
     for split, members in parts.items():
-        path = config.path("manifests_dir") / config.str_value("data.manifest_pattern").format(
-            split=split
-        )
+        path = manifest_path(config, split)
         header = {
             "source": FIXTURE_ANNOTATIONS,
             "seed": str(s["seed"]),

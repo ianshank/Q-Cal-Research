@@ -100,3 +100,27 @@ def test_a_record_says_what_the_run_cost(tmp_path: Path) -> None:
     record = _runner(_project(tmp_path)).run("C-a", 0)
     assert {"wall_s", "cpu_user_s", "cpu_sys_s", "peak_rss_kib"} <= set(record.resources)
     assert record.resources["peak_rss_kib"] > 0
+
+
+def test_tables_refuse_to_average_runs_under_different_configuration_files(
+    tmp_path: Path,
+) -> None:
+    """Gap: tables averaged seeds without checking they ran under the same configuration."""
+    from qcal.registry.index import write_index
+    from qcal.registry.tables import TableDataError, build_tables
+
+    root = _project(tmp_path)
+    write(root, "EXPERIMENTS.yaml", experiments_yaml([{"id": "C-a"}], seeds=[0, 1]))
+    write(root, "configs/lab.toml", "x = 1\n")
+    _runner(root).run("C-a", 0)
+    write(root, "configs/lab.toml", "x = 2\n")  # a science setting changed between seeds
+    _runner(root).run("C-a", 1)
+    config = load_config(root, environ={})
+    write_index(config, RegistryStore(config.path("registry_dir")))
+    write(
+        root,
+        "configs/tables/t.toml",
+        '[[table]]\nname = "t"\nrows = ["cell_id"]\n[[table.columns]]\nmetric = "AP"\n',
+    )
+    with pytest.raises(TableDataError, match="different configuration files"):
+        build_tables(config)

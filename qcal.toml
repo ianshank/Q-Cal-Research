@@ -31,11 +31,12 @@ deny_categories = ["ian_only", "ian_data", "registry_only", "enforcement_surface
 
 [registry]
 # The packaged qcal_lab defaults hold science settings too, so they are part of config_hash.
+# Only that file: tooling settings beside it (smoke, fixture stand-ins) change no result.
 config_hash_inputs = [
   "configs/**/*.yaml",
   "configs/**/*.yml",
   "configs/**/*.toml",
-  "src/qcal_lab/resources/*.toml",
+  "src/qcal_lab/resources/defaults.toml",
 ]
 # A registered run's qcal must be this repository's (src/), not an installed copy.
 require_code_in_root = true

@@ -178,6 +178,7 @@ write_parquet = "auto"                # auto | always | never
 core_columns = [
   "run_id", "cell_id", "seed", "seed_role", "status", "supersedes",
   "started_at", "finished_at", "duration_s", "git_sha", "git_dirty", "config_hash",
+  "config_inputs_sha256", "batch_id", "failure_kind",
 ]
 
 [registry.column_prefixes]
@@ -275,7 +276,8 @@ superseded_is_error = true
 
 [data]
 splits = ["trt_calib_images", "calibrator_fit_split", "val", "test"]
-manifest_pattern = "{split}.txt"
+manifest_pattern = "{split}.txt"      # may also name {dataset}
+datasets = ["id"]                    # the first is the default {dataset} of a manifest
 comment_prefix = "#"
 
 [licenses]

@@ -157,11 +157,18 @@ def code_location_problems(config: Config) -> list[str]:
 
 
 def config_inputs(config: Config) -> dict[str, str]:
-    """``registry.config_hash_inputs`` files by repository-relative path, with their sha256."""
+    """``registry.config_hash_inputs`` files by repository-relative path, with their sha256.
+
+    Table specs (``paths.table_specs_dir``) are left out even when a pattern covers them:
+    they say how results are shown, not how a run computes them, so adding a table after
+    the runs must not make every earlier run look stale.
+    """
     root = config.root
+    tables = config.path("table_specs_dir").resolve()
     return {
         p.relative_to(root).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
         for p in iter_files(root, config.str_list("registry.config_hash_inputs"))
+        if not p.resolve().is_relative_to(tables)
     }
 
 

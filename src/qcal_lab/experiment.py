@@ -38,6 +38,7 @@ from qcal.protocols import Detector, ImageDetections
 from qcal.registry.executor import STATUS_FAILED, STATUS_OK, result_envelope, sha256_file
 from qcal.registry.experiments import Experiments, load_experiments
 from qcal.registry.gates import INPUTS_READ_KEY
+from qcal.registry.records import SEED_EFFECTIVE_KEY
 from qcal_lab import __version__
 from qcal_lab.calib import CALIBRATORS, build_calibrator
 from qcal_lab.calib.thresholds import threshold_grid
@@ -439,6 +440,7 @@ def run_experiment(
             }
             for role in ROLES
         },
+        SEED_EFFECTIVE_KEY: plan.fit_size is not None,  # tables refuse a spread otherwise
         "fit_draw": {
             "seeded": plan.fit_size is not None,
             "size": len(fit_ids),

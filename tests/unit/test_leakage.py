@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from qcal.config import Config
-from qcal.integrity.leakage import LeakageReport, check_leakage, read_manifest
+from qcal.config import Config, ConfigError
+from qcal.integrity.leakage import LeakageReport, check_leakage, manifest_path, read_manifest
 
 SPLITS = ("trt_calib_images", "calibrator_fit_split", "val", "test")
 
@@ -237,3 +237,34 @@ def test_report_dict_lists_missing_and_duplicates(config: Config) -> None:
     assert data["verdict"] == "FAIL"
     assert data["missing"] == ["trt_calib_images", "calibrator_fit_split", "test"]
     assert data["duplicates"] == {"val": 1}
+
+
+# -- manifest paths (PR-A2) ---------------------------------------------------------------
+
+
+def test_manifest_path_defaults_to_the_first_dataset(make_config: Callable[[str], Config]) -> None:
+    config = make_config(
+        '[data]\nmanifest_pattern = "{dataset}/{split}.txt"\ndatasets = ["id", "fog"]\n'
+    )
+    assert manifest_path(config, "val") == config.path("manifests_dir") / "id" / "val.txt"
+    assert manifest_path(config, "val", "fog") == config.path("manifests_dir") / "fog" / "val.txt"
+
+
+def test_manifest_path_refuses_unknown_placeholders(make_config: Callable[[str], Config]) -> None:
+    config = make_config('[data]\nmanifest_pattern = "{split}-{seed}.txt"\n')
+    with pytest.raises(ConfigError, match="seed"):
+        manifest_path(config, "val")
+
+
+def test_leakage_reads_dataset_scoped_manifests(make_config: Callable[[str], Config]) -> None:
+    config = make_config('[data]\nmanifest_pattern = "{dataset}/{split}.txt"\n')
+    for split, ids in (
+        ("trt_calib_images", "1"),
+        ("calibrator_fit_split", "2"),
+        ("val", "3"),
+        ("test", "4"),
+    ):
+        path = manifest_path(config, split)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(ids + "\n")
+    assert check_leakage(config).passed

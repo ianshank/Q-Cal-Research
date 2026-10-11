@@ -34,6 +34,7 @@ from qcal.registry.experiments import Cell, load_experiments
 from qcal.registry.gates import (
     INPUTS_READ_KEY,
     code_location_problems,
+    config_inputs,
     input_mismatches,
     launch_digests,
     policy_state,
@@ -646,3 +647,16 @@ def test_a_registered_run_refuses_qcal_from_elsewhere(
     with pytest.raises(RunRefusedError, match="require_code_in_root"):
         runner.run("C-a", 0)
     assert fake_executor.specs == []
+
+
+def test_table_specs_are_not_run_inputs(make_config: Callable[[str], Config]) -> None:
+    """Adding a table after the runs must not make every earlier run look stale."""
+    config = make_config("")
+    write(config.root, "configs/lab.toml", "x = 1\n")
+    before = config_inputs(config)
+    write(config.root, "configs/tables/main.toml", "[[table]]\n")
+    assert (
+        config_inputs(config)
+        == before
+        == {"configs/lab.toml": hashlib.sha256(b"x = 1\n").hexdigest()}
+    )

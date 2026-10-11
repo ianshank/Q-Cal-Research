@@ -10,14 +10,18 @@ from __future__ import annotations
 
 import hashlib
 import itertools
+import string
 from dataclasses import dataclass, field
-from typing import Any
+from pathlib import Path
+from typing import Any, Final
 
-from qcal.config import Config
+from qcal.config import Config, ConfigError
 from qcal.log import get_logger
 from qcal.reports import verdict
 
 _log = get_logger("integrity.leakage")
+#: The names data.manifest_pattern may use.
+MANIFEST_PLACEHOLDERS: Final = frozenset({"split", "dataset"})
 
 
 @dataclass
@@ -62,14 +66,31 @@ def read_manifest(text: str, comment_prefix: str) -> list[str]:
     ]
 
 
-def check_leakage(config: Config) -> LeakageReport:
-    directory = config.path("manifests_dir")
+def manifest_path(config: Config, split: str, dataset: str | None = None) -> Path:
+    """Where a split's manifest lives: ``data.manifest_pattern`` in ``paths.manifests_dir``.
+
+    The pattern may name ``{split}`` and ``{dataset}`` (default: the first of
+    ``data.datasets``), so shifted datasets can keep their own manifests.
+    """
     pattern = config.str_value("data.manifest_pattern")
+    unknown = sorted(
+        {name for _, name, _, _ in string.Formatter().parse(pattern) if name}
+        - MANIFEST_PLACEHOLDERS
+    )
+    if unknown:
+        raise ConfigError(
+            f"data.manifest_pattern uses {unknown}; allowed: {sorted(MANIFEST_PLACEHOLDERS)}"
+        )
+    name = dataset if dataset is not None else config.str_list("data.datasets")[0]
+    return config.path("manifests_dir") / pattern.format(split=split, dataset=name)
+
+
+def check_leakage(config: Config) -> LeakageReport:
     comment = config.str_value("data.comment_prefix")
     report = LeakageReport()
     ids: dict[str, set[str]] = {}
     for split in config.str_list("data.splits"):
-        path = directory / pattern.format(split=split)
+        path = manifest_path(config, split)
         if not path.is_file():
             report.missing.append(split)
             continue
@@ -85,7 +106,7 @@ def check_leakage(config: Config) -> LeakageReport:
         if common:
             report.overlaps[f"{left}&{right}"] = common
     if not report.present:
-        _log.info("leakage check: no split manifests found in %s", directory)
+        _log.info("leakage check: no split manifests found in %s", config.path("manifests_dir"))
     else:
         _log.info("leakage check: %s", verdict(report.passed))
     return report

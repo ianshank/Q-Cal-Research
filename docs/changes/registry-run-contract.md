@@ -94,6 +94,10 @@ Each step is a separate commit:
    - `data.manifest_pattern` may use `{dataset}` through one shared `manifest_path`.
    - `qcal.toml` narrows the lab hash input to the lab defaults file, so unhashed tooling
      settings can live next to it.
+   - Table specs (`paths.table_specs_dir`) are no longer run inputs, even under
+     `configs/**`. They say how results are shown, so adding a table after the runs must not
+     make every earlier run look stale. The end-to-end test found this once tables began
+     refusing mixed inputs.
    - `environment.container_image`, `inputs[]` and `environment.cost` are reserved.
 
 ## Decisions
