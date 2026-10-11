@@ -2,17 +2,32 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Final
 
 from qcal.log import get_logger
 from qcal.registry.records import RecordError, RunRecord, validate_run_id
 
 _log = get_logger("registry.store")
 _SUFFIX = ".json"
+
+
+#: File names under ``paths.inflight_dir``: one lock per (cell, seed), one marker per run.
+LOCK_SUFFIX: Final = ".lock"
+MARKER_SUFFIX: Final = ".inflight.json"
+_UNSAFE_NAME = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def pair_lock_name(cell_id: str, seed: int) -> str:
+    """A file name for the lock of one (cell, seed): readable, and safe for any cell id."""
+    digest = hashlib.sha256(f"{cell_id}\0{seed}".encode()).hexdigest()[:12]
+    return f"{_UNSAFE_NAME.sub('_', cell_id)}@{seed}-{digest}{LOCK_SUFFIX}"
 
 
 class RecordExistsError(FileExistsError):

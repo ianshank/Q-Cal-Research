@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import itertools
 import logging
 import platform
 import re
+import subprocess
 import sys
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -22,7 +24,7 @@ from qcal.registry.experiments import Experiments, ExperimentsError, load_experi
 from qcal.registry.gates import config_inputs, digest_of
 from qcal.registry.records import SCHEMA_VERSION, ArtifactRef, effective
 from qcal.registry.runner import PlannedRun, Runner, RunRefusedError, merge_environment
-from qcal.registry.store import RegistryStore
+from qcal.registry.store import MARKER_SUFFIX, RegistryStore, pair_lock_name
 from tests.conftest import (
     FakeExecutor,
     executor_command,
@@ -257,6 +259,8 @@ def test_run_records_provenance(config: Config, fake_executor: FakeExecutor) -> 
         "executor": "FakeExecutor",
         "launcher": launcher_identity(config.root),
         "environment_variables": dict.fromkeys(config.str_list("registry.recorded_env_vars")),
+        "batch_id": None,
+        "retry_of": None,
         "inputs_unverified": ["EXPERIMENTS.yaml", "qcal.toml"],  # FakeExecutor reports none
     }
 
@@ -868,3 +872,107 @@ def test_run_with_subprocess_executor_records_the_experiment_result(
     assert record.provenance["executor"] == "SubprocessExecutor"
     assert (config.root / record.log_path).is_file()
     assert sys.executable in str(config.get("executor.command"))
+
+
+# -- bookkeeping and concurrency (PR-A2) --------------------------------------------------
+
+
+def test_a_retry_names_the_latest_failed_run_of_its_pair(config: Config) -> None:
+    runner = make_runner(config, FakeExecutor([FAILED, FAILED, ExecutionResult(0)]))
+    first = runner.run("C-a", 0)
+    second = runner.run("C-a", 0)
+    third = runner.run("C-a", 0)
+    assert first.provenance["retry_of"] is None
+    assert second.provenance["retry_of"] == first.run_id
+    assert third.provenance["retry_of"] == second.run_id
+
+
+def test_a_batch_shares_one_batch_id(config: Config, fake_executor: FakeExecutor) -> None:
+    runner = make_runner(config, fake_executor)
+    batch = runner.run_batch("C-*")
+    ids = {r.provenance["batch_id"] for r in batch.completed}
+    assert ids == {batch.batch_id}
+    assert batch.batch_id is not None
+    assert re.fullmatch(r"B\d{8}T\d{6}Z-n\d+", batch.batch_id)
+    assert runner.run("D-c", 5).provenance["batch_id"] is None
+
+
+def test_a_dry_run_batch_has_no_batch_id(config: Config, fake_executor: FakeExecutor) -> None:
+    assert make_runner(config, fake_executor).run_batch("C-*", dry_run=True).batch_id is None
+
+
+def test_a_pair_locked_by_another_launcher_is_refused(
+    config: Config, fake_executor: FakeExecutor
+) -> None:
+    runner = make_runner(config, fake_executor)
+    directory = config.path("inflight_dir")
+    directory.mkdir(parents=True, exist_ok=True)
+    with (directory / pair_lock_name("C-a", 0)).open("a") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        with pytest.raises(RunRefusedError, match="being run by another launcher"):
+            runner.run("C-a", 0)
+    assert fake_executor.specs == []
+    assert runner.run("C-a", 0).status == "ok"  # the lock is released with its holder
+
+
+def test_a_running_run_has_an_inflight_marker_that_is_removed_after(config: Config) -> None:
+    seen: list[list[str]] = []
+
+    def look() -> None:
+        seen.append(sorted(p.name for p in config.path("inflight_dir").glob(f"*{MARKER_SUFFIX}")))
+
+    record = make_runner(config, MutatingExecutor(look)).run("C-a", 0)
+    assert seen == [[f"{record.run_id}{MARKER_SUFFIX}"]]
+    assert list(config.path("inflight_dir").glob(f"*{MARKER_SUFFIX}")) == []
+
+
+def test_the_marker_is_removed_when_the_run_is_interrupted(config: Config) -> None:
+    class Interrupt(FakeExecutor):
+        def execute(self, spec: RunSpec) -> ExecutionResult:
+            raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        make_runner(config, Interrupt()).run("C-a", 0)
+    assert list(config.path("inflight_dir").glob(f"*{MARKER_SUFFIX}")) == []
+
+
+def test_lock_names_are_safe_for_any_cell_id() -> None:
+    name = pair_lock_name("a/b c", 3)
+    assert "/" not in name
+    assert " " not in name
+    assert name.startswith("a_b_c@3-")
+    assert name != pair_lock_name("a_b_c", 3)  # the digest keeps sanitised names apart
+
+
+LOCK_HOLDER = """
+import fcntl, sys, time
+handle = open(sys.argv[1], "a")
+fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+print("locked", flush=True)
+time.sleep(60)
+"""
+
+
+@pytest.mark.integration
+def test_a_second_launcher_process_is_refused_while_the_first_holds_the_pair(
+    config: Config, fake_executor: FakeExecutor, tmp_path: Path
+) -> None:
+    directory = config.path("inflight_dir")
+    directory.mkdir(parents=True, exist_ok=True)
+    holder = tmp_path / "holder.py"
+    holder.write_text(LOCK_HOLDER)
+    lock = directory / pair_lock_name("C-a", 0)
+    proc = subprocess.Popen(
+        [sys.executable, str(holder), str(lock)], stdout=subprocess.PIPE, text=True
+    )
+    try:
+        assert proc.stdout is not None
+        assert proc.stdout.readline().strip() == "locked"
+        with pytest.raises(RunRefusedError, match="being run by another launcher"):
+            make_runner(config, fake_executor).run("C-a", 0)
+    finally:
+        proc.kill()
+        proc.wait()
+        if proc.stdout is not None:
+            proc.stdout.close()
+    assert make_runner(config, fake_executor).run("C-a", 0).status == "ok"

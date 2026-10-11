@@ -19,6 +19,7 @@ index_csv = "runs/index.csv"
 index_parquet = "runs/index.parquet"
 logs_dir = "runs/logs"
 results_dir = "runs/results"
+inflight_dir = "runs/inflight"         # per-(cell, seed) locks and markers of running runs
 tables_dir = "paper/tables"
 table_specs_dir = "configs/tables"
 manifests_dir = "data/manifests"
@@ -152,6 +153,7 @@ extra_bash_deny = [
 
 [registry]
 run_id_template = "R{timestamp}-{cell_id}-s{seed}-{nonce}"
+batch_id_template = "B{timestamp}-{nonce}"   # provenance.batch_id of the runs of one run-batch
 timestamp_format = "%Y%m%dT%H%M%SZ"
 nonce_bytes = 3
 env_collectors = ["python", "host", "git", "packages", "nvidia", "torch", "tensorrt", "jetson"]

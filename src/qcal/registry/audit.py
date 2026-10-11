@@ -5,14 +5,18 @@ Replaces the v1 ``ablation-auditor`` agent. It never proposes dropping cells.
 
 from __future__ import annotations
 
+import fcntl
+import json
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from qcal.config import Config
 from qcal.registry.experiments import Experiments
 from qcal.registry.records import RunRecord, effective
+from qcal.registry.store import MARKER_SUFFIX, pair_lock_name
 
 
 @dataclass
@@ -29,6 +33,7 @@ class AuditReport:
     bad_supersedes: list[str] = field(default_factory=list)
     mixed_inputs: list[str] = field(default_factory=list)
     uncommitted_policy: list[str] = field(default_factory=list)
+    stale_inflight: list[str] = field(default_factory=list)  # report only
     amendments: int = 0
 
     def ok(self, *, strict: bool = False) -> bool:
@@ -63,6 +68,7 @@ class AuditReport:
             "bad_supersedes": self.bad_supersedes,
             "mixed_inputs": self.mixed_inputs,
             "uncommitted_policy": self.uncommitted_policy,
+            "stale_inflight": self.stale_inflight,
             "amendments": self.amendments,
         }
 
@@ -80,6 +86,7 @@ class AuditReport:
             "bad_supersedes",
             "mixed_inputs",
             "uncommitted_policy",
+            "stale_inflight",
         ):
             values = data[key]
             lines.append(f"{key}: {len(values)}")
@@ -164,6 +171,42 @@ def uncommitted_policy(current: Sequence[RunRecord], ok_status: str) -> list[str
     )
 
 
+def stale_inflight(config: Config, records: Sequence[RunRecord]) -> list[str]:
+    """In-flight markers whose run wrote no record and whose (cell, seed) is not locked:
+    a launcher died mid-run (power loss, SIGKILL). Report only; the next run of the pair
+    proceeds normally."""
+    directory = config.path("inflight_dir")
+    if not directory.is_dir():
+        return []
+    recorded = {r.run_id for r in records}
+    stale: list[str] = []
+    for marker in sorted(directory.glob(f"*{MARKER_SUFFIX}")):
+        run_id = marker.name.removesuffix(MARKER_SUFFIX)
+        if run_id in recorded:
+            continue
+        try:
+            data = json.loads(marker.read_text("utf-8"))
+            lock = directory / pair_lock_name(str(data["cell_id"]), int(data["seed"]))
+        except (OSError, ValueError, KeyError, TypeError):
+            stale.append(run_id)  # unreadable: certainly not a live run's marker
+            continue
+        if not _locked(lock):
+            stale.append(run_id)
+    return stale
+
+
+def _locked(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    with path.open("a", encoding="utf-8") as handle:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    return False
+
+
 def _supersede_cycle(record: RunRecord, by_id: Mapping[str, RunRecord]) -> list[str]:
     """The run ids of a cycle that starts at ``record``, or ``[]``."""
     chain = [record.run_id]
@@ -201,6 +244,7 @@ def audit(config: Config, experiments: Experiments, records: Sequence[RunRecord]
     report.bad_supersedes = bad_supersedes(records)
     report.mixed_inputs = mixed_inputs(current, ok_status)
     report.uncommitted_policy = uncommitted_policy(current, ok_status)
+    report.stale_inflight = stale_inflight(config, records)
     for record in current:
         registered = known.get(record.cell_id)
         if registered is None:

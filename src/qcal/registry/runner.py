@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import hashlib
 import json
+import os
 import secrets
 import sys
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -36,7 +39,7 @@ from qcal.registry.records import (
     effective,
     validate_run_id,
 )
-from qcal.registry.store import RegistryStore
+from qcal.registry.store import MARKER_SUFFIX, RegistryStore, pair_lock_name
 
 _log = get_logger("registry.runner")
 
@@ -65,6 +68,7 @@ class BatchResult:
     completed: list[RunRecord] = field(default_factory=list)
     failed: list[RunRecord] = field(default_factory=list)
     skipped: list[tuple[str, int, str]] = field(default_factory=list)
+    batch_id: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -128,13 +132,26 @@ class Runner:
     def _output_paths(self) -> list[str]:
         """Registry outputs, which a run itself creates, never count as a dirty tree."""
         root = self.config.root
-        keys = ("registry_dir", "index_csv", "index_parquet", "logs_dir", "results_dir")
+        keys = (
+            "registry_dir",
+            "index_csv",
+            "index_parquet",
+            "logs_dir",
+            "results_dir",
+            "inflight_dir",
+        )
         paths = [self.config.path(k) for k in keys]
         return [p.relative_to(root).as_posix() for p in paths if p.is_relative_to(root)]
 
     # -- single run ---------------------------------------------------------------
     def run(
-        self, cell_id: str, seed: int, *, supersedes: str | None = None, reason: str = ""
+        self,
+        cell_id: str,
+        seed: int,
+        *,
+        supersedes: str | None = None,
+        reason: str = "",
+        batch_id: str | None = None,
     ) -> RunRecord:
         cell = self.experiments.cell(cell_id)
         allowed = self.experiments.seeds_for(cell)
@@ -143,7 +160,22 @@ class Runner:
                 f"seed {seed} is not pre-registered for {cell_id} (allowed: {list(allowed)})"
             )
         policy = self.check_inputs()
-        self._check_not_duplicate(cell.id, seed, supersedes)
+        with self._pair_lock(cell.id, seed):  # from the duplicate check to the record write
+            return self._run_locked(
+                cell, seed, policy, supersedes=supersedes, reason=reason, batch_id=batch_id
+            )
+
+    def _run_locked(
+        self,
+        cell: Cell,
+        seed: int,
+        policy: PolicyState,
+        *,
+        supersedes: str | None,
+        reason: str,
+        batch_id: str | None,
+    ) -> RunRecord:
+        retry_of = self._check_not_duplicate(cell.id, seed, supersedes)
         if (
             supersedes
             and not reason.strip()
@@ -197,10 +229,30 @@ class Runner:
             "environment_variables": recorded_variables(
                 self.config.str_list("registry.recorded_env_vars")
             ),
+            "batch_id": batch_id,
+            "retry_of": retry_of,
         }
         if supersedes:
             provenance["supersede_reason"] = reason.strip()
-        _log.info("starting %s (cell=%s seed=%s)", run_id, cell.id, seed)
+        marker = self._mark_inflight(run_id, cell.id, seed, started)
+        try:
+            return self._execute_and_record(
+                spec, started, provenance, launch, supersedes=supersedes
+            )
+        finally:
+            marker.unlink(missing_ok=True)
+
+    def _execute_and_record(
+        self,
+        spec: RunSpec,
+        started: datetime,
+        provenance: dict[str, Any],
+        launch: Mapping[str, str],
+        *,
+        supersedes: str | None,
+    ) -> RunRecord:
+        run_id, cell, root = spec.run_id, spec.cell, self.config.root
+        _log.info("starting %s (cell=%s seed=%s)", run_id, cell.id, spec.seed)
         result, interrupted = self._execute(spec)
         reported = result.environment.get(INPUTS_READ_KEY)
         changed = input_mismatches(launch, reported)
@@ -225,7 +277,7 @@ class Runner:
         record = RunRecord(
             run_id=run_id,
             cell_id=cell.id,
-            seed=seed,
+            seed=spec.seed,
             seed_role=self.experiments.seed_role,
             status=self.config.str_value(status_key),
             supersedes=supersedes,
@@ -249,6 +301,40 @@ class Runner:
             raise interrupted
         return record
 
+    # -- concurrency --------------------------------------------------------------
+    @contextlib.contextmanager
+    def _pair_lock(self, cell_id: str, seed: int) -> Iterator[None]:
+        """An advisory lock per (cell, seed), released by the kernel if the launcher dies,
+        so two launchers cannot both pass the duplicate check for one pair."""
+        directory = self.config.path("inflight_dir")
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / pair_lock_name(cell_id, seed)
+        with path.open("a", encoding="utf-8") as handle:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise RunRefusedError(
+                    f"{cell_id}@{seed} is being run by another launcher (lock {path})"
+                ) from None
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    def _mark_inflight(self, run_id: str, cell_id: str, seed: int, started: datetime) -> Path:
+        """A marker naming the running run; the audit reports markers a crash left behind."""
+        marker = self.config.path("inflight_dir") / f"{run_id}{MARKER_SUFFIX}"
+        payload = {
+            "run_id": run_id,
+            "cell_id": cell_id,
+            "seed": seed,
+            "started_at": started.isoformat(),
+            "pid": os.getpid(),
+        }
+        with marker.open("x", encoding="utf-8") as handle:
+            json.dump(payload, handle, sort_keys=True)
+        return marker
+
     def _execute(self, spec: RunSpec) -> tuple[ExecutionResult, BaseException | None]:
         """Run the program; a crash becomes a failed result, and an interrupt (Ctrl-C,
         ``SystemExit``) is returned so the caller records the run before re-raising it."""
@@ -265,8 +351,11 @@ class Runner:
             error = f"interrupted by {type(exc).__name__}"
             return ExecutionResult(-1, error=error, failure_kind="interrupted"), exc
 
-    def _check_not_duplicate(self, cell_id: str, seed: int, supersedes: str | None) -> None:
-        """One current ok run per (cell, seed): a second one needs an explicit supersede."""
+    def _check_not_duplicate(self, cell_id: str, seed: int, supersedes: str | None) -> str | None:
+        """One current ok run per (cell, seed): a second one needs an explicit supersede.
+
+        Returns the latest current failed run of the pair, which this run retries (``None``
+        when superseding, or when the pair never failed)."""
         ok_status = self.config.str_value("registry.ok_status")
         current = {
             r.run_id: r
@@ -278,13 +367,20 @@ class Runner:
                 raise RunRefusedError(
                     f"cannot supersede {supersedes}: it is not a current run of {cell_id}@{seed}"
                 )
-            return
+            return None
         done = sorted(r.run_id for r in current.values() if r.status == ok_status)
         if done:
             raise RunRefusedError(
                 f"{cell_id}@{seed} already completed as {done[0]}; "
                 "replace it with `qcal registry run --supersedes` or `run-batch --rerun`"
             )
+        failed = sorted(current.values(), key=lambda r: (r.started_at, r.run_id))
+        return failed[-1].run_id if failed else None
+
+    def new_batch_id(self, when: datetime) -> str:
+        template = self.config.str_value("registry.batch_id_template")
+        stamp = when.strftime(self.config.str_value("registry.timestamp_format"))
+        return template.format(timestamp=stamp, nonce=self.nonce())
 
     # -- batches ------------------------------------------------------------------
     def plan(
@@ -339,8 +435,15 @@ class Runner:
         _log.info("batch %r: %d planned, %d skipped", patterns, len(planned), len(skipped))
         if dry_run:
             return batch
+        batch.batch_id = self.new_batch_id(self.clock())
         for item in planned:
-            record = self.run(item.cell.id, item.seed, supersedes=item.supersedes, reason=reason)
+            record = self.run(
+                item.cell.id,
+                item.seed,
+                supersedes=item.supersedes,
+                reason=reason,
+                batch_id=batch.batch_id,
+            )
             if record.status == self.config.str_value("registry.ok_status"):
                 batch.completed.append(record)
                 continue

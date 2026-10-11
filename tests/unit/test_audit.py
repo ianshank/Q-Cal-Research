@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import fcntl
+import json
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -9,9 +11,10 @@ from typing import Any
 import pytest
 
 from qcal.config import Config
-from qcal.registry.audit import AuditReport, audit, count_amendments
+from qcal.registry.audit import AuditReport, audit, count_amendments, stale_inflight
 from qcal.registry.experiments import Experiments, parse_experiments
 from qcal.registry.records import RunRecord
+from qcal.registry.store import MARKER_SUFFIX, pair_lock_name
 from tests.conftest import make_record, write
 
 DATA: dict[str, Any] = {
@@ -251,6 +254,7 @@ def test_to_dict_formats_pairs_and_coverage(config: Config, experiments: Experim
         "bad_supersedes": [],
         "mixed_inputs": [],
         "uncommitted_policy": [],
+        "stale_inflight": [],
         "amendments": 0,
     }
 
@@ -285,5 +289,52 @@ def test_render_text_lists_every_section() -> None:
         "bad_supersedes: 0",
         "mixed_inputs: 0",
         "uncommitted_policy: 0",
+        "stale_inflight: 0",
         "amendments: 2",
     ]
+
+
+# -- stale in-flight markers (PR-A2) ------------------------------------------------------
+
+
+def _marker(config: Config, run_id: str, cell_id: str = "C-a", seed: int = 0) -> Path:
+    directory = config.path("inflight_dir")
+    directory.mkdir(parents=True, exist_ok=True)
+    marker = directory / f"{run_id}{MARKER_SUFFIX}"
+    marker.write_text(json.dumps({"run_id": run_id, "cell_id": cell_id, "seed": seed}))
+    return marker
+
+
+def test_a_marker_without_a_record_or_a_lock_is_stale(config: Config) -> None:
+    _marker(config, "R-crashed")
+    assert stale_inflight(config, []) == ["R-crashed"]
+
+
+def test_a_marker_of_a_recorded_run_is_not_stale(config: Config) -> None:
+    _marker(config, "R1")
+    assert stale_inflight(config, [make_record("R1")]) == []
+
+
+def test_a_marker_whose_pair_is_locked_belongs_to_a_live_run(config: Config) -> None:
+    _marker(config, "R-running", "C-a", 0)
+    lock = config.path("inflight_dir") / pair_lock_name("C-a", 0)
+    with lock.open("a") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        assert stale_inflight(config, []) == []
+    assert stale_inflight(config, []) == ["R-running"]
+
+
+def test_an_unreadable_marker_is_stale(config: Config) -> None:
+    _marker(config, "R-bad").write_text("{not json")
+    assert stale_inflight(config, []) == ["R-bad"]
+
+
+def test_no_inflight_directory_means_nothing_stale(config: Config) -> None:
+    assert stale_inflight(config, []) == []
+
+
+def test_stale_markers_never_fail_the_audit(config: Config, experiments: Experiments) -> None:
+    _marker(config, "R-crashed")
+    report = audit(config, experiments, [])
+    assert report.stale_inflight == ["R-crashed"]
+    assert report.to_dict()["stale_inflight"] == ["R-crashed"]
