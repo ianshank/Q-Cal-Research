@@ -29,16 +29,18 @@ import platform
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from importlib import metadata
 from pathlib import Path
 from typing import Any, Final
 
+import qcal
 from qcal.config import REPO_CONFIG_NAME, Config, ConfigError, environment_problems, load_config
 from qcal.integrity.leakage import check_leakage
 from qcal.log import get_logger
 from qcal.protocols import Detector, ImageDetections
 from qcal.registry.executor import STATUS_FAILED, STATUS_OK, result_envelope, sha256_file
 from qcal.registry.experiments import Experiments, load_experiments
-from qcal.registry.gates import INPUTS_READ_KEY
+from qcal.registry.gates import INPUTS_READ_KEY, code_location_problems
 from qcal.registry.records import SEED_EFFECTIVE_KEY
 from qcal_lab import __version__
 from qcal_lab.calib import CALIBRATORS, build_calibrator
@@ -54,14 +56,17 @@ from qcal_lab.config import LabConfig, defaults_path, load_lab_config, require_h
 from qcal_lab.data.coco import GroundTruth, load_coco
 from qcal_lab.data.splits import draw, read_split, split_digest
 from qcal_lab.evaluation import EvalLoop, check_metrics, load_eval_loop
+from qcal_lab.formats import envelope, json_bytes, write_bytes_atomic
 from qcal_lab.models import (
     CHECKPOINT_SETTING,
     build_detector,
     detector_fingerprint,
+    detector_problems,
     detector_targets,
     detector_test_cfg,
     score_definition,
 )
+from qcal_lab.numerics import load_regime, recorded_environment
 from qcal_lab.predictions import (
     CacheEntry,
     PredictionCache,
@@ -99,6 +104,10 @@ CALIBRATED_PREDICTIONS_FILE: Final = "calibrated_{split}.jsonl"
 RAW_PREDICTIONS_KIND: Final = "predictions_raw_{split}"
 CALIBRATION_KIND: Final = "calibration"
 CALIBRATED_PREDICTIONS_KIND: Final = "predictions_calibrated_{split}"
+PACKAGES_FILE: Final = "packages.json"
+PACKAGES_KIND: Final = "packages"
+PACKAGES_FORMAT: Final = "qcal_lab.packages"
+PACKAGES_VERSION: Final = 1
 
 
 class PlanError(ValueError):
@@ -346,6 +355,62 @@ def source_digest() -> str:
     return digest.hexdigest()
 
 
+def handwritten_digest() -> str:
+    """sha256 of Ian's hand-written files (read, never written: CLAUDE.md rule 4); "" if none."""
+    tree = Path(__file__).resolve().parent / HANDWRITTEN_DIR.rstrip("/")
+    files = sorted(p for p in tree.rglob("*") if p.is_file() and "__pycache__" not in p.parts)
+    if not files:
+        return ""
+    digest = hashlib.sha256()
+    for path in files:
+        digest.update(f"{path.relative_to(tree).as_posix()}\0".encode())
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+def program_code(qcal_config: Config) -> dict[str, str]:
+    """Where this program's code was imported from.
+
+    With ``registry.require_code_in_root`` both packages must come from ``paths.source_dir``,
+    as the launcher requires of qcal: the record's git SHA names the repository's code, and an
+    installed copy elsewhere could differ from it.
+    """
+    root = qcal_config.root
+    packages = {
+        "qcal": Path(qcal.__file__).resolve().parent,
+        "qcal_lab": Path(__file__).resolve().parent,
+    }
+    problems = code_location_problems(qcal_config)
+    source = qcal_config.path("source_dir").resolve()
+    if qcal_config.bool_value("registry.require_code_in_root") and not packages[
+        "qcal_lab"
+    ].is_relative_to(source):
+        problems.append(f"qcal_lab is imported from {packages['qcal_lab']}, not from {source}")
+    if problems:
+        raise ConfigError("; ".join(problems))
+    return {
+        name: path.relative_to(root).as_posix() if path.is_relative_to(root) else str(path)
+        for name, path in packages.items()
+    }
+
+
+def installed_packages() -> dict[str, str]:
+    """Every installed distribution and its version, by lower-case name."""
+    found = {
+        str(dist.metadata["Name"]).lower(): dist.version
+        for dist in metadata.distributions()
+        if dist.metadata["Name"]
+    }
+    return dict(sorted(found.items()))
+
+
+def _write_packages(ctx: _Context) -> None:
+    body = {"python": platform.python_version(), "packages": installed_packages()}
+    path = ctx.artifact_dir / PACKAGES_FILE
+    write_bytes_atomic(path, json_bytes(envelope(PACKAGES_FORMAT, PACKAGES_VERSION, body)))
+    ctx.add_artifact(path, PACKAGES_KIND)
+
+
 def _images_digest(ctx: _Context, ids: Sequence[str]) -> str:
     """sha256 over the image files of a split; empty when the detector reads no files."""
     if ctx.images_dir is None:
@@ -455,6 +520,11 @@ def run_experiment(
     if request.seed not in experiments.seeds_for(cell):
         raise PlanError(f"seed {request.seed} is not pre-registered for {cell.id}")
     plan = resolve_plan(cell.factors, lab)
+    code = program_code(qcal_config)
+    regime = load_regime(lab, plan.precision)  # refuses a precision without a regime
+    missing = detector_problems(lab, plan.detector)
+    if missing:
+        raise ConfigError(f"{'; '.join(missing)}; set it in configs/lab.toml")
     produced = detector_targets(lab, plan.detector)
     if plan.target not in produced:
         raise PlanError(
@@ -511,10 +581,14 @@ def run_experiment(
     evaluated = calibration.apply(raw["evaluate"])
     metrics = check_metrics(loop.metrics(evaluated, subsets["evaluate"]))
     _write_outputs(ctx, roles["evaluate"], ids["evaluate"], calibration, evaluated)
+    _write_packages(ctx)
     saved = calibration.to_dict()
     environment = {
         "qcal_lab_version": __version__,
         "qcal_lab_source_sha256": source_digest(),
+        "handwritten_sha256": handwritten_digest(),
+        "program_code": code,
+        "numerics": {"regime": regime.to_dict(), "environment": recorded_environment(os.environ)},
         "lab_config_sha256": lab.sha256,
         "lab_config_effective_sha256": _effective_digest(lab),
         "eval_loop": loop_provenance,
@@ -627,6 +701,10 @@ __all__ = [
     "CALIBRATION_KIND",
     "HANDWRITTEN_DIR",
     "LIVE_SOURCE",
+    "PACKAGES_FILE",
+    "PACKAGES_FORMAT",
+    "PACKAGES_KIND",
+    "PACKAGES_VERSION",
     "RAW_PREDICTIONS_FILE",
     "RAW_PREDICTIONS_KIND",
     "ROLES",
@@ -636,7 +714,10 @@ __all__ = [
     "RunPlan",
     "RunRequest",
     "check_disjoint",
+    "handwritten_digest",
+    "installed_packages",
     "prediction_source",
+    "program_code",
     "resolve_plan",
     "run_experiment",
     "source_digest",

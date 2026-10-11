@@ -43,6 +43,7 @@ from qcal_lab.data.splits import manifest_path, partition, write_manifest
 from qcal_lab.experiment import (
     CALIBRATED_PREDICTIONS_KIND,
     CALIBRATION_KIND,
+    PACKAGES_KIND,
     RAW_PREDICTIONS_KIND,
     RunRequest,
     run_experiment,
@@ -59,7 +60,7 @@ def expected_artifacts(roles: Mapping[str, str]) -> frozenset[str]:
     """The artifact kinds every successful run records, for split ``roles`` (role -> split)."""
     raw = {RAW_PREDICTIONS_KIND.format(split=split) for split in roles.values()}
     calibrated = CALIBRATED_PREDICTIONS_KIND.format(split=roles["evaluate"])
-    return frozenset({*raw, CALIBRATION_KIND, calibrated})
+    return frozenset({*raw, CALIBRATION_KIND, calibrated, PACKAGES_KIND})
 
 
 # The smoke project keeps the default split roles ([splits] in the packaged defaults).

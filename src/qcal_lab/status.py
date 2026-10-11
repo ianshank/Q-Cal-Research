@@ -16,6 +16,7 @@ from qcal.registry.executor import sha256_file
 from qcal.reports import verdict
 from qcal_lab.config import LabConfig
 from qcal_lab.evaluation import HandwrittenMissingError, load_eval_loop
+from qcal_lab.models import detector_problems
 from qcal_lab.parity import KINDS, ParityError, load_cases
 
 
@@ -71,6 +72,10 @@ def _detectors(report: StatusReport, lab: LabConfig) -> None:
             checkpoint = lab.file(f"detectors.{name}.checkpoint")
             if sha256_file(checkpoint) != expected:
                 problems.append(f"checkpoint_sha256 does not match {checkpoint}")
+        try:
+            problems.extend(detector_problems(lab, name))
+        except ConfigError as exc:
+            problems.append(str(exc))
         report.add(f"detector {name}", ok=not problems, detail="; ".join(problems) or "configured")
 
 

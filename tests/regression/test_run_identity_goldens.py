@@ -147,11 +147,12 @@ def test_cache_key() -> None:
 
 
 def test_lab_config_effective_digest() -> None:
-    # Re-pinned by docs/changes/run-identity-and-formats.md step 2: five roles added under
-    # [factors], and [smoke] moved to the unhashed tooling.toml. Nothing else changed.
+    # Re-pinned by docs/changes/run-identity-and-formats.md step 2 (five roles added under
+    # [factors], [smoke] moved to the unhashed tooling.toml) and step 4 ([numerics.regimes.*]
+    # added, configs/lab.toml pins detectors.atss_r50.max_per_image). Nothing else changed.
     lab = load_lab_config(REPO_ROOT)
     assert _effective_digest(lab) == (
-        "46a15c74800c4c5f4a0a401315df20bab25fda2500d2bc51d057553338c47c98"
+        "ee0ae26033217050861e4edf764d7d68e4194ad603e894fcb76825bbdf9f1d70"
     )
 
 

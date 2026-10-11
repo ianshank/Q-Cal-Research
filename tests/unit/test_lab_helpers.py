@@ -4,37 +4,12 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
 from qcal_lab import experiment
-from qcal_lab.models.mmdet import set_tf32, tf32_flags
 from qcal_lab.predictions import CacheEntry
 from tests.lab_support import predictions_header
-
-
-def fake_torch(*, matmul: bool, cudnn: bool) -> SimpleNamespace:
-    return SimpleNamespace(
-        backends=SimpleNamespace(
-            cuda=SimpleNamespace(matmul=SimpleNamespace(allow_tf32=matmul)),
-            cudnn=SimpleNamespace(allow_tf32=cudnn),
-        )
-    )
-
-
-@pytest.mark.parametrize("enabled", [True, False])
-def test_set_tf32_switches_both_backends(enabled: bool) -> None:
-    torch = fake_torch(matmul=not enabled, cudnn=not enabled)
-    set_tf32(torch, enabled=enabled)
-    assert tf32_flags(torch) == {"allow_tf32_matmul": enabled, "allow_tf32_cudnn": enabled}
-
-
-def test_tf32_flags_report_mixed_states() -> None:
-    assert tf32_flags(fake_torch(matmul=True, cudnn=False)) == {
-        "allow_tf32_matmul": True,
-        "allow_tf32_cudnn": False,
-    }
 
 
 def test_source_digest_covers_code_and_settings_but_not_ians_files(

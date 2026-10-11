@@ -9,6 +9,7 @@ from qcal_lab.models import fixture, mmdet
 from qcal_lab.models.base import (
     CHECKPOINT_SETTING,
     DETECTORS,
+    KIND_REQUIRED_SETTINGS,
     KIND_SCORE_DEFINITIONS,
     KIND_TARGETS,
     TEST_CFG_SETTINGS,
@@ -16,6 +17,7 @@ from qcal_lab.models.base import (
     DetectorError,
     build_detector,
     detector_fingerprint,
+    detector_problems,
     detector_settings,
     detector_spec,
     detector_targets,
@@ -26,6 +28,7 @@ from qcal_lab.models.base import (
 __all__ = [
     "CHECKPOINT_SETTING",
     "DETECTORS",
+    "KIND_REQUIRED_SETTINGS",
     "KIND_SCORE_DEFINITIONS",
     "KIND_TARGETS",
     "TEST_CFG_SETTINGS",
@@ -33,6 +36,7 @@ __all__ = [
     "DetectorError",
     "build_detector",
     "detector_fingerprint",
+    "detector_problems",
     "detector_settings",
     "detector_spec",
     "detector_targets",

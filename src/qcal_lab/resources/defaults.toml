@@ -110,6 +110,20 @@ factory = "build"
 
 [eval_loop.options]
 
+[numerics.regimes.fp32]
+# torch's own defaults: nothing is set. Every switch in effect is still recorded with the run.
+
+[numerics.regimes.fp32_tf32_off]
+# Full FP32: no TF32 anywhere, no cuDNN autotuning, deterministic kernels. Which regime G1
+# uses is Ian's decision D5 (docs/changes/run-identity-and-formats.md).
+allow_tf32_matmul = false
+allow_tf32_cudnn = false
+cudnn_benchmark = false
+cudnn_deterministic = true
+deterministic_algorithms = true
+deterministic_warn_only = false   # an operation without a deterministic kernel fails the run
+required_env = ["CUBLAS_WORKSPACE_CONFIG"]   # cuBLAS is deterministic only when it is set
+
 [predictions]
 cache_dir = "runs/cache/predictions"   # content-addressed raw predictions; "" disables
 # Raw predictions are keyed on the detector settings plus the contents of the files these

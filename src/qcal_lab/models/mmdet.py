@@ -6,13 +6,15 @@ public ``mmdet.apis`` functions and the ``pred_instances`` fields (``bboxes``, `
 ``labels``) of the returned data sample. Both modules are imported lazily through
 :func:`import_module`, so tests inject fakes and the package imports without MMDetection.
 
-``model.test_cfg`` overrides come from configuration (``score_threshold``, ``max_per_image``);
-omitted keys keep the MMDetection config's own values. ``precision = "fp32_tf32_off"``
-disables TF32 for matmul and cuDNN before the model is built.
+``model.test_cfg`` overrides come from configuration (``score_threshold``, ``max_per_image``),
+both required. The precision's numerics regime (:mod:`qcal_lab.numerics`) is applied before
+the model is built, and the run records every switch in effect and the device it used. The
+checkpoint's class names must equal the dataset's, in label order.
 """
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping, Sequence
 from importlib import import_module
 from pathlib import Path
@@ -23,12 +25,12 @@ from qcal.protocols import Detection, ImageDetections
 from qcal.registry.executor import sha256_file
 from qcal_lab.data.coco import GroundTruth
 from qcal_lab.models.base import DETECTORS, DetectorContext, DetectorError, setting_int
+from qcal_lab.numerics import apply_regime, device_record, load_regime
 
 _log = get_logger("lab.models.mmdet")
 
 API_MODULE: Final = "mmdet.apis"
 TORCH_MODULE: Final = "torch"
-TF32_OFF: Final = "fp32_tf32_off"
 _CFG_OPTIONS: Final = {
     "score_threshold": "model.test_cfg.score_thr",
     "max_per_image": "model.test_cfg.max_per_img",
@@ -53,17 +55,33 @@ def _import(name: str, purpose: str) -> Any:
         ) from exc
 
 
-def set_tf32(torch: Any, *, enabled: bool) -> None:
-    torch.backends.cuda.matmul.allow_tf32 = enabled
-    torch.backends.cudnn.allow_tf32 = enabled
+def check_label_map(name: str, classes: Sequence[str] | None, expected: Sequence[str]) -> None:
+    """Refuse a model whose class names are absent or differ from the dataset's, in order.
+
+    A detector's label ``i`` is read as the dataset's ``i``-th category, so a reordered or
+    different label map would score every detection against the wrong class.
+    """
+    if classes is None:
+        raise DetectorError(f"{name}: the model carries no class names; its labels are unchecked")
+    if list(classes) == list(expected):
+        return
+    at = next(
+        (i for i, (a, b) in enumerate(zip(classes, expected, strict=False)) if a != b),
+        min(len(classes), len(expected)),
+    )
+    found = repr(classes[at]) if at < len(classes) else "nothing"
+    wanted = repr(expected[at]) if at < len(expected) else "nothing"
+    raise DetectorError(
+        f"{name}: the model's classes differ from the dataset's at label {at} "
+        f"({found}, expected {wanted}; {len(classes)} vs {len(expected)} classes)"
+    )
 
 
-def tf32_flags(torch: Any) -> dict[str, bool]:
-    """The TF32 switches in effect, recorded with every run (plain fp32 keeps torch defaults)."""
-    return {
-        "allow_tf32_matmul": bool(torch.backends.cuda.matmul.allow_tf32),
-        "allow_tf32_cudnn": bool(torch.backends.cudnn.allow_tf32),
-    }
+def model_classes(model: Any) -> list[str] | None:
+    """The class names a built MMDetection model carries (``dataset_meta``), if any."""
+    meta = getattr(model, "dataset_meta", None)
+    classes = meta.get("classes") if isinstance(meta, Mapping) else None
+    return None if classes is None else [str(c) for c in classes]
 
 
 class MMDetDetector:
@@ -91,6 +109,7 @@ class MMDetDetector:
             device=device,
             cfg_options=dict(cfg_options) or None,
         )
+        check_label_map(name, model_classes(self._model), ground_truth.category_names)
 
     def _image(self, image_id: str) -> ImageDetections:
         info = self.ground_truth.images.get(image_id)
@@ -145,23 +164,28 @@ def _build(context: DetectorContext) -> MMDetDetector:
             raise DetectorError(f"checkpoint {checkpoint} has sha256 {actual}, expected {expected}")
     else:
         _log.warning("%s: checkpoint_sha256 is not set; the checkpoint is not verified", prefix)
+    regime = load_regime(lab, context.precision)
     torch = _import(TORCH_MODULE, "the MMDetection detector cannot run")
-    if context.precision == TF32_OFF:
-        set_tf32(torch, enabled=False)
+    numerics = apply_regime(torch, regime, os.environ)  # before the model is built
     api = _import(API_MODULE, "the MMDetection detector cannot run")
+    device = lab.text(f"{prefix}.device")
     return MMDetDetector(
         name=context.name,
         ground_truth=context.ground_truth,
         images_dir=context.images_dir,
         config_file=lab.file(f"{prefix}.config"),
         checkpoint=checkpoint,
-        device=lab.text(f"{prefix}.device"),
+        device=device,
         cfg_options=_cfg_options(context.settings),
         api=api,
-        runtime={"precision": context.precision, **tf32_flags(torch)},
+        runtime={
+            "precision": context.precision,
+            "numerics": numerics,
+            "device": device_record(torch, device),
+        },
     )
 
 
 DETECTORS.register("mmdet", _build)
 
-__all__ = ["API_MODULE", "TF32_OFF", "MMDetDetector", "set_tf32", "tf32_flags"]
+__all__ = ["API_MODULE", "TORCH_MODULE", "MMDetDetector", "check_label_map", "model_classes"]

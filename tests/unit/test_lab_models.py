@@ -28,7 +28,13 @@ from qcal_lab.models import (
 from qcal_lab.models import mmdet as mmdet_module
 from qcal_lab.models.base import setting_int, setting_number
 from qcal_lab.models.fixture import FixtureDetector
-from tests.lab_support import fixture_document, fixture_ground_truth, ground_truth, lab_config
+from tests.lab_support import (
+    FakeTorch,
+    fixture_document,
+    fixture_ground_truth,
+    ground_truth,
+    lab_config,
+)
 
 FIXTURE = fixture_ground_truth()
 
@@ -171,11 +177,13 @@ class FakeApi:
         self.init_args: dict[str, Any] = {}
         self.calls: list[str] = []
 
-    def init_detector(self, config: str, checkpoint: str, **kwargs: Any) -> str:
+    def init_detector(self, config: str, checkpoint: str, **kwargs: Any) -> SimpleNamespace:
         self.init_args = {"config": config, "checkpoint": checkpoint, **kwargs}
-        return "model"
+        return SimpleNamespace(dataset_meta={"classes": self.classes})
 
-    def inference_detector(self, model: str, path: str) -> SimpleNamespace:
+    classes: tuple[str, ...] = ("c1", "c3")  # ground_truth()'s categories, in label order
+
+    def inference_detector(self, model: SimpleNamespace, path: str) -> SimpleNamespace:
         self.calls.append(path)
         boxes, scores, labels = zip(*self.rows, strict=True) if self.rows else ((), (), ())
         return SimpleNamespace(
@@ -194,13 +202,10 @@ def mmdet_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     checkpoint = tmp_path / "atss.pth"
     checkpoint.write_bytes(b"weights")
     api = FakeApi([([1, 2, 3, 4], 0.3, 1), ([0, 0, 5, 5], 0.9, 0)])
-    torch = SimpleNamespace(
-        backends=SimpleNamespace(
-            cuda=SimpleNamespace(matmul=SimpleNamespace(allow_tf32=True)),
-            cudnn=SimpleNamespace(allow_tf32=True),
-        )
-    )
+    torch = FakeTorch()
     modules = {"mmdet.apis": api, "torch": torch}
+    monkeypatch.delenv("CUBLAS_WORKSPACE_CONFIG", raising=False)
+    monkeypatch.delenv("NVIDIA_TF32_OVERRIDE", raising=False)
 
     def fake_import(name: str) -> Any:
         if name not in modules:
@@ -216,12 +221,20 @@ def mmdet_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         "score_threshold = 0.05\nmax_per_image = 100\n"
     )
     return SimpleNamespace(
-        gt=gt, images=images, api=api, torch=torch, modules=modules, body=body, tmp=tmp_path
+        gt=gt,
+        images=images,
+        api=api,
+        torch=torch,
+        modules=modules,
+        body=body,
+        tmp=tmp_path,
+        monkeypatch=monkeypatch,
     )
 
 
 def test_mmdet_adapter_converts_pred_instances(mmdet_setup) -> None:
     s = mmdet_setup
+    s.monkeypatch.setenv("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
     lab = lab_config(s.tmp, s.body)
     detector = build_detector(lab, "atss_r50", s.gt, precision="fp32_tf32_off", images_dir=s.images)
     assert s.api.init_args["cfg_options"] == {
@@ -229,13 +242,27 @@ def test_mmdet_adapter_converts_pred_instances(mmdet_setup) -> None:
         "model.test_cfg.max_per_img": 100,
     }
     assert s.api.init_args["device"] == "cuda:0"
-    assert s.torch.backends.cuda.matmul.allow_tf32 is False
     assert s.torch.backends.cudnn.allow_tf32 is False
-    assert detector.runtime == {
-        "precision": "fp32_tf32_off",
+    numerics = detector.runtime["numerics"]
+    assert numerics["regime"]["precision"] == "fp32_tf32_off"
+    assert numerics["effective"] == {
         "allow_tf32_matmul": False,
         "allow_tf32_cudnn": False,
+        "cudnn_benchmark": False,
+        "cudnn_deterministic": True,
+        "deterministic_algorithms": True,
+        "deterministic_warn_only": False,
     }
+    assert numerics["environment"] == {
+        "NVIDIA_TF32_OVERRIDE": None,
+        "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
+    }
+    device = detector.runtime["device"]
+    assert (device["device"], device["uuid"], device["capability"]) == (
+        "cuda:0",
+        "GPU-0000",
+        "12.0",
+    )
     result = detector.predict(["1"])[0]
     assert [(d.score, d.label) for d in result.detections] == [(0.9, 0), (0.3, 1)]
     assert result.detections[1].box_xyxy == (1.0, 2.0, 3.0, 4.0)
@@ -245,13 +272,48 @@ def test_mmdet_adapter_converts_pred_instances(mmdet_setup) -> None:
         detector.predict(["7"])
 
 
-def test_mmdet_adapter_leaves_tf32_alone_for_plain_fp32(mmdet_setup) -> None:
+def test_mmdet_adapter_leaves_torch_defaults_alone_for_plain_fp32(mmdet_setup) -> None:
     s = mmdet_setup
-    lab = lab_config(s.tmp, s.body.replace("score_threshold = 0.05\nmax_per_image = 100\n", ""))
+    lab = lab_config(s.tmp, s.body)
     detector = build_detector(lab, "atss_r50", s.gt, precision="fp32", images_dir=s.images)
     assert s.torch.backends.cudnn.allow_tf32 is True
-    assert s.api.init_args["cfg_options"] is None
-    assert detector.runtime["allow_tf32_cudnn"] is True  # recorded, so the run says so
+    assert detector.runtime["numerics"]["effective"]["allow_tf32_cudnn"] is True  # recorded
+
+
+def test_mmdet_adapter_needs_the_regimes_environment(mmdet_setup) -> None:
+    s = mmdet_setup
+    lab = lab_config(s.tmp, s.body)
+    with pytest.raises(ConfigError, match="needs CUBLAS_WORKSPACE_CONFIG set"):
+        build_detector(lab, "atss_r50", s.gt, precision="fp32_tf32_off", images_dir=s.images)
+    assert s.api.init_args == {}  # refused before the model was built
+
+
+@pytest.mark.parametrize("setting", ["score_threshold", "max_per_image"])
+def test_mmdet_test_time_settings_are_required(mmdet_setup, setting: str) -> None:
+    s = mmdet_setup
+    body = "\n".join(line for line in s.body.splitlines() if not line.startswith(setting))
+    with pytest.raises(ConfigError, match=f"detectors.atss_r50.{setting} is not set"):
+        build_detector(lab_config(s.tmp, body), "atss_r50", s.gt, precision="fp32")
+
+
+@pytest.mark.parametrize(
+    ("classes", "message"),
+    [
+        (None, "carries no class names"),
+        (("c3", "c1"), r"at label 0 \('c3', expected 'c1'"),
+        (("c1",), r"at label 1 \(nothing, expected 'c3'; 1 vs 2 classes\)"),
+        (("c1", "c3", "c4"), r"at label 2 \('c4', expected nothing"),
+    ],
+)
+def test_mmdet_adapter_refuses_a_different_label_map(
+    mmdet_setup, classes: tuple[str, ...] | None, message: str
+) -> None:
+    s = mmdet_setup
+    s.api.classes = classes
+    with pytest.raises(DetectorError, match=message):
+        build_detector(
+            lab_config(s.tmp, s.body), "atss_r50", s.gt, precision="fp32", images_dir=s.images
+        )
 
 
 @pytest.mark.parametrize(

@@ -53,11 +53,22 @@ KIND_SCORE_DEFINITIONS: Final[Mapping[str, str]] = {
 TEST_CFG_SETTINGS: Final = ("score_threshold", "max_per_image")
 #: The detector setting naming the model weights, whose sha256 a predictions header records.
 CHECKPOINT_SETTING: Final = "checkpoint"
+#: Settings a detector kind must have set explicitly. MMDetection's test-time settings are
+#: pinned in configuration, so a predictions header's test_cfg is the whole of what applied
+#: and never falls back to a model config's own defaults.
+KIND_REQUIRED_SETTINGS: Final[Mapping[str, tuple[str, ...]]] = {"mmdet": TEST_CFG_SETTINGS}
 
 
 def detector_targets(lab: LabConfig, name: str) -> frozenset[str]:
     """The targets the configured detector ``name`` can produce."""
     return KIND_TARGETS.get(str(detector_settings(lab, name)["kind"]), frozenset())
+
+
+def detector_problems(lab: LabConfig, name: str) -> list[str]:
+    """Required settings the configured detector ``name`` lacks (empty when it can run)."""
+    settings = detector_settings(lab, name)
+    required = KIND_REQUIRED_SETTINGS.get(str(settings["kind"]), ())
+    return [f"detectors.{name}.{key} is not set" for key in required if key not in settings]
 
 
 def score_definition(lab: LabConfig, name: str) -> str:
@@ -135,6 +146,9 @@ def build_detector(
     images_dir: Path | None = None,
 ) -> Detector:
     settings = detector_settings(lab, name)
+    problems = detector_problems(lab, name)
+    if problems:
+        raise ConfigError("; ".join(problems))
     factory = DETECTORS.get(str(settings["kind"]))
     # A real detector never sees ground-truth boxes (test boxes included); only the synthetic
     # fixture's stand-in detector, which perturbs them, gets the boxes.
@@ -161,6 +175,7 @@ def setting_int(settings: Mapping[str, Any], key: str) -> int:
 __all__ = [
     "CHECKPOINT_SETTING",
     "DETECTORS",
+    "KIND_REQUIRED_SETTINGS",
     "KIND_SCORE_DEFINITIONS",
     "KIND_TARGETS",
     "TEST_CFG_SETTINGS",
@@ -169,6 +184,7 @@ __all__ = [
     "DetectorFactory",
     "build_detector",
     "detector_fingerprint",
+    "detector_problems",
     "detector_settings",
     "detector_spec",
     "detector_targets",

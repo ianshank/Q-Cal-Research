@@ -85,14 +85,22 @@ In order, each step a separate commit:
        requires `CUBLAS_WORKSPACE_CONFIG`.
    - The default stays `fp32`. Switching to `fp32_tf32_off` is Ian's decision D5 and one line
      of configuration.
+   - A precision without a regime table is refused before any detector work, and a regime
+     whose `required_env` is unset refuses before anything is switched.
    - The program records:
-     - every effective flag and `NVIDIA_TF32_OVERRIDE`;
-     - the device it used, and the CUDA and cuDNN versions;
-     - a digest of torch's build configuration, the package list (as an artifact), and the
-       handwritten files' digest.
-   - `configs/lab.toml` pins `max_per_image = 100`. `score_threshold` is Ian's to set (F10), so
-     an `atss_r50` run refuses to start while it is unset.
-   - The checkpoint's class names must equal the dataset's.
+     - every effective switch, `NVIDIA_TF32_OVERRIDE` and `CUBLAS_WORKSPACE_CONFIG`;
+     - the device it used (name, uuid, compute capability), and the CUDA and cuDNN versions;
+     - a digest of torch's build configuration, the package list (a `qcal_lab.packages`
+       artifact), and the handwritten files' digest;
+     - where `qcal` and `qcal_lab` were imported from. With `registry.require_code_in_root`
+       both must come from `paths.source_dir`, as the launcher requires of `qcal`.
+     A lock-file digest waits for PR-C, which adds the lock file.
+   - An MMDetection detector must set both test-time settings, so the recorded `test_cfg` is
+     all that applied. `configs/lab.toml` pins `max_per_image = 100`. `score_threshold` is
+     Ian's to set (F10), so an `atss_r50` run refuses to start while it is unset, and
+     `python -m qcal_lab status` lists it.
+   - The model's class names must equal the dataset's, in label order; a model without class
+     names is refused.
 5. **Cache key and producer.**
    - The key covers only the modules that produce predictions: `models/`, `data/coco.py`,
      `data/fixture.py` and `predictions.py`.

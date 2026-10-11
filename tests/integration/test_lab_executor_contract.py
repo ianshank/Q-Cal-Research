@@ -43,7 +43,11 @@ def test_a_cell_runs_through_the_subprocess_executor(tmp_path: Path) -> None:
     result = _executor(project).execute(_spec(project, cells[3], "R-int"))
     assert result.ok, result.error
     assert set(result.metrics) == {"smoke_images", "smoke_detections", "smoke_mean_abs_gap"}
-    assert [a.kind for a in result.artifacts][-2:] == ["calibration", "predictions_calibrated_test"]
+    assert [a.kind for a in result.artifacts][-3:] == [
+        "calibration",
+        "predictions_calibrated_test",
+        "packages",
+    ]
     assert all(len(a.sha256) == 64 for a in result.artifacts)
     assert result.environment["eval_loop"]["module"] == "qcal_lab.fixture_eval:build"
 

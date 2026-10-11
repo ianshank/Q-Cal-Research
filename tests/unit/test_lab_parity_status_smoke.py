@@ -193,6 +193,7 @@ def test_status_checks_the_checkpoint_digest_and_the_images(repo: Path) -> None:
     body = (
         '[datasets.id]\nimages_dir = "images"\n'
         '[detectors.atss_r50]\nconfig = "atss.py"\ncheckpoint = "w.pth"\n'
+        "score_threshold = 0.05\nmax_per_image = 100\n"
     )
     good = hashlib.sha256(b"weights").hexdigest()
     (repo / "configs").mkdir()
@@ -203,9 +204,24 @@ def test_status_checks_the_checkpoint_digest_and_the_images(repo: Path) -> None:
         assert items["detector atss_r50"][0] is ok, items["detector atss_r50"]
         assert items["in-domain images"][0] is True
     assert "does not match" in items["detector atss_r50"][1]
+    (repo / "configs/lab.toml").write_text(
+        body.replace("score_threshold = 0.05\n", "") + f'checkpoint_sha256 = "{good}"\n'
+    )
+    report = build_status(load_config(repo, environ={}), load_lab_config(repo))
+    state, detail = {n: (s, d) for n, s, d in report.items}["detector atss_r50"]
+    assert (state, detail) == (False, "detectors.atss_r50.score_threshold is not set")
     (repo / "images").rmdir()
     report = build_status(load_config(repo, environ={}), load_lab_config(repo))
     assert {n: s for n, s, _ in report.items}["in-domain images"] is False
+
+
+def test_status_reports_a_detector_without_a_kind(repo: Path) -> None:
+    (repo / "configs").mkdir()
+    (repo / "configs/lab.toml").write_text('[detectors.odd]\nconfig = "x.py"\n')
+    report = build_status(load_config(repo, environ={}), load_lab_config(repo))
+    state, detail = {n: (s, d) for n, s, d in report.items}["detector odd"]
+    assert state is False
+    assert "detectors.odd.kind must name a detector kind" in detail
 
 
 def test_status_reports_broken_loops_and_cases(repo: Path) -> None:
@@ -276,4 +292,5 @@ def test_expected_artifacts_follow_the_split_roles() -> None:
         "predictions_raw_c",
         "calibration",
         "predictions_calibrated_c",
+        "packages",
     }

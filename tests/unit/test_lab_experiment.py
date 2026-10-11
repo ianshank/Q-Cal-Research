@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,7 @@ from qcal_lab.experiment import (
     PlanError,
     RoleSpec,
     RunRequest,
+    handwritten_digest,
     resolve_plan,
     run_experiment,
     split_roles,
@@ -234,9 +236,11 @@ def test_a_run_produces_metrics_artifacts_and_provenance(project: tuple[Path, li
         "predictions_raw_test",
         "calibration",
         "predictions_calibrated_test",
+        "packages",
     ]
     assert all((root / a["path"]).is_file() for a in result.artifacts)
-    header, images = read_predictions(root / result.artifacts[-1]["path"])
+    by_kind = {a["kind"]: a["path"] for a in result.artifacts}
+    header, images = read_predictions(root / by_kind["predictions_calibrated_test"])
     assert header.stage == "calibrated"
     assert {i.image_id for i in images} == _manifest(root, "test")
     env = result.environment
@@ -258,6 +262,22 @@ def test_a_run_produces_metrics_artifacts_and_provenance(project: tuple[Path, li
     assert retained["total"] == sum(len(i.detections) for i in images)
     assert set(env["prediction_cache"]) == {"calibrator_fit_split", "val", "test"}
     assert env["program_python"]
+    assert env["program_code"]["qcal_lab"].endswith("qcal_lab")
+    assert env["numerics"]["regime"] == {
+        "precision": "fp32",
+        "switches": {},
+        "deterministic": None,
+        "warn_only": False,
+        "required_env": [],
+    }
+    assert set(env["numerics"]["environment"]) == {
+        "NVIDIA_TF32_OVERRIDE",
+        "CUBLAS_WORKSPACE_CONFIG",
+    }
+    assert env["handwritten_sha256"] == handwritten_digest()
+    packages = json.loads((root / by_kind["packages"]).read_text())
+    assert packages["format"] == "qcal_lab.packages"
+    assert packages["packages"]["pytest"]
     assert env["detector_runtime"] == {}  # the fixture detector has no backend switches
 
     write_result(root / "out/result.json", result)
@@ -433,6 +453,67 @@ def test_a_run_records_what_produced_its_predictions(project: tuple[Path, list[s
             assert header.source.to_dict() == source, artifact["kind"]
     calibration = next(a for a in result.artifacts if a["kind"] == "calibration")
     read_calibration(root / calibration["path"])  # the saved calibration carries its envelope
+
+
+def test_a_precision_without_a_regime_is_refused_before_detector_work(
+    project: tuple[Path, list[str]],
+) -> None:
+    root, _ = project
+    lab_file = root / "configs/lab.toml"
+    lab_file.write_text(
+        lab_file.read_text() + '[factors.supported]\nprecision = ["fp32", "fp16"]\n'
+    )
+    experiments = yaml.safe_load((root / "EXPERIMENTS.yaml").read_text())
+    experiments["cells"].append({"id": "C-fp16", "detector": "fixture", "precision": "fp16"})
+    (root / "EXPERIMENTS.yaml").write_text(yaml.safe_dump(experiments, sort_keys=False))
+    with pytest.raises(ConfigError, match=r"no \[numerics.regimes.fp16\] table"):
+        run_experiment(_request(root, "C-fp16"))
+    assert not (root / "runs/cache").exists()
+
+
+def test_a_detector_missing_a_required_setting_is_refused_before_detector_work(
+    project: tuple[Path, list[str]],
+) -> None:
+    root, _ = project
+    lab_file = root / "configs/lab.toml"
+    lab_file.write_text(lab_file.read_text() + "[detectors.atss_r50]\nmax_per_image = 100\n")
+    experiments = yaml.safe_load((root / "EXPERIMENTS.yaml").read_text())
+    experiments["cells"].append({"id": "C-atss", "detector": "atss_r50"})
+    (root / "EXPERIMENTS.yaml").write_text(yaml.safe_dump(experiments, sort_keys=False))
+    with pytest.raises(ConfigError, match=r"atss_r50\.score_threshold is not set; set it in"):
+        run_experiment(_request(root, "C-atss"))
+    assert not (root / "runs/cache").exists()
+
+
+def test_code_from_outside_the_source_directory_is_refused(
+    project: tuple[Path, list[str]],
+) -> None:
+    root, cells = project
+    qcal_toml = root / "qcal.toml"
+    text = qcal_toml.read_text().replace(
+        "[registry]\n", "[registry]\nrequire_code_in_root = true\n"
+    )
+    qcal_toml.write_text(text + '[paths]\nsource_dir = "elsewhere"\n')
+    with pytest.raises(ConfigError, match=r"qcal_lab is imported from .+, not from"):
+        run_experiment(_request(root, cells[0]))
+
+
+def test_handwritten_digest_covers_ians_files_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qcal_lab import experiment
+
+    package = tmp_path / "qcal_lab"
+    (package / "handwritten" / "__pycache__").mkdir(parents=True)
+    monkeypatch.setattr(experiment, "__file__", str(package / "experiment.py"))
+    assert handwritten_digest() == ""  # nothing written yet
+    (package / "handwritten" / "eval_loop.py").write_text("x = 1\n")
+    first = handwritten_digest()
+    (package / "handwritten" / "__pycache__" / "eval_loop.pyc").write_bytes(b"compiled")
+    (package / "experiment.py").write_text("y = 2\n")
+    assert handwritten_digest() == first  # caches and the package's own code are not Ian's
+    (package / "handwritten" / "eval_loop.py").write_text("x = 2\n")
+    assert handwritten_digest() != first
 
 
 def test_unregistered_seed_or_cell_is_refused(project: tuple[Path, list[str]]) -> None:
