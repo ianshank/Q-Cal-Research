@@ -142,6 +142,20 @@ Residual, documented: an agent with Bash can still edit the repository's own `.g
 ignore rules. `qcal.toml` must be byte-identical to `HEAD` (no CRLF conversion on checkout).
 Signed commits plus CI remain the control.
 
+## Copilot review on PR #4 and what changed
+Three findings on this change held up against the code and are fixed in one follow-up
+commit, each with a test that fails when its fix is reverted:
+- **Uncommitted science configuration.** Only `qcal.toml` and `EXPERIMENTS.yaml` were
+  compared with `HEAD`. A run could hash a work-tree `configs/lab.toml` (or lab defaults)
+  that git never kept, and `registry.require_clean_tree` is off by default. Every
+  `registry.config_hash_inputs` file must now equal `HEAD`. The runner reads the inputs once
+  and passes the same mapping to the gate and the hash, so nothing can change in between.
+- **No git, no `qcal.toml`.** The policy state inferred "`HEAD` is readable" from its source
+  label, so such a project was refused against a `HEAD` that does not exist. `PolicyState`
+  now records whether the root is in git.
+- **List-of-table fields** (`hooks.extra_bash_deny`) were checked for unknown keys but not
+  for kinds; each field is now checked against the template.
+
 ## Acceptance
 - [x] `make check` green (lint, types, tests with coverage gate)
 - [x] `tests/security/test_run_input_bypasses.py`: 24 attacks refused; each defence's tests

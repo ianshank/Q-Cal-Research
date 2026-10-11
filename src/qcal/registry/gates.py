@@ -11,7 +11,9 @@ A registered run reads its configuration from committed files: the packaged defa
 - a git repository that git cannot read (it would otherwise look like "no git");
 - a ``qcal.toml`` whose *parsed bytes* differ from the ``HEAD`` blob: the configuration in
   memory is what is compared, so restoring the file after it was read changes nothing;
-- a pre-registration that is not the configured file, or differs from ``HEAD``.
+- a pre-registration that is not the configured file, or differs from ``HEAD``;
+- a ``registry.config_hash_inputs`` file (``configs/lab.toml``, the lab defaults) that differs
+  from ``HEAD`` or is not committed: its digest in the record would name bytes git never kept.
 
 After the run, :func:`input_mismatches` compares the digests the experiment program reports
 for the files it read (``environment.inputs_read``) with the digests taken at launch. That
@@ -19,7 +21,8 @@ is a tripwire, not a control: the reporter is the experiment program itself. Fil
 not report are listed in the record (``provenance.inputs_unverified``).
 
 Outside git (a throwaway project) the policy is the work tree's and the record says so
-(``policy_source``); ``qcal registry audit --strict`` flags such records.
+(``policy_source``); ``qcal registry audit --strict`` flags such records. Nothing is compared
+with ``HEAD`` there, with or without a ``qcal.toml``.
 """
 
 from __future__ import annotations
@@ -59,11 +62,12 @@ class PolicyState:
     source: str
     sha256: str | None
     problems: tuple[str, ...] = field(default=())
+    in_git: bool = False  # the root is the top level of a readable git work tree
 
     @property
     def committed(self) -> bool:
         """Whether ``HEAD`` could be read, so committed files can be compared with it."""
-        return self.source != WORKTREE and not self.problems
+        return self.in_git and not self.problems
 
 
 def _repository_problems(root: Path) -> tuple[bool, list[str]]:
@@ -103,15 +107,22 @@ def policy_state(config: Config) -> PolicyState:
             f"{REPO_CONFIG_NAME} differs from HEAD; commit it first "
             "(registered runs read the committed policy)"
         )
-    state = PolicyState(HEAD if parsed else DEFAULTS, parsed, tuple(problems))
+    state = PolicyState(HEAD if parsed else DEFAULTS, parsed, tuple(problems), in_git=True)
     _log.debug("policy: source=%s sha256=%s problems=%s", state.source, parsed, problems)
     return state
 
 
 def run_input_problems(
-    config: Config, experiments: Experiments, policy: PolicyState | None = None
+    config: Config,
+    experiments: Experiments,
+    policy: PolicyState | None = None,
+    inputs: Mapping[str, str] | None = None,
 ) -> list[str]:
-    """Why a registered run must not start with this configuration; empty when it may."""
+    """Why a registered run must not start with this configuration; empty when it may.
+
+    ``inputs`` are the :func:`config_inputs` the run hashes; pass the same mapping so the
+    bytes compared with ``HEAD`` are the bytes hashed.
+    """
     policy = policy or policy_state(config)
     problems = list(environment_problems(config))
     problems += [f"configuration: {p}" for p in config_key_problems(config.data)]
@@ -132,6 +143,22 @@ def run_input_problems(
             problems.append(
                 f"{relative} differs from HEAD; commit the pre-registration first "
                 "(registered runs use the committed one)"
+            )
+    if policy.committed:
+        problems += uncommitted_inputs(config, config_inputs(config) if inputs is None else inputs)
+    return problems
+
+
+def uncommitted_inputs(config: Config, inputs: Mapping[str, str]) -> list[str]:
+    """Hashed configuration files whose bytes are not ``HEAD``'s, one problem each."""
+    problems: list[str] = []
+    for relative, digest in sorted(inputs.items()):
+        committed = gitutil.blob_sha256("HEAD", relative, config.root)
+        if committed != digest:
+            state = "is not committed" if committed is None else "differs from HEAD"
+            problems.append(
+                f"{relative} {state}; commit it first (a registered run's config_hash must "
+                "name committed configuration)"
             )
     return problems
 

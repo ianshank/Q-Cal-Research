@@ -118,10 +118,12 @@ class Runner:
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
         return hashlib.sha256(canonical.encode()).hexdigest()
 
-    def check_inputs(self, policy: PolicyState | None = None) -> PolicyState:
+    def check_inputs(
+        self, policy: PolicyState | None = None, inputs: Mapping[str, str] | None = None
+    ) -> PolicyState:
         """Refuse a run whose configuration does not come from committed files only."""
         policy = policy or policy_state(self.config)
-        problems = run_input_problems(self.config, self.experiments, policy)
+        problems = run_input_problems(self.config, self.experiments, policy, inputs)
         if problems:
             _log.error("refusing a registered run: %s", "; ".join(problems))
             raise RunRefusedError(
@@ -159,10 +161,17 @@ class Runner:
             raise RunRefusedError(
                 f"seed {seed} is not pre-registered for {cell_id} (allowed: {list(allowed)})"
             )
-        policy = self.check_inputs()
+        inputs = config_inputs(self.config)  # read once: compared, hashed and digested
+        policy = self.check_inputs(inputs=inputs)
         with self._pair_lock(cell.id, seed):  # from the duplicate check to the record write
             return self._run_locked(
-                cell, seed, policy, supersedes=supersedes, reason=reason, batch_id=batch_id
+                cell,
+                seed,
+                policy,
+                inputs,
+                supersedes=supersedes,
+                reason=reason,
+                batch_id=batch_id,
             )
 
     def _run_locked(
@@ -170,6 +179,7 @@ class Runner:
         cell: Cell,
         seed: int,
         policy: PolicyState,
+        inputs: Mapping[str, str],
         *,
         supersedes: str | None,
         reason: str,
@@ -212,7 +222,6 @@ class Runner:
             root=root,
             python=sys.executable,
         )
-        inputs = config_inputs(self.config)  # read once: hashed, digested and compared
         launch = launch_digests(self.config, self.experiments, policy, inputs)
         provenance = {
             "git_sha": gitutil.head_sha(root),

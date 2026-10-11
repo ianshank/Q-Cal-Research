@@ -660,3 +660,70 @@ def test_table_specs_are_not_run_inputs(make_config: Callable[[str], Config]) ->
         == before
         == {"configs/lab.toml": hashlib.sha256(b"x = 1\n").hexdigest()}
     )
+
+
+# -- committed configuration inputs (Copilot review of PR #4) --------------------------------
+
+
+def test_uncommitted_science_configuration_refuses_a_registered_run(git_repo: Path) -> None:
+    """The record's config_hash must name bytes git kept, not a work-tree edit."""
+    write(git_repo, "configs/lab.toml", "x = 1\n")
+    write(git_repo, "EXPERIMENTS.yaml", experiments_yaml(CELLS, seeds=[0, 1]))  # as runner_for
+    run_git(git_repo, "add", "-A")
+    run_git(git_repo, "commit", "-q", "-m", "inputs")
+    config = load_config(git_repo, environ={})
+    assert run_input_problems(config, load_experiments(config)) == []
+    write(git_repo, "configs/lab.toml", "x = 2\n")  # edited, not committed
+    write(git_repo, "configs/extra.toml", "y = 1\n")  # new, never committed
+    problems = run_input_problems(config, load_experiments(config))
+    reason = "commit it first (a registered run's config_hash must name committed configuration)"
+    assert problems == [
+        f"configs/extra.toml is not committed; {reason}",
+        f"configs/lab.toml differs from HEAD; {reason}",
+    ]
+    with pytest.raises(RunRefusedError, match=r"configs/lab\.toml differs from HEAD"):
+        runner_for(config, FakeExecutor()).run("C-a", 0)
+
+
+def test_a_run_compares_and_hashes_one_read_of_its_inputs(
+    git_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reading twice would let a file change between the HEAD check and the hash."""
+    from qcal.registry import runner as runner_module
+
+    write(git_repo, "configs/lab.toml", "x = 1\n")
+    write(git_repo, "EXPERIMENTS.yaml", experiments_yaml(CELLS, seeds=[0, 1]))  # as runner_for
+    run_git(git_repo, "add", "-A")
+    run_git(git_repo, "commit", "-q", "-m", "inputs")
+    config = load_config(git_repo, environ={})
+    reads: list[int] = []
+
+    def counted(cfg: Any) -> dict[str, str]:
+        reads.append(1)
+        return config_inputs(cfg)
+
+    monkeypatch.setattr(runner_module, "config_inputs", counted)
+    record = runner_for(config, FakeExecutor()).run("C-a", 0)
+    assert len(reads) == 1
+    assert record.provenance["config_inputs_sha256"]
+
+
+def test_outside_git_nothing_is_compared_with_head(tmp_path: Path) -> None:
+    """With or without a qcal.toml, a project outside git has no HEAD to compare with."""
+    project = tmp_path / "loose"
+    project.mkdir()
+    write(project, "EXPERIMENTS.yaml", experiments_yaml(CELLS))
+    config = load_config(project, environ={})
+    policy = policy_state(config)
+    assert (policy.source, policy.committed) == ("defaults", False)
+    assert run_input_problems(config, load_experiments(config), policy) == []
+
+
+def test_list_of_table_fields_are_type_checked() -> None:
+    data = {"hooks": {"extra_bash_deny": [{"pattern": 1, "reason": []}]}}
+    problems = config_key_problems(data)
+    assert "hooks.extra_bash_deny[0].pattern must be a string, got a number" in problems
+    assert any(p.startswith("hooks.extra_bash_deny[0].reason must be a string") for p in problems)
+    assert (
+        config_key_problems({"hooks": {"extra_bash_deny": [{"pattern": "x", "reason": "y"}]}}) == []
+    )

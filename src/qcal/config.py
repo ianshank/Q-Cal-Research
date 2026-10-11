@@ -354,11 +354,13 @@ def _check_value(value: Any, default: Any, dotted: str, problems: list[str]) -> 
         bad = [v for v in value if not _same_kind(element, v)]
         if bad:
             problems.append(f"{dotted} must hold only {_kind(element)} items, got {bad[0]!r}")
-        elif isinstance(element, Mapping):  # list of tables: each item has the template's keys
+        elif isinstance(element, Mapping):  # list of tables: the template's keys and kinds
             for i, item in enumerate(value):
                 unknown = sorted(set(item) - set(element))
                 if unknown:
                     problems.append(f"{dotted}[{i}] has unknown keys {unknown}")
+                for key in sorted(set(item) & set(element)):
+                    _check_value(item[key], element[key], f"{dotted}[{i}].{key}", problems)
 
 
 def _same_kind(expected: Any, value: Any) -> bool:
