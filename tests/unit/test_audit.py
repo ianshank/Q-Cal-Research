@@ -250,6 +250,7 @@ def test_to_dict_formats_pairs_and_coverage(config: Config, experiments: Experim
         "duplicates": [],
         "bad_supersedes": [],
         "mixed_inputs": [],
+        "uncommitted_policy": [],
         "amendments": 0,
     }
 
@@ -283,5 +284,6 @@ def test_render_text_lists_every_section() -> None:
         "duplicates: 0",
         "bad_supersedes: 0",
         "mixed_inputs: 0",
+        "uncommitted_policy: 0",
         "amendments: 2",
     ]

@@ -81,7 +81,9 @@ def current_branch(cwd: str | None) -> str | None:
 
 def git_alias(cwd: str | None, name: str) -> str | None:
     """The configured expansion of ``git <name>`` in ``cwd``, or ``None``."""
-    return try_git(["config", "--get", f"alias.{name}"], Path(cwd or ".")) or None
+    # scrub=False: the alias the agent's own git would expand, including any defined
+    # through GIT_CONFIG_* variables in its environment.
+    return try_git(["config", "--get", f"alias.{name}"], Path(cwd or "."), scrub=False) or None
 
 
 def tokenize(command: str) -> list[list[str]]:

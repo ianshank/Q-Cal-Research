@@ -28,6 +28,7 @@ class AuditReport:
     duplicates: list[str] = field(default_factory=list)
     bad_supersedes: list[str] = field(default_factory=list)
     mixed_inputs: list[str] = field(default_factory=list)
+    uncommitted_policy: list[str] = field(default_factory=list)
     amendments: int = 0
 
     def ok(self, *, strict: bool = False) -> bool:
@@ -39,7 +40,11 @@ class AuditReport:
         )
         if strict:
             problems = problems or bool(
-                self.missing or self.failed_only or self.placeholders or self.mixed_inputs
+                self.missing
+                or self.failed_only
+                or self.placeholders
+                or self.mixed_inputs
+                or self.uncommitted_policy
             )
         return not problems
 
@@ -57,6 +62,7 @@ class AuditReport:
             "duplicates": self.duplicates,
             "bad_supersedes": self.bad_supersedes,
             "mixed_inputs": self.mixed_inputs,
+            "uncommitted_policy": self.uncommitted_policy,
             "amendments": self.amendments,
         }
 
@@ -73,6 +79,7 @@ class AuditReport:
             "duplicates",
             "bad_supersedes",
             "mixed_inputs",
+            "uncommitted_policy",
         ):
             values = data[key]
             lines.append(f"{key}: {len(values)}")
@@ -125,7 +132,8 @@ def bad_supersedes(records: Sequence[RunRecord]) -> list[str]:
 
 
 def mixed_inputs(current: Sequence[RunRecord], ok_status: str) -> list[str]:
-    """Cells whose current ok runs used different configuration files.
+    """Cells whose current ok runs used different configuration files, policy or
+    pre-registration.
 
     Tables aggregate a cell's seeds; seeds that ran under different configurations would be
     averaged as if they were draws of one experiment. Records without
@@ -133,9 +141,11 @@ def mixed_inputs(current: Sequence[RunRecord], ok_status: str) -> list[str]:
     """
     by_cell: dict[str, dict[str, list[str]]] = {}
     for record in current:
-        digest = record.provenance.get("config_inputs_sha256")
+        p = record.provenance
+        digest = p.get("config_inputs_sha256")
         if record.status == ok_status and isinstance(digest, str):
-            by_cell.setdefault(record.cell_id, {}).setdefault(digest, []).append(record.run_id)
+            key = f"{digest}|{p.get('policy_sha256')}|{p.get('experiments_sha256')}"
+            by_cell.setdefault(record.cell_id, {}).setdefault(key, []).append(record.run_id)
     return [
         f"{cell}: {len(digests)} configurations ("
         + "; ".join(", ".join(sorted(ids)) for _, ids in sorted(digests.items()))
@@ -143,6 +153,15 @@ def mixed_inputs(current: Sequence[RunRecord], ok_status: str) -> list[str]:
         for cell, digests in sorted(by_cell.items())
         if len(digests) > 1
     ]
+
+
+def uncommitted_policy(current: Sequence[RunRecord], ok_status: str) -> list[str]:
+    """Current ok runs whose policy was not verified against a commit (``policy_source``)."""
+    return sorted(
+        f"{r.run_id}: policy_source={r.provenance['policy_source']}"
+        for r in current
+        if r.status == ok_status and r.provenance.get("policy_source", "head") != "head"
+    )
 
 
 def _supersede_cycle(record: RunRecord, by_id: Mapping[str, RunRecord]) -> list[str]:
@@ -181,6 +200,7 @@ def audit(config: Config, experiments: Experiments, records: Sequence[RunRecord]
     report.duplicates = duplicate_pairs(current, ok_status)
     report.bad_supersedes = bad_supersedes(records)
     report.mixed_inputs = mixed_inputs(current, ok_status)
+    report.uncommitted_policy = uncommitted_policy(current, ok_status)
     for record in current:
         registered = known.get(record.cell_id)
         if registered is None:

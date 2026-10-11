@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import string
 from collections.abc import Callable
 from pathlib import Path
@@ -249,16 +250,28 @@ def test_policy_state_without_git(repo: Path) -> None:
 
 
 @pytest.mark.integration
-def test_policy_state_compares_the_work_tree_with_head(git_repo: Path) -> None:
-    config = load_config(git_repo, environ={})
-    state = policy_state(config)
-    assert (state.source, state.problem) == ("head", None)
+def test_policy_state_compares_the_parsed_bytes_with_head(git_repo: Path) -> None:
+    def state() -> Any:
+        return policy_state(load_config(git_repo, environ={}))
+
+    assert (state().source, state().problems) == ("head", ())
     (git_repo / "qcal.toml").write_text("[signing]\nmode = 'bootstrap'\n")
-    assert "differs from HEAD" in str(policy_state(config).problem)
+    assert "differs from HEAD" in state().problems[0]
     run_git(git_repo, "commit", "-qam", "policy")
-    assert policy_state(config).problem is None
+    assert state().problems == ()
     (git_repo / "qcal.toml").unlink()
-    assert "differs from HEAD" in str(policy_state(config).problem)
+    assert "differs from HEAD" in state().problems[0]
+    assert state().source == "defaults"
+
+
+@pytest.mark.integration
+def test_restoring_the_file_after_it_was_parsed_does_not_pass(git_repo: Path) -> None:
+    """The configuration in memory is what is compared, not the file as it is later."""
+    committed = (git_repo / "qcal.toml").read_text()
+    (git_repo / "qcal.toml").write_text('[executor]\ncommand = ["python3", "-c", "pass"]\n')
+    config = load_config(git_repo, environ={})
+    (git_repo / "qcal.toml").write_text(committed)  # restored before the gate runs
+    assert "differs from HEAD" in policy_state(config).problems[0]
 
 
 def test_run_input_problems_refuse_another_pre_registration(repo: Path) -> None:
@@ -443,3 +456,149 @@ def test_inputs_read_without_a_policy_or_lab_file(tmp_path: Path) -> None:
     lab = LabConfig(load_lab_config(root).config, None, "")
     reported = inputs_read(config, lab, load_experiments(config))
     assert set(reported) == {"EXPERIMENTS.yaml"}
+
+
+# -- cycle-2026-10 adversarial review of PR-A1 -------------------------------------------------
+
+
+def test_category_lists_must_name_existing_categories() -> None:
+    from qcal.config import deep_merge
+
+    data = deep_merge(load_defaults(), {"signing": {"signed_categories": ["ian_only", "ian_dta"]}})
+    problems = config_key_problems(data)
+    assert len(problems) == 1
+    assert (
+        "signing.signed_categories names categories that do not exist: ['ian_dta']" in problems[0]
+    )
+
+
+def test_list_of_table_items_may_use_only_the_templates_keys() -> None:
+    from qcal.config import deep_merge
+
+    data = deep_merge(
+        load_defaults(), {"hooks": {"extra_bash_deny": [{"pattern": "x", "reasn": "typo"}]}}
+    )
+    assert config_key_problems(data) == ["hooks.extra_bash_deny[0] has unknown keys ['reasn']"]
+
+
+def test_repo_sha256_is_the_digest_of_the_parsed_bytes(repo: Path) -> None:
+    raw = b"[registry]\nmax_runs_per_batch = 7\n"
+    (repo / "qcal.toml").write_bytes(raw)
+    assert load_config(repo, environ={}).repo_sha256 == hashlib.sha256(raw).hexdigest()
+    assert (
+        load_config(repo, environ={}, repo_text="x = 1\n").repo_sha256
+        == hashlib.sha256(b"x = 1\n").hexdigest()
+    )
+    (repo / "qcal.toml").unlink()
+    assert load_config(repo, environ={}).repo_sha256 is None
+
+
+def test_a_non_utf8_policy_is_a_configuration_error(repo: Path) -> None:
+    from qcal.config import ConfigError
+
+    (repo / "qcal.toml").write_bytes(b"# \xff\n")
+    with pytest.raises(ConfigError, match="is not UTF-8"):
+        load_config(repo, environ={})
+
+
+@pytest.mark.integration
+def test_git_helpers(git_repo: Path, tmp_path: Path) -> None:
+    from qcal import gitutil
+
+    assert gitutil.toplevel(git_repo) == git_repo.resolve()
+    assert gitutil.git_marker(git_repo / "a/b") == git_repo / ".git"
+    assert gitutil.git_marker(tmp_path / "elsewhere") is None  # project/.git is not above it
+    digest = gitutil.blob_sha256("HEAD", "qcal.toml", git_repo)
+    assert digest == hashlib.sha256((git_repo / "qcal.toml").read_bytes()).hexdigest()
+    assert gitutil.blob_sha256("HEAD", "missing.txt", git_repo) is None
+    assert gitutil.toplevel(tmp_path) is None
+
+
+def test_blob_sha256_without_git(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from qcal import gitutil
+
+    def no_git(*_: Any, **__: Any) -> Any:
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr(gitutil.subprocess, "run", no_git)
+    assert gitutil.blob_sha256("HEAD", "x", tmp_path) is None
+
+
+def test_git_environment_isolated_drops_user_configuration() -> None:
+    from qcal.gitutil import git_environment
+
+    env = git_environment({"GIT_CONFIG_GLOBAL": "/tmp/g", "HOME": "/h"}, isolated=True)
+    assert env["GIT_CONFIG_GLOBAL"] == os.devnull
+    assert env["GIT_CONFIG_NOSYSTEM"] == "1"
+    assert env["LC_ALL"] == "C"
+
+
+def test_uncommitted_policy_runs_fail_a_strict_audit(repo: Path) -> None:
+    from qcal.registry.audit import uncommitted_policy
+
+    records = [
+        make_record("R1", provenance={"policy_source": "head"}),
+        make_record("R2", seed=1, provenance={"policy_source": "worktree"}),
+        make_record("R3", seed=2, provenance={}),  # written before the field existed
+    ]
+    assert uncommitted_policy(records, "ok") == ["R2: policy_source=worktree"]
+    config = load_config(repo, environ={})
+    write(repo, "EXPERIMENTS.yaml", experiments_yaml([{"id": "C-a"}], seeds=[0, 1, 2]))
+    report = audit(config, load_experiments(config), records)
+    assert report.ok()
+    assert not report.ok(strict=True)
+
+
+def test_mixed_inputs_also_compares_policy_and_pre_registration() -> None:
+    def record(run_id: str, seed: int, policy: str) -> Any:
+        return make_record(
+            run_id,
+            seed=seed,
+            provenance={"config_inputs_sha256": "same", "policy_sha256": policy},
+        )
+
+    assert mixed_inputs([record("R1", 0, "p1"), record("R2", 1, "p2")], "ok") == [
+        "C-a: 2 configurations (R1; R2)"
+    ]
+
+
+def test_unverified_inputs() -> None:
+    from qcal.registry.gates import unverified_inputs
+
+    launch = {"a": "1", "b": "2"}
+    assert unverified_inputs(launch, {"a": "1"}) == ["b"]
+    assert unverified_inputs(launch, None) == ["a", "b"]
+
+
+def test_refusals_are_logged(repo: Path, caplog: pytest.LogCaptureFixture) -> None:
+    import logging
+
+    config = load_config(repo, environ={"QCAL__PATHS__MANIFESTS_DIR": "/x"})
+    runner = runner_for(config, FakeExecutor())
+    with caplog.at_level(logging.ERROR, logger="qcal"), pytest.raises(RunRefusedError):
+        runner.run("C-a", 0)
+    assert "refusing a registered run" in caplog.text
+
+
+@pytest.mark.integration
+def test_a_repository_without_commits_is_refused(repo: Path) -> None:
+    run_git(repo, "init", "-q", "-b", "main")
+    config = load_config(repo, environ={})
+    assert policy_state(config).problems == ("the repository has no commit at HEAD",)
+
+
+@pytest.mark.integration
+def test_a_pre_registration_outside_the_repository_is_refused(
+    git_repo: Path, tmp_path: Path
+) -> None:
+    outside = tmp_path / "elsewhere/EXPERIMENTS.yaml"
+    write(tmp_path, "elsewhere/EXPERIMENTS.yaml", experiments_yaml(CELLS))
+    (git_repo / "qcal.toml").write_text(f'[paths]\nexperiments = "{outside}"\n')
+    run_git(git_repo, "commit", "-qam", "outside")
+    config = load_config(git_repo, environ={})
+    problems = run_input_problems(config, load_experiments(config))
+    assert problems == [f"pre-registration {outside} is outside the repository"]
+
+
+def test_category_check_skips_a_policy_without_a_categories_table() -> None:
+    assert config_key_problems({"policy": {"categories": "x"}}, {"policy": {"categories": {}}})

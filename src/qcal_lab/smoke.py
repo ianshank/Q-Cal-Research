@@ -25,6 +25,7 @@ from typing import Any
 import yaml
 
 from qcal import cli as qcal_cli
+from qcal import gitutil
 from qcal.config import ConfigError, load_config, without_config_environment
 from qcal.log import get_logger
 from qcal.registry.executor import sha256_file
@@ -180,7 +181,25 @@ def write_project(project: Path, lab: LabConfig, python: str) -> list[str]:
     (project / "EXPERIMENTS.yaml").write_text(
         yaml.safe_dump(experiments, sort_keys=False), encoding="utf-8"
     )
+    _commit_project(project)
     return [str(c["id"]) for c in cells]
+
+
+def _commit_project(project: Path) -> None:
+    """Make the project its own committed repository, as a registered run expects.
+
+    Registered runs read the committed policy and pre-registration of the repository whose
+    top level is the run's root. Committing the project keeps the smoke test on that path
+    wherever its work directory lives, including inside another repository.
+    """
+    (project / ".gitignore").write_text("runs/\n", encoding="utf-8")
+    identity = ["-c", "user.name=qcal smoke", "-c", "user.email=smoke@localhost"]
+    try:
+        gitutil.git(["init", "-q"], project)
+        gitutil.git(["add", "-A"], project)
+        gitutil.git([*identity, "-c", "commit.gpgsign=false", "commit", "-qm", "smoke"], project)
+    except (OSError, gitutil.GitError) as exc:
+        raise ConfigError(f"cannot commit the smoke project in {project}: {exc}") from exc
 
 
 def _check_records(report: SmokeReport, project: Path, expected: int) -> list[Any]:

@@ -72,10 +72,11 @@ Agent-owned:
   environment authorises itself; read from `HEAD` it is one more signed key to get wrong.
 - **`logging` is the only run-neutral section** (`RUN_NEUTRAL_SECTIONS`, code constant). Its
   overrides are passed to the child and recorded.
-- **Compare `qcal.toml` with `HEAD` rather than requiring a clean tree.** A dirty tree
-  elsewhere is already recorded (`git_dirty`) and refused when `require_clean_tree` is on;
-  the policy file decides what the gates themselves do, so it must equal `HEAD` always. A
-  project without a git `HEAD` (the smoke test's) records `policy_source: worktree`.
+- **Compare `qcal.toml` and `EXPERIMENTS.yaml` with `HEAD` rather than requiring a clean
+  tree.** A dirty tree elsewhere is already recorded (`git_dirty`) and refused when
+  `require_clean_tree` is on; the policy decides what the gates themselves do and the
+  pre-registration decides what runs, so both must equal `HEAD` always. A project outside git
+  records `policy_source: worktree`, and `audit --strict` flags it.
 - **`--experiments` stays for `--dry-run`, `audit` and `cells`**; registered runs use the
   configured file.
 - **Input digests are verified after the run, not locked during it.** Locking files across
@@ -107,10 +108,44 @@ Agent-owned:
 ## Ian hours
 About 1 hour to read the diff and sign.
 
+## Adversarial review (advisory) and what changed
+`adversarial-reviewer` on `d707031`: **block**, 4 blocking, 10 non-blocking. All blocking
+findings are fixed in the follow-up commit, each with a security test that fails when its
+defence is disabled (checked by hand):
+- **B1, a nested root.** A copy of the inputs in an ignored subdirectory (`--root build/x`
+  or `QCAL_ROOT`) passed every check and wrote into the real registry. Now the run's root
+  must be the top level of its git repository.
+- **B2, check-then-use.** The gate re-read `qcal.toml` after the configuration had been
+  parsed, so a file restored in between passed. `Config.repo_sha256` records the digest of
+  the bytes parsed; the gate compares that with the `HEAD` blob read as bytes (no text
+  decoding). Policy state and input digests are computed once per run and reused.
+- **B3, the pre-registration.** `EXPERIMENTS.yaml` was checked by path only. It must now
+  equal `HEAD` too (rule 2).
+- **B4, git configuration and unreadable repositories.** The registry's git queries now run
+  isolated (no global or system configuration, no global ignore or attributes file, the C
+  locale) and `status` counts every untracked file. A `.git` that git cannot read is refused
+  instead of being treated as "no git".
+
+Non-blocking, applied: N1 (`provenance.inputs_unverified`; both sides compared under their
+own names; `inputs_read` is a tripwire, not a control), N2 (`mixed_inputs` also compares
+policy and pre-registration digests; `uncommitted_policy` fails `audit --strict`), N3
+(category names in `signing.signed_categories`, `hooks.deny_categories` and
+`claims.escape_hatch_categories` must exist; list-of-table items may use only the
+template's keys), N4 (refusals logged at ERROR), N5 (the program's refusal is a
+`ConfigError`, exit 2), N6 (the alias lookup sees the agent's own environment), N7
+(`defaults` label), N8 (child-environment and `GIT_INDEX_FILE` tests), N9 (defaults header),
+N10 (`SCHEMA_VERSION` default). The smoke project is now its own committed repository, so
+the top-level rule holds wherever its work directory lives.
+
+Residual, documented: an agent with Bash can still edit the repository's own `.git/config`
+(for example a clean filter) or `.gitignore`; the dirty check uses the repository's own
+ignore rules. `qcal.toml` must be byte-identical to `HEAD` (no CRLF conversion on checkout).
+Signed commits plus CI remain the control.
+
 ## Acceptance
 - [x] `make check` green (lint, types, tests with coverage gate)
-- [x] `tests/security/test_run_input_bypasses.py`: 17 attacks refused; the four git attacks
-      fail with the scrub disabled and pass with it (checked by hand)
+- [x] `tests/security/test_run_input_bypasses.py`: 24 attacks refused; each defence's tests
+      fail with that defence disabled (checked by hand)
 - [x] `make smoke` passes with `QCAL__REGISTRY__MAX_RUNS_PER_BATCH=1` exported
 - [x] `qcal config --check` passes on the repository and fails on a misspelled key
 - [ ] Ian's signed commit

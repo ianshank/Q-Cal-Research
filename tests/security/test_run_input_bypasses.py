@@ -230,6 +230,7 @@ def test_the_executor_child_sees_no_configuration_variables(
     (project / "qcal.toml").write_text(f"[executor]\ncommand = {command}\n[registry]{rest}")
     run_git(project, "commit", "-qam", "dump the child environment")
     monkeypatch.setenv("QCAL_ROOT", str(project))
+    monkeypatch.setenv("QCAL__DATA__SPLITS", '["val"]')  # in the launcher's shell only
     code, out, err = qcal(
         project,
         "registry",
@@ -243,5 +244,114 @@ def test_the_executor_child_sees_no_configuration_variables(
     assert code == 0, err
     seen = json.loads(out)["environment"]["seen"]
     assert "QCAL_ROOT" not in seen
+    assert "QCAL__DATA__SPLITS" not in seen
     assert "QCAL__LOGGING__LEVEL" in seen  # run-neutral overrides are passed on and recorded
     assert all(name.startswith(("QCAL_RUN_", "QCAL__LOGGING__")) for name in seen)
+
+
+# -- the cycle-2026-10 adversarial review of PR-A1 (B1-B4) ---------------------------------
+
+
+def _copy_inputs(project: Path, target: Path) -> None:
+    """An untracked copy of every input in an ignored subdirectory, sharing runs/."""
+    target.mkdir(parents=True)
+    for name in ("qcal.toml", "EXPERIMENTS.yaml"):
+        (target / name).write_bytes((project / name).read_bytes())
+    (target / "runs").symlink_to(project / "runs", target_is_directory=True)
+
+
+def test_b1_a_root_below_the_top_level_is_refused(qcal: QcalRun, project: Path) -> None:
+    (project / "runs").mkdir(exist_ok=True)
+    with (project / ".gitignore").open("a") as handle:
+        handle.write("build/\n")
+    run_git(project, "commit", "-qam", "ignore build/")
+    copy = project / "build/x"
+    _copy_inputs(project, copy)
+    code, _, err = qcal(copy, "registry", "run", "C-a", "--seed", "0")
+    assert code == 2
+    assert "is not the top level of its git repository" in err
+    assert registry_is_empty(project)
+
+
+def test_b1_qcal_root_alone_cannot_pick_a_nested_copy(
+    qcal: QcalRun, project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (project / "runs").mkdir(exist_ok=True)
+    with (project / ".gitignore").open("a") as handle:
+        handle.write("build/\n")
+    run_git(project, "commit", "-qam", "ignore build/")
+    copy = project / "build/x"
+    _copy_inputs(project, copy)
+    capsys.readouterr()
+    code = cli.main(
+        ["registry", "run", "C-a", "--seed", "0"],
+        out=io.StringIO(),
+        environ={"QCAL_ROOT": str(copy)},
+    )
+    assert code == 2
+    assert "is not the top level of its git repository" in capsys.readouterr().err
+
+
+def test_b3_an_uncommitted_pre_registration_is_refused(qcal: QcalRun, project: Path) -> None:
+    write(
+        project,
+        "EXPERIMENTS.yaml",
+        experiments_yaml([{"id": "C-a"}, {"id": "C-b"}], seeds=[0, 1, 2, 99]),
+    )
+    code, _, err = qcal(project, "registry", "run", "C-a", "--seed", "99")
+    assert code == 2
+    assert "EXPERIMENTS.yaml differs from HEAD" in err
+    assert registry_is_empty(project)
+
+
+@pytest.mark.parametrize("hide", ["show-untracked-no", "global-ignore-all"])
+def test_b4_global_git_configuration_cannot_hide_a_dirty_tree(
+    qcal: QcalRun, project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, hide: str
+) -> None:
+    write(project, "notes.txt", "uncommitted\n")
+    if hide == "show-untracked-no":
+        config = tmp_path / "gitconfig"
+        config.write_text("[status]\n\tshowUntrackedFiles = no\n")
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+    else:
+        xdg = tmp_path / "xdg"
+        (xdg / "git").mkdir(parents=True)
+        (xdg / "git/ignore").write_text("*\n")
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
+        monkeypatch.delenv("GIT_CONFIG_GLOBAL", raising=False)
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    code, _, err = qcal(project, "registry", "run", "C-a", "--seed", "0")
+    assert code == 2
+    assert "working tree is dirty" in err
+
+
+def test_b4_a_repository_git_cannot_read_is_refused(qcal: QcalRun, tmp_path: Path) -> None:
+    project = tmp_path / "broken"
+    project.mkdir()
+    (project / ".git").write_text("gitdir: /nonexistent/qcal-test\n")
+    (project / "qcal.toml").write_text(
+        '[executor]\ncommand = ["python3", "-c", "pass"]\n[registry]\nenv_collectors = []\n'
+    )
+    write(project, "EXPERIMENTS.yaml", experiments_yaml([{"id": "C-a"}]))
+    code, _, err = qcal(project, "registry", "run", "C-a", "--seed", "0")
+    assert code == 2
+    assert "git cannot read the repository" in err
+
+
+def test_n8_git_index_file_cannot_hide_a_staged_change(
+    qcal: QcalRun, project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write(project, "notes.txt", "staged\n")
+    run_git(project, "add", "notes.txt")
+    clean_index = tmp_path / "index"
+    subprocess.run(
+        ["git", "read-tree", "HEAD"],
+        cwd=project,
+        env={**dict(__import__("os").environ), "GIT_INDEX_FILE": str(clean_index)},
+        check=True,
+    )
+    (project / "notes.txt").unlink()  # the work tree matches HEAD; only the real index differs
+    monkeypatch.setenv("GIT_INDEX_FILE", str(clean_index))
+    code, _, err = qcal(project, "registry", "run", "C-a", "--seed", "0")
+    assert code == 2
+    assert "working tree is dirty" in err

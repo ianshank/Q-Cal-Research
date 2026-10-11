@@ -77,12 +77,13 @@ shaped it. The set of keys is closed: `qcal config --check` fails on an unknown,
 mistyped key, so a misspelled policy key cannot fall back to its default unnoticed.
 
 Environment overrides are a debugging aid. A registered run (`qcal registry run|run-batch`)
-refuses them, except `QCAL__LOGGING__*`, and refuses a `QCAL_CONFIG` or `QCAL_ROOT` that
-points away from the repository, a `qcal.toml` that differs from `HEAD`, and an
-`--experiments` file other than the configured one. The experiment program never sees
-`QCAL__*` variables, and it reports the digest of every configuration file it read; the run
-fails if one changed while it ran. Git itself runs without redirecting `GIT_*` variables,
-with replacement objects ignored and `core.fsmonitor` off.
+refuses them, except `QCAL__LOGGING__*`. It also refuses a `QCAL_CONFIG` or `QCAL_ROOT` that
+points away from the repository, a root that is not the repository's top level, a
+`qcal.toml` or `EXPERIMENTS.yaml` that differs from `HEAD` (compared as the bytes actually
+parsed), and an `--experiments` file other than the configured one. The experiment program
+never sees `QCAL__*` variables and reports the digest of every configuration file it read; a
+file that changed while it ran fails the run. The registry's git queries ignore user and
+system git configuration and `GIT_*` redirection.
 
 ## Tests
 

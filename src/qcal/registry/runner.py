@@ -19,12 +19,14 @@ from qcal.registry.executor import ExecutionResult, Executor, RunSpec
 from qcal.registry.experiments import Cell, Experiments, ExperimentsError
 from qcal.registry.gates import (
     INPUTS_READ_KEY,
+    PolicyState,
     config_inputs,
     digest_of,
     input_mismatches,
     launch_digests,
     policy_state,
     run_input_problems,
+    unverified_inputs,
 )
 from qcal.registry.records import (
     SCHEMA_VERSION,
@@ -95,25 +97,28 @@ class Runner:
         stamp = when.strftime(self.config.str_value("registry.timestamp_format"))
         return template.format(timestamp=stamp, cell_id=cell_id, seed=seed, nonce=self.nonce())
 
-    def config_hash(self, cell: Cell, seed: int) -> str:
+    def config_hash(self, cell: Cell, seed: int, inputs: Mapping[str, str] | None = None) -> str:
         """Hash of everything that defines the run: factors, seed, command, config files."""
         payload = {
             "cell": cell.id,
             "factors": dict(cell.factors),
             "seed": seed,
             "command": self.config.get("executor.command"),
-            "inputs": config_inputs(self.config),
+            "inputs": dict(config_inputs(self.config) if inputs is None else inputs),
         }
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
         return hashlib.sha256(canonical.encode()).hexdigest()
 
-    def check_inputs(self) -> None:
+    def check_inputs(self, policy: PolicyState | None = None) -> PolicyState:
         """Refuse a run whose configuration does not come from committed files only."""
-        problems = run_input_problems(self.config, self.experiments)
+        policy = policy or policy_state(self.config)
+        problems = run_input_problems(self.config, self.experiments, policy)
         if problems:
+            _log.error("refusing a registered run: %s", "; ".join(problems))
             raise RunRefusedError(
                 "registered runs read committed configuration only:\n  - " + "\n  - ".join(problems)
             )
+        return policy
 
     def _output_paths(self) -> list[str]:
         """Registry outputs, which a run itself creates, never count as a dirty tree."""
@@ -132,7 +137,7 @@ class Runner:
             raise RunRefusedError(
                 f"seed {seed} is not pre-registered for {cell_id} (allowed: {list(allowed)})"
             )
-        self.check_inputs()
+        policy = self.check_inputs()
         self._check_not_duplicate(cell.id, seed, supersedes)
         if (
             supersedes
@@ -169,13 +174,13 @@ class Runner:
             / self.config.str_value("executor.log_filename").format_map(names),
             root=root,
         )
-        policy = policy_state(self.config)
-        launch = launch_digests(self.config, self.experiments, policy)
+        inputs = config_inputs(self.config)  # read once: hashed, digested and compared
+        launch = launch_digests(self.config, self.experiments, policy, inputs)
         provenance = {
             "git_sha": gitutil.head_sha(root),
             "git_dirty": dirty,
-            "config_hash": self.config_hash(cell, seed),
-            "config_inputs_sha256": digest_of(config_inputs(self.config)),
+            "config_hash": self.config_hash(cell, seed, inputs),
+            "config_inputs_sha256": digest_of(inputs),
             "config_sources": list(self.config.sources),
             "config_environment": run_neutral_environment(self.config),
             "policy_source": policy.source,
@@ -191,10 +196,12 @@ class Runner:
         except Exception as exc:  # noqa: BLE001 - a crash is recorded as a failed run, never lost
             _log.exception("executor %s raised for %s", type(self.executor).__name__, run_id)
             result = ExecutionResult(-1, error=f"executor raised {type(exc).__name__}: {exc}")
-        changed = input_mismatches(launch, result.environment.get(INPUTS_READ_KEY))
+        reported = result.environment.get(INPUTS_READ_KEY)
+        changed = input_mismatches(launch, reported)
         if changed and result.ok:
             result.error = "; ".join(changed)
             _log.error("run %s: %s", run_id, result.error)
+        provenance["inputs_unverified"] = unverified_inputs(launch, reported)
         finished = self.clock()
         environment = merge_environment(
             collect_environment(

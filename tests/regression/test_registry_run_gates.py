@@ -18,9 +18,9 @@ from pathlib import Path
 import pytest
 
 from qcal import cli
-from qcal.config import load_config
+from qcal.config import ConfigError, load_config
 from qcal.registry.gates import INPUTS_READ_KEY
-from qcal_lab.experiment import PlanError, RunRequest, run_experiment
+from qcal_lab.experiment import RunRequest, run_experiment
 from tests.conftest import REPO_ROOT, experiments_yaml, write
 from tests.lab_support import fixture_project
 
@@ -66,7 +66,7 @@ def test_a3_the_program_refuses_environment_configuration(tmp_path: Path) -> Non
     root, cells = fixture_project(tmp_path)
     request = RunRequest(root, "R-env", cells[0], 0, root / "runs/results/R-env.json")
     config = load_config(root, environ={"QCAL__DATA__SPLITS": '["val", "test"]'})
-    with pytest.raises(PlanError, match="QCAL__DATA__SPLITS overrides configuration"):
+    with pytest.raises(ConfigError, match="QCAL__DATA__SPLITS overrides configuration"):
         run_experiment(request, qcal_config=config)
 
 

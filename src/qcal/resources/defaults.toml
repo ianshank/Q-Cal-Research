@@ -4,6 +4,8 @@
 # arrays and scalars replace. Environment variables of the form
 # QCAL__<SECTION>__<KEY>=<toml value> override both, for example
 #   QCAL__LOGGING__LEVEL='"DEBUG"'   or   QCAL__REGISTRY__MAX_RUNS_PER_BATCH=5
+# They are a debugging aid: registered runs refuse every override outside [logging], and
+# `qcal config --check` rejects unknown or mistyped keys from any layer.
 # Glob patterns are anchored at the repository root; use "**/" to match at any depth.
 
 [paths]

@@ -28,6 +28,20 @@ Registered-run gates (`docs/changes/registry-run-gates.md`, signed surface):
   and CI); `qcal config` shows the environment inputs.
 - The record schema version is a code constant (`records.SCHEMA_VERSION`); records claiming a
   newer schema are refused. `registry.schema_version` is removed from the defaults.
+- After the adversarial review: the run root must be the repository's top level;
+  `EXPERIMENTS.yaml` must equal `HEAD`; the parsed bytes, not a later read, are compared;
+  the registry's git queries are isolated from user and system git configuration; a
+  repository git cannot read is refused; `audit --strict` fails on records whose policy was
+  not verified (`uncommitted_policy`); category names in policy lists must exist.
+
+Verification (PR-E):
+- Hypothesis invariants for isotonic regression, Platt scaling and Alg. A.1/A.2 against slow
+  reference implementations; scikit-learn and SciPy oracles (`tests/oracle`, extra `oracle`)
+  agree to 1e-12 and 1e-10 in loss (evidence for TD-13 and TD-16).
+- `tests/contract`: the EvalLoop contract on the fixture loop and, once it exists, Ian's.
+- `tests/e2e/test_lab_registry_loop.py`: a lab number through the registry to a claim.
+- `scripts/traceability.py --check`: every integrity rule in CLAUDE.md and AGENTS.md maps to
+  tests (`@pytest.mark.rule`); Hypothesis profiles `ci`, `dev`, `explore`.
 
 ### Phase 1 scaffold
 

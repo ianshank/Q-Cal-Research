@@ -69,3 +69,18 @@ def test_a_corrupt_cached_prediction_file_is_ignored_with_a_warning(
     with caplog.at_level(logging.WARNING, logger="qcal.lab.experiment"):
         assert experiment._cached_images(CacheEntry(cached, "R1", "now"), header, ["1"]) is None
     assert "ignoring cached predictions cached.jsonl" in caplog.text
+
+
+def test_smoke_reports_a_project_it_cannot_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qcal import gitutil
+    from qcal.config import ConfigError
+    from qcal_lab import smoke
+
+    def fail(args: list[str], *_: object, **__: object) -> str:
+        raise gitutil.GitError(args, 128, "no git here")
+
+    monkeypatch.setattr(smoke.gitutil, "git", fail)
+    with pytest.raises(ConfigError, match="cannot commit the smoke project"):
+        smoke._commit_project(tmp_path)

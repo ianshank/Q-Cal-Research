@@ -71,7 +71,7 @@ class RunRecord:
     artifacts: tuple[ArtifactRef, ...] = ()
     log_path: str | None = None
     error: str | None = None
-    schema_version: int = 1
+    schema_version: int = SCHEMA_VERSION
     extra: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:

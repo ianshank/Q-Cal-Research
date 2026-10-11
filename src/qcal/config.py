@@ -18,6 +18,7 @@ Stdlib-only: imported by Claude Code hooks.
 from __future__ import annotations
 
 import copy
+import hashlib
 import os
 import tomllib
 from collections.abc import Mapping
@@ -49,6 +50,13 @@ EMPTY_LIST_ELEMENTS: Final[dict[str, type]] = {
     "agent_layer.required_pretooluse_hooks": str,
 }
 #: Keys that existed once. A file that still sets one is told what replaced it.
+#: Lists whose items must name a ``policy.categories`` table: a misspelled category would
+#: otherwise match nothing, and the paths it was meant to protect would go unsigned.
+CATEGORY_LISTS: Final = (
+    "signing.signed_categories",
+    "hooks.deny_categories",
+    "claims.escape_hatch_categories",
+)
 REMOVED_KEYS: Final[dict[str, str]] = {
     "registry.schema_version": (
         "the run-record schema version is a property of the code that reads records "
@@ -129,6 +137,9 @@ class Config:
     #: Every environment variable that shaped this configuration, verbatim: the
     #: ``QCAL__*`` overrides, plus ``QCAL_ROOT``/``QCAL_CONFIG`` when they were set.
     environment_inputs: Mapping[str, str] = field(default_factory=dict)
+    #: sha256 of the exact bytes the repository layer was parsed from (``None``: no layer).
+    #: The registry compares this, not the file as it is later, with the committed blob.
+    repo_sha256: str | None = None
 
     def get(self, dotted: str, default: Any = _MISSING) -> Any:
         node: Any = self.data
@@ -205,13 +216,21 @@ def load_config(
     sources = ["defaults"]
 
     repo_layer: dict[str, Any] | None = None
+    repo_sha256: str | None = None
     if repo_text is not None:
         repo_layer, label = _parse_toml(repo_text, "<repo_text>"), "repo_text"
+        repo_sha256 = hashlib.sha256(repo_text.encode("utf-8")).hexdigest()
     elif use_repo_file:
         config_path = Path(env[CONFIG_PATH_ENV]) if env.get(CONFIG_PATH_ENV) else None
         config_path = config_path or resolved_root / REPO_CONFIG_NAME
         if config_path.is_file():
-            repo_layer = _parse_toml(config_path.read_text("utf-8"), str(config_path))
+            raw = config_path.read_bytes()  # one read: what is parsed is what is hashed
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise ConfigError(f"{config_path} is not UTF-8: {exc}") from exc
+            repo_layer = _parse_toml(text, str(config_path))
+            repo_sha256 = hashlib.sha256(raw).hexdigest()
             label = str(config_path)
     if repo_layer is not None:
         data = deep_merge(data, repo_layer)
@@ -231,6 +250,7 @@ def load_config(
         data=data,
         sources=tuple(sources),
         environment_inputs=dict(sorted(inputs.items())),
+        repo_sha256=repo_sha256,
     )
 
 
@@ -289,6 +309,18 @@ def config_key_problems(
     """
     problems: list[str] = []
     _check_table(data, load_defaults() if defaults is None else defaults, "", problems)
+    categories = data.get("policy", {}).get("categories", {})
+    if isinstance(categories, Mapping):
+        for dotted in CATEGORY_LISTS:
+            node: Any = data
+            for part in dotted.split("."):
+                node = node.get(part) if isinstance(node, Mapping) else None
+            unknown = [c for c in node or () if isinstance(c, str) and c not in categories]
+            if unknown:
+                problems.append(
+                    f"{dotted} names categories that do not exist: {unknown} "
+                    f"(known: {sorted(categories)})"
+                )
     return problems
 
 
@@ -322,6 +354,11 @@ def _check_value(value: Any, default: Any, dotted: str, problems: list[str]) -> 
         bad = [v for v in value if not _same_kind(element, v)]
         if bad:
             problems.append(f"{dotted} must hold only {_kind(element)} items, got {bad[0]!r}")
+        elif isinstance(element, Mapping):  # list of tables: each item has the template's keys
+            for i, item in enumerate(value):
+                unknown = sorted(set(item) - set(element))
+                if unknown:
+                    problems.append(f"{dotted}[{i}] has unknown keys {unknown}")
 
 
 def _same_kind(expected: Any, value: Any) -> bool:

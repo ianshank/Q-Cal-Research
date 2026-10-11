@@ -358,7 +358,7 @@ def run_experiment(
     qcal_config = qcal_config or load_config(request.root)
     refused = environment_problems(qcal_config)
     if refused:  # the registry strips these; a swapped executor might not
-        raise PlanError("configuration comes from the environment: " + "; ".join(refused))
+        raise ConfigError("configuration comes from the environment: " + "; ".join(refused))
     lab = lab or load_lab_config(qcal_config.root)
     require_hashed(lab, qcal_config)
     experiments = load_experiments(qcal_config)
@@ -456,18 +456,19 @@ def inputs_read(qcal_config: Config, lab: LabConfig, experiments: Experiments) -
     file changed in between (``qcal.registry.gates.input_mismatches``).
     """
     root = qcal_config.root
-    files: dict[Path, str] = {experiments.path: experiments.sha256}
-    policy = root / REPO_CONFIG_NAME
-    if policy.is_file():
-        files[policy] = sha256_file(policy)
+    files: dict[Path, str | None] = {
+        experiments.path: experiments.sha256,  # the bytes parsed, not a fresh read
+        root / REPO_CONFIG_NAME: qcal_config.repo_sha256,
+        defaults_path(): sha256_file(defaults_path()),
+    }
     if lab.path is not None:
         files[lab.path] = lab.sha256
-    files[defaults_path()] = sha256_file(defaults_path())
-    return {
-        path.resolve().relative_to(root).as_posix(): digest
-        for path, digest in files.items()
-        if digest and path.resolve().is_relative_to(root)
-    }
+    reported: dict[str, str] = {}
+    for path, digest in files.items():
+        absolute = path if path.is_absolute() else root / path  # not resolved: symlinks are
+        if digest and absolute.is_relative_to(root):  # compared under their own name
+            reported[absolute.relative_to(root).as_posix()] = digest
+    return reported
 
 
 def _write_outputs(

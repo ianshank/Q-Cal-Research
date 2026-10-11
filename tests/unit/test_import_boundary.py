@@ -20,6 +20,7 @@ QCAL_API_FOR_LAB = frozenset(
         "qcal.components",
         "qcal.config",
         "qcal.globs",
+        "qcal.gitutil",
         "qcal.integrity.leakage",
         "qcal.log",
         "qcal.policy",

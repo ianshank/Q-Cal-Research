@@ -254,6 +254,7 @@ def test_run_records_provenance(config: Config, fake_executor: FakeExecutor) -> 
         "policy_sha256": hashlib.sha256(policy.read_bytes()).hexdigest(),
         "experiments_sha256": runner.experiments.sha256,
         "executor": "FakeExecutor",
+        "inputs_unverified": ["EXPERIMENTS.yaml", "qcal.toml"],  # FakeExecutor reports none
     }
 
 
@@ -477,7 +478,10 @@ def test_run_in_a_clean_repository_records_head_and_clean_tree(
 def test_run_in_a_dirty_repository_records_it_and_warns(
     git_repo: Path, config: Config, fake_executor: FakeExecutor, caplog: pytest.LogCaptureFixture
 ) -> None:
-    runner = make_runner(config, fake_executor)  # EXPERIMENTS.yaml is untracked: dirty
+    runner = make_runner(config, fake_executor)
+    run_git(git_repo, "add", "EXPERIMENTS.yaml")
+    run_git(git_repo, "commit", "-q", "-m", "pre-register")
+    write(git_repo, "notes.txt", "uncommitted\n")  # dirty, but not an input the gates check
     with caplog.at_level(logging.WARNING, logger="qcal"):
         record = runner.run("C-a", 0)
     assert record.provenance["git_dirty"] is True
@@ -490,7 +494,7 @@ def test_run_refuses_a_dirty_tree_when_a_clean_one_is_required(
 ) -> None:
     config = make_config("[registry]\nrequire_clean_tree = true\n")
     runner = make_runner(config, fake_executor)
-    run_git(git_repo, "add", "qcal.toml")
+    run_git(git_repo, "add", "qcal.toml", "EXPERIMENTS.yaml")
     run_git(git_repo, "commit", "-q", "-m", "require a clean tree")
     write(git_repo, "notes.txt", "uncommitted\n")
     with pytest.raises(RunRefusedError, match="working tree is dirty"):
