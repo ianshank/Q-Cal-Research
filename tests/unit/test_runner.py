@@ -242,7 +242,13 @@ def test_run_rounds_duration_to_milliseconds(config: Config, fake_executor: Fake
     assert make_runner(config, fake_executor, clock=clock).run("C-a", 0).duration_s == 1.235
 
 
-def test_run_records_provenance(config: Config, fake_executor: FakeExecutor) -> None:
+def test_run_records_provenance(
+    config: Config, fake_executor: FakeExecutor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recorded = config.str_list("registry.recorded_env_vars")
+    for name in recorded:  # the test's environment, not the machine's (CI sets some)
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/opt/lib")
     runner = make_runner(config, fake_executor)
     record = runner.run("C-a", 0)
     policy = config.root / "qcal.toml"
@@ -258,7 +264,7 @@ def test_run_records_provenance(config: Config, fake_executor: FakeExecutor) -> 
         "experiments_sha256": runner.experiments.sha256,
         "executor": "FakeExecutor",
         "launcher": launcher_identity(config.root),
-        "environment_variables": dict.fromkeys(config.str_list("registry.recorded_env_vars")),
+        "environment_variables": {**dict.fromkeys(recorded), "LD_LIBRARY_PATH": "/opt/lib"},
         "batch_id": None,
         "retry_of": None,
         "inputs_unverified": ["EXPERIMENTS.yaml", "qcal.toml"],  # FakeExecutor reports none
