@@ -103,13 +103,22 @@ In order, each step a separate commit:
      names is refused.
 5. **Cache key and producer.**
    - The key covers only the modules that produce predictions: `models/`, `data/coco.py`,
-     `data/fixture.py` and `predictions.py`.
-   - It drops `__version__` and the absolute images path.
-   - It adds target, quant path, compute capability, CUDA, cuDNN, numerics, opencv, pillow,
-     mmcv, the resolved detector configuration and `test_cfg`.
-   - The detector is built only on the first cache miss.
-   - A hit counts only if a record in `runs/registry/` lists the same path and sha256.
-   - `put` refuses to replace different bytes under an existing key.
+     `data/fixture.py`, `predictions.py` and `numerics.py` (`PREDICTION_MODULES`).
+   - It drops `__version__` and the absolute images path: the images' bytes count, not
+     where they live.
+   - It adds the predictions source (target, quant path, `test_cfg`), the requested numerics,
+     and opencv, pillow and mmcv versions. Each detector kind registers what beneath its
+     settings decides its predictions (`KEY_PARTS`): for MMDetection the compute capability,
+     CUDA, cuDNN, torch's build digest and the resolved config, whose `_base_` files the
+     config file's own digest misses. The fixture registers nothing.
+   - The detector is built only on the first cache miss; the run records whether it was.
+   - A hit counts only if the producer's record lists the same path and sha256. Science code
+     may not import `qcal.registry.store` (it writes records), so the check reads that one
+     record as `<registry_dir>/<run_id>.json`; a test pins this to the store's layout.
+   - `put` creates files exclusively and never replaces other bytes under a key: records list
+     cached files as artifacts, so replacing one would break their hashes. Identical bytes
+     are kept and their sidecar names the new producer. On other bytes the run keeps its own
+     predictions in its artifact directory and records the conflict.
 6. **Smoke isolation.** Smoke's experiment program runs as `{python} -I`, like registered
    runs.
 

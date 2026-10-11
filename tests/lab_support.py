@@ -143,3 +143,18 @@ class FakeTorch:
 
     def is_deterministic_algorithms_warn_only_enabled(self) -> bool:
         return self.warn_only
+
+
+def register(project: Path, run_id: str, artifacts: Sequence[Mapping[str, str]]) -> None:
+    """Write the record the launcher would write for a run, so its cached predictions count."""
+    from qcal.config import load_config
+    from qcal.registry.executor import sha256_file
+    from qcal.registry.records import ArtifactRef
+    from qcal.registry.store import RegistryStore
+    from tests.conftest import make_record
+
+    refs = tuple(
+        ArtifactRef(a["path"], sha256_file(project / a["path"]), a["kind"]) for a in artifacts
+    )
+    config = load_config(project, environ={})
+    RegistryStore(config.path("registry_dir")).write(make_record(run_id, artifacts=refs))

@@ -247,6 +247,18 @@ def _check_records(report: SmokeReport, project: Path, expected: int) -> list[An
             if not path.is_file() or sha256_file(path) != artifact.sha256:
                 bad.append(f"{record.run_id}: {artifact.path} does not match its hash")
     report.add("artifacts recorded and hashed", ok=bool(ok) and not bad, detail="; ".join(bad[:3]))
+    # Every cell shares the fixture detector's predictions: after the first run, the others
+    # must find them cached, which only works when the producer's record vouches for them.
+    hits = sum(
+        bool(use.get("hit"))
+        for record in ok
+        for use in dict(record.environment.get("prediction_cache", {})).values()
+    )
+    report.add(
+        "later runs reuse recorded cached predictions",
+        ok=len(ok) < 2 or hits > 0,
+        detail=f"{hits} cached split(s) reused",
+    )
     return ok
 
 

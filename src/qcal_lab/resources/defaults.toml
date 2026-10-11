@@ -131,7 +131,10 @@ cache_dir = "runs/cache/predictions"   # content-addressed raw predictions; "" d
 # never reuses stale predictions. MMDetection `_base_` configs are not followed: list them
 # as settings too if a config inherits.
 fingerprint_file_settings = ["config", "checkpoint"]
-fingerprint_packages = ["torch", "torchvision", "mmdet", "mmcv", "mmengine", "numpy"]
+fingerprint_packages = [
+    "torch", "torchvision", "mmdet", "mmcv", "mmengine", "numpy",
+    "opencv-python", "opencv-python-headless", "pillow",   # image decoding decides the pixels
+]
 artifact_dir = "{results_dir}/{run_id}"
 
 [parity]

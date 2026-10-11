@@ -12,6 +12,7 @@ from qcal.protocols import Detection
 from qcal_lab.predictions import (
     CACHE_ENTRY_FORMAT,
     DETECTION_FIELDS,
+    CacheConflictError,
     PredictionCache,
     PredictionsError,
     PredictionSource,
@@ -216,3 +217,16 @@ def test_a_cache_sidecar_without_its_envelope_is_a_miss(
     sidecar.write_text(json.dumps(meta))
     assert cache.get("k1") is None
     assert "unreadable metadata" in caplog.text
+
+
+def test_the_cache_never_replaces_other_bytes_under_a_key(tmp_path: Path) -> None:
+    cache = PredictionCache(tmp_path / "cache")
+    first = cache.put("k1", HEADER, IMAGES, produced_by="R-1")
+    original = first.path.read_bytes()
+    with pytest.raises(CacheConflictError, match="the cache keeps the existing bytes") as caught:
+        cache.put("k1", HEADER, IMAGES[:1], produced_by="R-2")
+    assert caught.value.existing_sha256 == first.sha256
+    assert first.path.read_bytes() == original
+    again = cache.put("k1", HEADER, IMAGES, produced_by="R-3")  # identical bytes are kept
+    assert (again.sha256, cache.get("k1").produced_by) == (first.sha256, "R-3")  # type: ignore[union-attr]
+    assert not list(first.path.parent.glob(".*.tmp"))

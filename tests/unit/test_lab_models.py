@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
@@ -15,6 +15,7 @@ from qcal_lab.data.coco import parse_coco
 from qcal_lab.data.fixture import NotFixtureError, build_fixture, fixture_bytes, is_fixture
 from qcal_lab.models import (
     DETECTORS,
+    KEY_PARTS,
     KIND_SCORE_DEFINITIONS,
     KIND_TARGETS,
     TEST_CFG_SETTINGS,
@@ -437,3 +438,48 @@ def test_detector_test_cfg_records_only_configured_overrides(tmp_path: Path) -> 
     )
     assert detector_test_cfg(lab, "m") == {"max_per_image": 100}
     assert detector_test_cfg(lab, "fixture") == {}
+
+
+# --- what beneath the settings decides predictions (cache key parts) --------------------------
+
+
+def test_every_detector_kind_registers_its_cache_key_parts(tmp_path: Path) -> None:
+    from qcal_lab.models import detector_key_parts
+
+    assert set(KEY_PARTS.names()) == set(DETECTORS.names())
+    assert detector_key_parts(lab_config(tmp_path), "fixture") == {}
+
+
+class FakeConfig:
+    texts: ClassVar[dict[str, str]] = {}
+
+    @classmethod
+    def fromfile(cls, path: str) -> SimpleNamespace:
+        if path not in cls.texts:
+            raise FileNotFoundError(path)
+        return SimpleNamespace(pretty_text=cls.texts[path])
+
+
+def test_mmdet_key_parts_hold_the_stack_and_the_resolved_config(mmdet_setup) -> None:
+    s = mmdet_setup
+    config_path = str(s.tmp / "atss.py")
+    FakeConfig.texts = {config_path: "model = dict(type='ATSS')"}
+    s.modules["mmengine.config"] = SimpleNamespace(Config=FakeConfig)
+    lab = lab_config(s.tmp, s.body)
+    parts = mmdet_module.key_parts(lab, "atss_r50")
+    assert parts["stack"] == {
+        "torch": "2.9.0+cu128",
+        "cuda": "12.8",
+        "cudnn": 91000,
+        "torch_build_sha256": parts["stack"]["torch_build_sha256"],
+        "capability": "12.0",
+    }
+    FakeConfig.texts = {config_path: "model = dict(type='ATSS', neck=...)"}  # a _base_ changed
+    assert (
+        mmdet_module.key_parts(lab, "atss_r50")["resolved_config_sha256"]
+        != (parts["resolved_config_sha256"])
+    )
+    assert s.api.init_args == {}  # no model was built for the key
+    FakeConfig.texts = {}
+    with pytest.raises(DetectorError, match="cannot resolve the MMDetection config"):
+        mmdet_module.key_parts(lab, "atss_r50")

@@ -33,6 +33,7 @@ from qcal_lab.formats import (
     json_bytes,
     open_envelope,
     write_bytes_atomic,
+    write_bytes_exclusive,
 )
 
 _log = get_logger("lab.predictions")
@@ -64,6 +65,22 @@ _REQUIRED_SOURCE: Final = ("precision", "target", "quant_path", "shift", "score_
 
 class PredictionsError(ValueError):
     """A predictions file or a detector's output is malformed."""
+
+
+class CacheConflictError(PredictionsError):
+    """A cache key already holds other bytes; the cache never replaces them.
+
+    Records list cached files as artifacts, so replacing one would break every earlier
+    record's artifact hash. Other bytes under one key mean the key misses an input that
+    changed, the detector is not deterministic, or the entry was tampered with.
+    """
+
+    def __init__(self, key: str, existing_sha256: str, new_sha256: str) -> None:
+        super().__init__(
+            f"cached predictions {key[:12]} hold sha256 {existing_sha256[:12]}, this run "
+            f"computed {new_sha256[:12]}; the cache keeps the existing bytes"
+        )
+        self.key, self.existing_sha256, self.new_sha256 = key, existing_sha256, new_sha256
 
 
 @dataclass(frozen=True)
@@ -263,6 +280,7 @@ class CacheEntry:
     path: Path
     produced_by: str  # the run that computed these predictions
     created_at: str
+    sha256: str = ""  # of the cached file's bytes
 
 
 class PredictionCache:
@@ -301,7 +319,9 @@ class PredictionCache:
         if not isinstance(meta, Mapping) or meta.get("sha256") != actual or meta.get("key") != key:
             _log.warning("ignoring cached predictions %s: metadata mismatch", path.name)
             return None
-        return CacheEntry(path, str(meta.get("produced_by", "")), str(meta.get("created_at", "")))
+        return CacheEntry(
+            path, str(meta.get("produced_by", "")), str(meta.get("created_at", "")), actual
+        )
 
     def put(
         self,
@@ -311,15 +331,29 @@ class PredictionCache:
         *,
         produced_by: str,
     ) -> CacheEntry:
+        """Cache ``images`` under ``key``, never replacing other bytes there.
+
+        Identical bytes already under the key are kept, and the sidecar names ``produced_by``
+        from now on (the earlier producer's record may be missing). Other bytes raise
+        :class:`CacheConflictError`.
+        """
         path = self.path(key)
         if path is None:
             raise PredictionsError("the prediction cache is disabled")
-        digest = write_predictions(path, header, images)
+        data = dumps(header, images)
+        digest = hashlib.sha256(data).hexdigest()
+        try:
+            write_bytes_exclusive(path, data)
+        except FileExistsError:
+            existing = hashlib.sha256(path.read_bytes()).hexdigest()
+            if existing != digest:
+                raise CacheConflictError(key, existing, digest) from None
+            _log.info("cached predictions %s already hold these bytes", path.name)
         created = datetime.now(UTC).isoformat()
         meta = {"sha256": digest, "key": key, "produced_by": produced_by, "created_at": created}
         document = envelope(CACHE_ENTRY_FORMAT, CACHE_ENTRY_VERSION, meta)
         write_bytes_atomic(self._sidecar(path), json_bytes(document))
-        return CacheEntry(path, produced_by, created)
+        return CacheEntry(path, produced_by, created, digest)
 
 
 __all__ = [
@@ -330,6 +364,7 @@ __all__ = [
     "RESERVED_FIELDS",
     "STAGES",
     "VERSION",
+    "CacheConflictError",
     "CacheEntry",
     "PredictionCache",
     "PredictionSource",

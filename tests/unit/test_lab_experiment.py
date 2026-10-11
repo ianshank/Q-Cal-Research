@@ -34,7 +34,7 @@ from qcal_lab.experiment import (
 from qcal_lab.fixture_eval import FixtureEvalLoop
 from qcal_lab.models import KIND_SCORE_DEFINITIONS
 from qcal_lab.predictions import read_predictions
-from tests.lab_support import fixture_project, lab_config
+from tests.lab_support import fixture_project, lab_config, register
 
 pytestmark = pytest.mark.rule("C3")
 
@@ -308,6 +308,7 @@ def test_seeds_draw_different_fit_subsets(project: tuple[Path, list[str]]) -> No
 def test_raw_predictions_are_cached_and_reused(project: tuple[Path, list[str]]) -> None:
     root, cells = project
     first = run_experiment(_request(root, cells[0], run_id="R-a"))
+    register(root, "R-a", first.artifacts)
     second = run_experiment(_request(root, cells[2], run_id="R-b"))
     raw = [a["path"] for a in first.artifacts if a["kind"].startswith("predictions_raw")]
     assert raw == [a["path"] for a in second.artifacts if a["kind"].startswith("predictions_raw")]
@@ -324,6 +325,7 @@ def test_a_cache_entry_that_does_not_match_the_run_is_recomputed(
 
     root, cells = project
     first = run_experiment(_request(root, cells[0], run_id="R-a"))
+    register(root, "R-a", first.artifacts)
     path = root / next(a["path"] for a in first.artifacts if a["kind"] == "predictions_raw_val")
     # A forged entry whose metadata agrees with its bytes, but which holds other images.
     lines = path.read_text().splitlines()
@@ -332,8 +334,14 @@ def test_a_cache_entry_that_does_not_match_the_run_is_recomputed(
     meta = json.loads(meta_path.read_text())
     meta["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
     meta_path.write_text(json.dumps(meta))
+    forged = path.read_bytes()
     second = run_experiment(_request(root, cells[0], run_id="R-b"))
-    assert second.environment["prediction_cache"]["val"] == {"hit": False, "produced_by": "R-b"}
+    use = second.environment["prediction_cache"]["val"]
+    assert (use["hit"], use["produced_by"]) == (False, "R-b")
+    assert use["conflict"]["cached_sha256"] == meta["sha256"]  # recorded for the audit
+    assert path.read_bytes() == forged  # never replaced: R-a's record lists this path
+    own = next(a["path"] for a in second.artifacts if a["kind"] == "predictions_raw_val")
+    assert own.startswith("runs/results/R-b/")
     assert second.metrics == first.metrics
 
 
@@ -344,6 +352,9 @@ def test_a_corrupt_cache_sidecar_is_ignored(project: tuple[Path, list[str]]) -> 
     path.with_suffix(".meta.json").write_text("{")
     second = run_experiment(_request(root, cells[0], run_id="R-b"))
     assert second.environment["prediction_cache"]["val"]["hit"] is False
+    register(root, "R-b", second.artifacts)  # the same bytes; the sidecar now names R-b
+    third = run_experiment(_request(root, cells[0], run_id="R-c"))
+    assert third.environment["prediction_cache"]["val"] == {"hit": True, "produced_by": "R-b"}
 
 
 def test_without_a_cache_raw_predictions_go_next_to_the_run(
@@ -569,6 +580,7 @@ def test_changed_image_bytes_invalidate_cached_predictions(
     image_file.write_bytes(b"v1")
     first = run_experiment(_request(root, cells[0], run_id="R-a"))
     assert first.environment["prediction_cache"]["val"]["hit"] is False
+    register(root, "R-a", first.artifacts)
     assert run_experiment(_request(root, cells[0], run_id="R-b")).environment["prediction_cache"][
         "val"
     ]["hit"]
@@ -576,3 +588,154 @@ def test_changed_image_bytes_invalidate_cached_predictions(
     third = run_experiment(_request(root, cells[0], run_id="R-c")).environment
     assert third["prediction_cache"]["val"] == {"hit": False, "produced_by": "R-c"}
     assert third["prediction_cache"]["test"]["hit"] is True  # other splits are unaffected
+
+
+# --- the prediction cache key and its producer (docs/changes/run-identity-and-formats.md) ----
+
+
+def test_cached_predictions_count_only_with_their_producers_record(
+    project: tuple[Path, list[str]], caplog: pytest.LogCaptureFixture
+) -> None:
+    root, cells = project
+    run_experiment(_request(root, cells[0], run_id="R-a"))  # never recorded
+    second = run_experiment(_request(root, cells[0], run_id="R-b"))
+    assert second.environment["prediction_cache"]["val"] == {"hit": False, "produced_by": "R-b"}
+    assert "no record of R-a lists them" in caplog.text
+    register(root, "R-b", second.artifacts)
+    third = run_experiment(_request(root, cells[0], run_id="R-c"))
+    assert third.environment["prediction_cache"]["val"] == {"hit": True, "produced_by": "R-b"}
+
+
+def test_a_record_listing_other_bytes_does_not_vouch_for_a_cache_entry(
+    project: tuple[Path, list[str]],
+) -> None:
+    root, cells = project
+    first = run_experiment(_request(root, cells[0], run_id="R-a"))
+    listed = [{**a, "path": "runs/results/R-a/packages.json"} for a in first.artifacts]
+    register(root, "R-a", listed)  # R-a's record exists but lists none of the cached files
+    second = run_experiment(_request(root, cells[0], run_id="R-b"))
+    assert second.environment["prediction_cache"]["val"]["hit"] is False
+
+
+def test_a_run_whose_predictions_are_all_cached_builds_no_detector(
+    project: tuple[Path, list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qcal_lab import experiment
+
+    root, cells = project
+    first = run_experiment(_request(root, cells[0], run_id="R-a"))
+    assert first.environment["detector_built"] is True
+    register(root, "R-a", first.artifacts)
+
+    def no_detector(*_: object, **__: object) -> None:
+        raise AssertionError("the detector was built although every split was cached")
+
+    monkeypatch.setattr(experiment, "build_detector", no_detector)
+    second = run_experiment(_request(root, cells[2], run_id="R-b"))
+    assert second.environment["detector_built"] is False
+    assert second.environment["detector_runtime"] == {}
+
+
+def test_moving_the_images_keeps_the_cached_predictions(project: tuple[Path, list[str]]) -> None:
+    root, cells = project
+    lab_file = root / "configs/lab.toml"
+    lab_file.write_text(lab_file.read_text().replace('images_dir = ""', 'images_dir = "imgs"'))
+    (root / "imgs").mkdir()
+    (root / "imgs" / "fixture_0001.jpg").write_bytes(b"pixels")
+    first = run_experiment(_request(root, cells[0], run_id="R-a"))
+    register(root, "R-a", first.artifacts)
+    (root / "imgs").rename(root / "moved")
+    lab_file.write_text(lab_file.read_text().replace('images_dir = "imgs"', 'images_dir = "moved"'))
+    second = run_experiment(_request(root, cells[0], run_id="R-b"))
+    assert all(use["hit"] for use in second.environment["prediction_cache"].values())
+
+
+def test_the_record_file_follows_the_registry_store_layout(tmp_path: Path) -> None:
+    from qcal.registry.store import RegistryStore
+    from qcal_lab.experiment import RECORD_FILE
+
+    assert RegistryStore(tmp_path).path_for("R-1") == tmp_path / RECORD_FILE.format(run_id="R-1")
+
+
+def test_prediction_code_is_the_prediction_modules_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qcal_lab import experiment
+
+    package = tmp_path / "qcal_lab"
+    for name in (
+        "experiment.py",
+        "calib/platt.py",
+        "models/base.py",
+        "data/coco.py",
+        "data/fixture.py",
+        "data/splits.py",
+        "predictions.py",
+        "numerics.py",
+    ):
+        (package / name).parent.mkdir(parents=True, exist_ok=True)
+        (package / name).write_text(f"# {name}\n")
+    monkeypatch.setattr(experiment, "__file__", str(package / "experiment.py"))
+
+    def digest() -> str:
+        experiment.prediction_code_digest.cache_clear()
+        return experiment.prediction_code_digest()
+
+    before = digest()
+    for unrelated in ("calib/platt.py", "experiment.py", "data/splits.py"):
+        (package / unrelated).write_text("# edited\n")
+        assert digest() == before, unrelated
+    for related in ("models/base.py", "data/coco.py", "predictions.py", "numerics.py"):
+        (package / related).write_text(f"# edited {related}\n")
+        assert digest() != before, related
+        before = digest()
+    experiment.prediction_code_digest.cache_clear()
+
+
+def test_the_key_covers_the_compute_stack_and_the_regime(
+    project: tuple[Path, list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qcal_lab import experiment
+
+    root, cells = project
+    first = run_experiment(_request(root, cells[0], run_id="R-a"))
+    register(root, "R-a", first.artifacts)
+    lab_file = root / "configs/lab.toml"
+    plain = lab_file.read_text()
+    lab_file.write_text(plain + "[numerics.regimes.fp32]\ncudnn_benchmark = false\n")
+    regime_changed = run_experiment(_request(root, cells[0], run_id="R-b"))
+    assert not any(use["hit"] for use in regime_changed.environment["prediction_cache"].values())
+    lab_file.write_text(plain)
+    monkeypatch.setattr(experiment, "detector_key_parts", lambda _lab, _name: {"cuda": "13.0"})
+    stack_changed = run_experiment(_request(root, cells[0], run_id="R-c"))
+    assert not any(use["hit"] for use in stack_changed.environment["prediction_cache"].values())
+
+
+def test_altered_scores_under_a_recorded_path_are_not_served(
+    project: tuple[Path, list[str]],
+) -> None:
+    """The header and image ids still match; only the producer's recorded sha256 catches it."""
+    import hashlib
+
+    root, cells = project
+    first = run_experiment(_request(root, cells[0], run_id="R-a"))
+    register(root, "R-a", first.artifacts)
+    path = root / next(a["path"] for a in first.artifacts if a["kind"] == "predictions_raw_val")
+    header, *rows = path.read_text().splitlines()
+    altered = [json.loads(row) for row in rows]
+    for row in altered:
+        for detection in row["detections"]:
+            detection[4] = 1.0  # every score now says "certain"
+    path.write_text(
+        "\n".join(
+            [header, *(json.dumps(r, sort_keys=True, separators=(",", ":")) for r in altered)]
+        )
+        + "\n"
+    )
+    meta_path = path.with_suffix(".meta.json")
+    meta = json.loads(meta_path.read_text())
+    meta["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()  # the sidecar agrees
+    meta_path.write_text(json.dumps(meta))
+    second = run_experiment(_request(root, cells[0], run_id="R-b"))
+    assert second.environment["prediction_cache"]["val"]["hit"] is False
+    assert second.metrics == first.metrics

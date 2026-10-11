@@ -14,6 +14,7 @@ from qcal_lab.formats import (
     open_envelope,
     read_json,
     write_bytes_atomic,
+    write_bytes_exclusive,
 )
 
 
@@ -66,3 +67,12 @@ def test_unreadable_json_is_a_format_error(tmp_path: Path) -> None:
         read_json(tmp_path / "bad.json")
     with pytest.raises(FormatError, match="cannot read"):
         read_json(tmp_path / "missing.json")
+
+
+def test_exclusive_writes_never_replace_a_file(tmp_path: Path) -> None:
+    path = tmp_path / "deep" / "f.bin"
+    assert write_bytes_exclusive(path, b"one") == hashlib.sha256(b"one").hexdigest()
+    with pytest.raises(FileExistsError):
+        write_bytes_exclusive(path, b"two")
+    assert path.read_bytes() == b"one"
+    assert [p.name for p in path.parent.iterdir()] == ["f.bin"]

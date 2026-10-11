@@ -14,7 +14,6 @@ from qcal.components import ComponentRegistry
 from qcal.config import ConfigError
 from qcal.protocols import Detector
 from qcal.registry.executor import sha256_file
-from qcal_lab import __version__
 from qcal_lab.config import LabConfig
 from qcal_lab.data.coco import GroundTruth
 from qcal_lab.data.fixture import is_fixture
@@ -36,6 +35,10 @@ class DetectorContext:
 
 DetectorFactory = Callable[[DetectorContext], Detector]
 DETECTORS: ComponentRegistry[DetectorFactory] = ComponentRegistry("detector kind")
+KeyParts = Callable[[LabConfig, str], dict[str, Any]]
+#: Per detector kind: what beneath its settings decides its predictions (the compute stack,
+#: a resolved model config). Part of every prediction cache key; each kind registers one.
+KEY_PARTS: ComponentRegistry[KeyParts] = ComponentRegistry("detector kind (cache key parts)")
 #: The deployment targets each detector kind produces predictions for. A cell whose target
 #: its detector's kind does not produce is refused, never served another target's predictions.
 KIND_TARGETS: Final[Mapping[str, frozenset[str]]] = {
@@ -62,6 +65,11 @@ KIND_REQUIRED_SETTINGS: Final[Mapping[str, tuple[str, ...]]] = {"mmdet": TEST_CF
 def detector_targets(lab: LabConfig, name: str) -> frozenset[str]:
     """The targets the configured detector ``name`` can produce."""
     return KIND_TARGETS.get(str(detector_settings(lab, name)["kind"]), frozenset())
+
+
+def detector_key_parts(lab: LabConfig, name: str) -> dict[str, Any]:
+    """What beneath the configuration decides detector ``name``'s predictions."""
+    return KEY_PARTS.get(str(detector_settings(lab, name)["kind"]))(lab, name)
 
 
 def detector_problems(lab: LabConfig, name: str) -> list[str]:
@@ -117,10 +125,11 @@ def detector_fingerprint(
     file_settings: Sequence[str],
     packages: Sequence[str],
 ) -> dict[str, Any]:
-    """The spec plus what it points at: file contents, library versions, this package's version.
+    """The spec plus what it points at: file contents and library versions.
 
     A prediction cache keyed on the spec alone would reuse stale predictions after a config or
-    checkpoint was replaced at the same path, or after a library upgrade.
+    checkpoint was replaced at the same path, or after a library upgrade. This package's own
+    version is not part of it: the cache key covers the code that produces predictions.
     """
     settings = detector_settings(lab, name)
     files: dict[str, str] = {}
@@ -133,7 +142,6 @@ def detector_fingerprint(
         **detector_spec(lab, name, precision),
         "files": files,
         "packages": {package: _package_version(package) for package in packages},
-        "qcal_lab": __version__,
     }
 
 
@@ -175,6 +183,7 @@ def setting_int(settings: Mapping[str, Any], key: str) -> int:
 __all__ = [
     "CHECKPOINT_SETTING",
     "DETECTORS",
+    "KEY_PARTS",
     "KIND_REQUIRED_SETTINGS",
     "KIND_SCORE_DEFINITIONS",
     "KIND_TARGETS",
@@ -182,8 +191,10 @@ __all__ = [
     "DetectorContext",
     "DetectorError",
     "DetectorFactory",
+    "KeyParts",
     "build_detector",
     "detector_fingerprint",
+    "detector_key_parts",
     "detector_problems",
     "detector_settings",
     "detector_spec",

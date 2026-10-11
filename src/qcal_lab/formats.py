@@ -58,6 +58,22 @@ def write_bytes_atomic(path: Path, data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def write_bytes_exclusive(path: Path, data: bytes) -> str:
+    """Create ``path`` holding ``data``, atomically; :class:`FileExistsError` if it exists.
+
+    The bytes go to a temporary file first and are hard-linked into place, so a reader never
+    sees a partial file and two writers never both succeed.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_bytes(data)
+    try:
+        os.link(tmp, path)
+    finally:
+        tmp.unlink()
+    return hashlib.sha256(data).hexdigest()
+
+
 def json_bytes(document: Mapping[str, Any]) -> bytes:
     """Canonical, human-readable JSON: sorted keys, two-space indent, a final newline."""
     return (json.dumps(document, indent=2, sort_keys=True) + "\n").encode("utf-8")
@@ -80,4 +96,5 @@ __all__ = [
     "open_envelope",
     "read_json",
     "write_bytes_atomic",
+    "write_bytes_exclusive",
 ]

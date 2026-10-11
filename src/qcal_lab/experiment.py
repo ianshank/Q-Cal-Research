@@ -27,7 +27,7 @@ import json
 import os
 import platform
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from importlib import metadata
 from pathlib import Path
@@ -41,7 +41,7 @@ from qcal.protocols import Detector, ImageDetections
 from qcal.registry.executor import STATUS_FAILED, STATUS_OK, result_envelope, sha256_file
 from qcal.registry.experiments import Experiments, load_experiments
 from qcal.registry.gates import INPUTS_READ_KEY, code_location_problems
-from qcal.registry.records import SEED_EFFECTIVE_KEY
+from qcal.registry.records import SEED_EFFECTIVE_KEY, RunRecord, validate_run_id
 from qcal_lab import __version__
 from qcal_lab.calib import CALIBRATORS, build_calibrator
 from qcal_lab.calib.thresholds import threshold_grid
@@ -61,13 +61,15 @@ from qcal_lab.models import (
     CHECKPOINT_SETTING,
     build_detector,
     detector_fingerprint,
+    detector_key_parts,
     detector_problems,
     detector_targets,
     detector_test_cfg,
     score_definition,
 )
-from qcal_lab.numerics import load_regime, recorded_environment
+from qcal_lab.numerics import Regime, load_regime, recorded_environment
 from qcal_lab.predictions import (
+    CacheConflictError,
     CacheEntry,
     PredictionCache,
     PredictionsError,
@@ -82,6 +84,19 @@ _log = get_logger("lab.experiment")
 
 ROLES: Final = ("fit", "select", "evaluate")
 HANDWRITTEN_DIR: Final = "handwritten/"  # Ian's files; never part of the source digest
+#: The code that decides a set of raw predictions, relative to this package. Only its source
+#: enters the prediction cache key, so editing a calibrator or this module reuses predictions.
+PREDICTION_MODULES: Final = (
+    "models",
+    "data/coco.py",
+    "data/fixture.py",
+    "predictions.py",
+    "numerics.py",
+)
+#: Where qcal.registry.store keeps a run's record, under paths.registry_dir. Science code may
+#: not import the store (it writes records), so the producer check reads this one file;
+#: tests/unit/test_lab_experiment.py pins it to the store's own layout.
+RECORD_FILE: Final = "{run_id}.json"
 _FACTOR_ROLES: Final = (
     "detector",
     "calibrator",
@@ -285,8 +300,18 @@ class _Context:
     images_dir: Path | None
     fingerprint: Mapping[str, Any]
     source: PredictionSource
+    regime: Regime
+    key_parts: Mapping[str, Any]  # the detector kind's, computed once per run
+    build: Callable[[], Detector]
     artifacts: list[dict[str, str]] = field(default_factory=list)
     cache_use: dict[str, dict[str, Any]] = field(default_factory=dict)
+    built: Detector | None = None
+
+    def detector(self) -> Detector:
+        """The detector, built on first use: a run whose predictions are all cached builds none."""
+        if self.built is None:
+            self.built = self.build()
+        return self.built
 
     def relative(self, path: Path) -> str:
         root = self.qcal_config.root
@@ -339,6 +364,21 @@ def prediction_source(
         model_sha256=str(fingerprint.get("files", {}).get(CHECKPOINT_SETTING, "")),
         test_cfg=detector_test_cfg(lab, plan.detector),
     )
+
+
+@functools.cache
+def prediction_code_digest() -> str:
+    """sha256 of the modules in :data:`PREDICTION_MODULES` (Python sources only)."""
+    package = Path(__file__).resolve().parent
+    files: set[Path] = set()
+    for entry in PREDICTION_MODULES:
+        path = package / entry
+        files.update(path.rglob("*.py") if path.is_dir() else [path])
+    digest = hashlib.sha256()
+    for path in sorted(files):
+        digest.update(f"{path.relative_to(package).as_posix()}\0".encode())
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
 
 
 @functools.cache
@@ -446,20 +486,53 @@ def _cached_images(
     return images
 
 
-def _raw_predictions(
-    ctx: _Context, detector: Detector, split: str, ids: Sequence[str], cache: PredictionCache
-) -> tuple[ImageDetections, ...]:
-    header = ctx.header(split, ids, "raw")
-    key = cache_key(
+def _recorded_by_producer(ctx: _Context, entry: CacheEntry) -> bool:
+    """Whether the run that cached ``entry`` has a record listing it (path and sha256).
+
+    The cache is gitignored and writable outside the registry, so a sidecar alone proves
+    nothing; a registered run's record does.
+    """
+    try:
+        name = RECORD_FILE.format(run_id=validate_run_id(entry.produced_by))
+        record_path = ctx.qcal_config.path("registry_dir") / name
+        record = RunRecord.from_dict(json.loads(record_path.read_text("utf-8")))
+    except (OSError, UnicodeDecodeError, ValueError, KeyError, TypeError):
+        return False
+    listed = ctx.relative(entry.path)
+    return any(a.path == listed and a.sha256 == entry.sha256 for a in record.artifacts)
+
+
+def prediction_key(ctx: _Context, split_sha256: str, ids: Sequence[str]) -> str:
+    """The cache key: everything that decides one split's raw predictions, and nothing else.
+
+    Not where the images live (their bytes count, not their path), nor this package's
+    version: the key holds the source of the modules that produce predictions.
+    """
+    return cache_key(
         detector=ctx.fingerprint,
         source=ctx.source.to_dict(),
+        numerics=ctx.regime.to_dict(),
+        kind=ctx.key_parts,
         dataset_sha256=ctx.dataset.sha256,
-        split_sha256=header.split_sha256,
-        images_dir=str(ctx.images_dir.resolve()) if ctx.images_dir else "",
+        split_sha256=split_sha256,
         images_sha256=_images_digest(ctx, ids),
-        source_sha256=source_digest(),
+        code_sha256=prediction_code_digest(),
     )
+
+
+def _raw_predictions(
+    ctx: _Context, split: str, ids: Sequence[str], cache: PredictionCache
+) -> tuple[ImageDetections, ...]:
+    header = ctx.header(split, ids, "raw")
+    key = prediction_key(ctx, header.split_sha256, ids)
     entry = cache.get(key)
+    if entry is not None and not _recorded_by_producer(ctx, entry):
+        _log.warning(
+            "ignoring cached predictions %s: no record of %s lists them",
+            entry.path.name,
+            entry.produced_by,
+        )
+        entry = None
     images = _cached_images(entry, header, ids) if entry is not None else None
     if entry is not None and images is not None:
         _log.info("using raw predictions for %s cached by %s", split, entry.produced_by)
@@ -467,16 +540,22 @@ def _raw_predictions(
         ctx.add_artifact(entry.path, RAW_PREDICTIONS_KIND.format(split=split))
         return images
     _log.info("running %s on %d %s images", ctx.plan.detector, len(ids), split)
-    images = tuple(detector.predict(list(ids)))
+    images = tuple(ctx.detector().predict(list(ids)))
     if [i.image_id for i in images] != list(ids):
         raise PlanError(f"{ctx.plan.detector} returned images out of order or incomplete")
+    use: dict[str, Any] = {"hit": False, "produced_by": ctx.request.run_id}
     path = cache.path(key)
+    if path is not None:
+        try:
+            path = cache.put(key, header, images, produced_by=ctx.request.run_id).path
+        except CacheConflictError as exc:
+            _log.warning("%s; this run keeps its own predictions next to it", exc)
+            use["conflict"] = {"key": key, "cached_sha256": exc.existing_sha256}
+            path = None
     if path is None:
         path = ctx.artifact_dir / RAW_PREDICTIONS_FILE.format(split=split)
         write_predictions(path, header, images)
-    else:
-        cache.put(key, header, images, produced_by=ctx.request.run_id)
-    ctx.cache_use[split] = {"hit": False, "produced_by": ctx.request.run_id}
+    ctx.cache_use[split] = use
     ctx.add_artifact(path, RAW_PREDICTIONS_KIND.format(split=split))
     return images
 
@@ -555,13 +634,20 @@ def run_experiment(
         images_dir,
         fingerprint,
         prediction_source(lab, plan, fingerprint),
+        regime,
+        detector_key_parts(lab, plan.detector),
+        functools.partial(
+            build_detector,
+            lab,
+            plan.detector,
+            dataset,
+            precision=plan.precision,
+            images_dir=images_dir,
+        ),
         artifacts=progress if progress is not None else [],
     )
-    detector = build_detector(
-        lab, plan.detector, dataset, precision=plan.precision, images_dir=images_dir
-    )
     cache = _cache(lab)
-    raw = {role: _raw_predictions(ctx, detector, roles[role], ids[role], cache) for role in ROLES}
+    raw = {role: _raw_predictions(ctx, roles[role], ids[role], cache) for role in ROLES}
     fit = SplitData(roles["fit"], _subset(raw["fit"], fit_ids), subsets["fit"].subset(fit_ids))
     select = SplitData(roles["select"], raw["select"], subsets["select"])
     candidates = threshold_grid(
@@ -610,7 +696,8 @@ def run_experiment(
         },
         "detector": fingerprint,
         "predictions_source": ctx.source.to_dict(),
-        "detector_runtime": dict(getattr(detector, "runtime", {})),
+        "detector_built": ctx.built is not None,  # no: every split came from the cache
+        "detector_runtime": dict(getattr(ctx.built, "runtime", {})),
         "roles": {role: dataclasses.asdict(spec) for role, spec in plan.roles().items()},
         "prediction_cache": ctx.cache_use,
         "calibration": {
@@ -705,8 +792,10 @@ __all__ = [
     "PACKAGES_FORMAT",
     "PACKAGES_KIND",
     "PACKAGES_VERSION",
+    "PREDICTION_MODULES",
     "RAW_PREDICTIONS_FILE",
     "RAW_PREDICTIONS_KIND",
+    "RECORD_FILE",
     "ROLES",
     "ExperimentResult",
     "PlanError",
@@ -716,6 +805,8 @@ __all__ = [
     "check_disjoint",
     "handwritten_digest",
     "installed_packages",
+    "prediction_code_digest",
+    "prediction_key",
     "prediction_source",
     "program_code",
     "resolve_plan",

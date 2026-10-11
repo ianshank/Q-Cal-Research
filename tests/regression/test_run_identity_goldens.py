@@ -149,10 +149,11 @@ def test_cache_key() -> None:
 def test_lab_config_effective_digest() -> None:
     # Re-pinned by docs/changes/run-identity-and-formats.md step 2 (five roles added under
     # [factors], [smoke] moved to the unhashed tooling.toml) and step 4 ([numerics.regimes.*]
-    # added, configs/lab.toml pins detectors.atss_r50.max_per_image). Nothing else changed.
+    # added, configs/lab.toml pins detectors.atss_r50.max_per_image) and step 5
+    # (predictions.fingerprint_packages gains opencv and pillow). Nothing else changed.
     lab = load_lab_config(REPO_ROOT)
     assert _effective_digest(lab) == (
-        "ee0ae26033217050861e4edf764d7d68e4194ad603e894fcb76825bbdf9f1d70"
+        "20b1efa80850930e25375ec8fd63f3deeeef959f7ccba650fc6eec57fa5e68b1"
     )
 
 

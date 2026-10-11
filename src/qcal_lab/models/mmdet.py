@@ -14,6 +14,7 @@ checkpoint's class names must equal the dataset's, in label order.
 
 from __future__ import annotations
 
+import hashlib
 import os
 from collections.abc import Mapping, Sequence
 from importlib import import_module
@@ -23,14 +24,24 @@ from typing import Any, Final
 from qcal.log import get_logger
 from qcal.protocols import Detection, ImageDetections
 from qcal.registry.executor import sha256_file
+from qcal_lab.config import LabConfig
 from qcal_lab.data.coco import GroundTruth
-from qcal_lab.models.base import DETECTORS, DetectorContext, DetectorError, setting_int
+from qcal_lab.models.base import (
+    DETECTORS,
+    KEY_PARTS,
+    DetectorContext,
+    DetectorError,
+    setting_int,
+)
 from qcal_lab.numerics import apply_regime, device_record, load_regime
 
 _log = get_logger("lab.models.mmdet")
 
 API_MODULE: Final = "mmdet.apis"
 TORCH_MODULE: Final = "torch"
+CONFIG_MODULE: Final = "mmengine.config"
+#: The device record fields that decide kernels, hence predictions (not which card it was).
+STACK_FIELDS: Final = ("torch", "cuda", "cudnn", "torch_build_sha256", "capability")
 _CFG_OPTIONS: Final = {
     "score_threshold": "model.test_cfg.score_thr",
     "max_per_image": "model.test_cfg.max_per_img",
@@ -186,6 +197,37 @@ def _build(context: DetectorContext) -> MMDetDetector:
     )
 
 
-DETECTORS.register("mmdet", _build)
+def key_parts(lab: LabConfig, name: str) -> dict[str, Any]:
+    """The compute stack and the resolved model config, for the prediction cache key.
 
-__all__ = ["API_MODULE", "TORCH_MODULE", "MMDetDetector", "check_label_map", "model_classes"]
+    The config file's own digest misses its ``_base_`` files, so the key holds the resolved
+    config. Neither needs the model built, so a cache hit costs no detector.
+    """
+    prefix = f"detectors.{name}"
+    torch = _import(TORCH_MODULE, "the MMDetection detector's cache key needs it")
+    device = device_record(torch, lab.text(f"{prefix}.device"))
+    config_file = lab.file(f"{prefix}.config")
+    mmengine = _import(CONFIG_MODULE, "the MMDetection detector's cache key needs it")
+    try:
+        resolved = str(mmengine.Config.fromfile(str(config_file)).pretty_text)
+    except (OSError, SyntaxError, ValueError, TypeError, KeyError) as exc:
+        raise DetectorError(f"cannot resolve the MMDetection config {config_file}: {exc}") from exc
+    return {
+        "stack": {field: device.get(field) for field in STACK_FIELDS},
+        "resolved_config_sha256": hashlib.sha256(resolved.encode("utf-8")).hexdigest(),
+    }
+
+
+DETECTORS.register("mmdet", _build)
+KEY_PARTS.register("mmdet", key_parts)
+
+__all__ = [
+    "API_MODULE",
+    "CONFIG_MODULE",
+    "STACK_FIELDS",
+    "TORCH_MODULE",
+    "MMDetDetector",
+    "check_label_map",
+    "key_parts",
+    "model_classes",
+]
