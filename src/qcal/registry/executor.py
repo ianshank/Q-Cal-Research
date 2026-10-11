@@ -8,7 +8,8 @@ and reads a result JSON the experiment program writes:
      "environment": {"trt_version": "10.3.0"}}
 
 Templates may use only the documented placeholders, and the CLI accepts no
-free-form overrides, so a run cannot drift from the pre-registered cell.
+free-form overrides, so a run cannot drift from the pre-registered cell. ``{python}`` is
+the launcher's own interpreter, so the hashed template names no machine path.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ import math
 import os
 import string
 import subprocess
+import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -33,7 +35,7 @@ from qcal.registry.records import METRIC_NAME_PATTERN, ArtifactRef
 _log = get_logger("registry.executor")
 
 PLACEHOLDERS: Final = frozenset(
-    {"run_id", "cell_id", "seed", "seed_role", "result_path", "log_path", "root"}
+    {"python", "run_id", "cell_id", "seed", "seed_role", "result_path", "log_path", "root"}
 )
 _HASH_CHUNK: Final = 1 << 20
 
@@ -51,9 +53,11 @@ class RunSpec:
     result_path: Path
     log_path: Path
     root: Path
+    python: str = field(default_factory=lambda: sys.executable)
 
     def values(self) -> dict[str, str]:
         return {
+            "python": self.python,
             "run_id": self.run_id,
             "cell_id": self.cell.id,
             "seed": str(self.seed),

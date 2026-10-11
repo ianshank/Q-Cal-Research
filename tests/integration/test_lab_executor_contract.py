@@ -63,7 +63,8 @@ def test_a_failing_cell_becomes_a_failed_result_with_its_log(tmp_path: Path) -> 
 def test_the_repository_wires_the_experiment_program() -> None:
     config = load_config(REPO_ROOT, environ={})
     command = config.str_list("executor.command")
-    assert command[:5] == ["python3", "-I", "-m", "qcal_lab", "--root"]
+    # {python} is the launcher's interpreter: no machine path in the hashed command (PR-A2)
+    assert command[:5] == ["{python}", "-I", "-m", "qcal_lab", "--root"]
     assert {"{run_id}", "{cell_id}", "{seed}", "{result_path}"} <= set(command)
 
 

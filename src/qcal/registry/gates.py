@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final
 
+import qcal
 from qcal import gitutil
 from qcal.config import REPO_CONFIG_NAME, Config, config_key_problems, environment_problems
 from qcal.globs import iter_files
@@ -115,6 +116,7 @@ def run_input_problems(
     problems = list(environment_problems(config))
     problems += [f"configuration: {p}" for p in config_key_problems(config.data)]
     problems += list(policy.problems)
+    problems += code_location_problems(config)
     configured = config.path("experiments")
     if experiments.path.resolve() != configured.resolve():
         problems.append(
@@ -132,6 +134,26 @@ def run_input_problems(
                 "(registered runs use the committed one)"
             )
     return problems
+
+
+def code_location_problems(config: Config) -> list[str]:
+    """With ``registry.require_code_in_root``, qcal must be imported from ``paths.source_dir``.
+
+    The record is written by the qcal that runs; an installed copy elsewhere could differ
+    from the committed code the record's git SHA names.
+    """
+    if not config.bool_value("registry.require_code_in_root"):
+        return []
+    package = Path(qcal.__file__).resolve().parent
+    source = config.path("source_dir").resolve()
+    if package.is_relative_to(source):
+        return []
+    return [
+        (
+            f"qcal is imported from {package}, not from {source}; registered runs use the "
+            "repository's own code (registry.require_code_in_root)"
+        )
+    ]
 
 
 def config_inputs(config: Config) -> dict[str, str]:

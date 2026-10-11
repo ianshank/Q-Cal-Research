@@ -70,7 +70,9 @@ def result_file(root: Path, payload: Any) -> Path:
 
 
 def test_placeholders_are_the_documented_set() -> None:
-    documented = {"run_id", "cell_id", "seed", "seed_role", "result_path", "log_path", "root"}
+    documented = {
+        "python", "run_id", "cell_id", "seed", "seed_role", "result_path", "log_path", "root"
+    }  # fmt: skip
     assert documented == PLACEHOLDERS
 
 
@@ -169,6 +171,7 @@ def test_environment_exports_prefixed_spec_values(
         "QCAL_RUN_RESULT_PATH": str(tmp_path / "runs" / "results" / "R1.json"),
         "QCAL_RUN_LOG_PATH": str(tmp_path / "runs" / "logs" / "R1.log"),
         "QCAL_RUN_ROOT": str(tmp_path),
+        "QCAL_RUN_PYTHON": sys.executable,
     }
 
 

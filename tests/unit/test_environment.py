@@ -9,6 +9,7 @@ import platform
 import re
 import subprocess
 import sys
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -22,7 +23,9 @@ from qcal.registry.environment import (
     COLLECTORS,
     Collector,
     collect_environment,
+    launcher_identity,
     python_executable,
+    recorded_variables,
 )
 
 
@@ -197,24 +200,83 @@ def test_nvidia_collector_without_nvidia_smi_is_empty(
     assert COLLECTORS.get("nvidia")(tmp_path) == {}
 
 
+FULL_QUERY = "--query-gpu=index,uuid,pci.bus_id,name,compute_cap,memory.total,driver_version"
+FALLBACK_QUERY = "--query-gpu=name,driver_version"
+
+
+def fake_nvidia_smi(full: str | None, fallback: str | None) -> Callable[[Sequence[str]], Any]:
+    """A fake nvidia-smi: ``full`` for the per-GPU query, ``fallback`` for the old one."""
+
+    def run(argv: Sequence[str]) -> str | None:
+        assert argv[0] == "nvidia-smi"
+        assert "--format=csv,noheader,nounits" in argv
+        return {FULL_QUERY: full, FALLBACK_QUERY: fallback}[argv[1]]
+
+    return run
+
+
+def test_nvidia_collector_lists_every_gpu(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    full = (
+        "0, GPU-aaaa, 00000000:01:00.0, NVIDIA RTX 5060 Ti, 12.0, 16311, 575.51\n"
+        "1, GPU-bbbb, 00000000:02:00.0, NVIDIA RTX 5060, 12.0, 8151, 575.51\n"
+    )
+    monkeypatch.setattr(environment, "_run", fake_nvidia_smi(full, None))
+    assert COLLECTORS.get("nvidia")(tmp_path) == {
+        "gpus": [
+            {
+                "index": 0,
+                "uuid": "GPU-aaaa",
+                "pci_bus_id": "00000000:01:00.0",
+                "name": "NVIDIA RTX 5060 Ti",
+                "compute_cap": "12.0",
+                "memory_total_mib": 16311,
+                "driver": "575.51",
+            },
+            {
+                "index": 1,
+                "uuid": "GPU-bbbb",
+                "pci_bus_id": "00000000:02:00.0",
+                "name": "NVIDIA RTX 5060",
+                "compute_cap": "12.0",
+                "memory_total_mib": 8151,
+                "driver": "575.51",
+            },
+        ],
+        "gpu": "NVIDIA RTX 5060 Ti; NVIDIA RTX 5060",
+        "driver": "575.51",
+    }
+
+
 @pytest.mark.parametrize(
     ("output", "expected"),
     [
         (
-            "NVIDIA RTX 5060 Ti, 575.51\nNVIDIA RTX 5060, 575.51",
-            {"gpu": "NVIDIA RTX 5060 Ti; NVIDIA RTX 5060", "driver": "575.51"},
+            "Tesla P40, 520.61.05\n\n",
+            {
+                "gpus": [{"name": "Tesla P40", "driver": "520.61.05"}],
+                "gpu": "Tesla P40",
+                "driver": "520.61.05",
+            },
         ),
-        ("Tesla P40, 520.61.05\n\n", {"gpu": "Tesla P40", "driver": "520.61.05"}),
-        ("Orin", {"gpu": "Orin", "driver": None}),
+        ("Orin", {"gpus": [{"name": "Orin"}], "gpu": "Orin", "driver": None}),
         (None, {}),
         ("", {}),
     ],
+    ids=["old-driver", "no-driver-column", "no-output", "empty"],
 )
-def test_nvidia_collector_parses_nvidia_smi_output(
+def test_nvidia_collector_falls_back_when_a_driver_lacks_the_newer_fields(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, output: str | None, expected: dict[str, Any]
 ) -> None:
-    monkeypatch.setattr(environment, "_run", lambda _argv: output)
+    monkeypatch.setattr(environment, "_run", fake_nvidia_smi(None, output))
     assert COLLECTORS.get("nvidia")(tmp_path) == expected
+
+
+def test_nvidia_collector_keeps_non_numeric_fields_as_text(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    full = "0, GPU-a, 0:1, Orin, 8.7, [N/A], 540.4\n"
+    monkeypatch.setattr(environment, "_run", fake_nvidia_smi(full, None))
+    assert COLLECTORS.get("nvidia")(tmp_path)["gpus"][0]["memory_total_mib"] == "[N/A]"
 
 
 def test_torch_collector_without_torch_is_empty(
@@ -287,6 +349,37 @@ def test_jetson_collector_without_nvpmodel_reports_only_l4t(
 
 def test_python_executable_is_the_running_interpreter() -> None:
     assert python_executable() == sys.executable
+
+
+def test_launcher_identity_names_the_interpreter_and_qcal(tmp_path: Path) -> None:
+    import qcal
+
+    identity = launcher_identity(tmp_path)
+    assert identity["python"] == sys.executable
+    assert identity["python_version"] == platform.python_version()
+    assert identity["qcal_version"] == qcal.__version__
+    # qcal lives outside tmp_path, so its location is absolute
+    assert identity["qcal_location"] == str(Path(qcal.__file__).resolve().parent)
+
+
+def test_launcher_identity_shows_qcal_relative_to_the_root() -> None:
+    import qcal
+
+    package = Path(qcal.__file__).resolve().parent
+    assert launcher_identity(package.parent)["qcal_location"] == package.name
+
+
+def test_recorded_variables_are_verbatim_and_none_when_unset() -> None:
+    environ = {"CUDA_VISIBLE_DEVICES": "GPU-aaaa", "OTHER": "x"}
+    assert recorded_variables(["CUDA_VISIBLE_DEVICES", "CUDA_DEVICE_ORDER"], environ) == {
+        "CUDA_VISIBLE_DEVICES": "GPU-aaaa",
+        "CUDA_DEVICE_ORDER": None,
+    }
+
+
+def test_recorded_variables_read_the_process_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OMP_NUM_THREADS", "4")
+    assert recorded_variables(["OMP_NUM_THREADS"]) == {"OMP_NUM_THREADS": "4"}
 
 
 # -- the command helper -------------------------------------------------------------------

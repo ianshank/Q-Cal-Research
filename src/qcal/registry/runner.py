@@ -5,16 +5,17 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
+import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from qcal import gitutil
 from qcal.config import Config, run_neutral_environment
 from qcal.log import get_logger
-from qcal.registry.environment import collect_environment
+from qcal.registry.environment import collect_environment, launcher_identity, recorded_variables
 from qcal.registry.executor import ExecutionResult, Executor, RunSpec
 from qcal.registry.experiments import Cell, Experiments, ExperimentsError
 from qcal.registry.gates import (
@@ -40,6 +41,10 @@ from qcal.registry.store import RegistryStore
 _log = get_logger("registry.runner")
 
 Clock = Callable[[], datetime]
+#: Environment keys the launcher collected itself; the program's keys keep their own names.
+LAUNCHER_PREFIX: Final = "launcher."
+#: Where a program key that would fall inside a reserved namespace is kept instead.
+REPORTED_PREFIX: Final = "reported."
 
 
 class RunRefusedError(RuntimeError):
@@ -173,6 +178,7 @@ class Runner:
             log_path=self.config.path("logs_dir")
             / self.config.str_value("executor.log_filename").format_map(names),
             root=root,
+            python=sys.executable,
         )
         inputs = config_inputs(self.config)  # read once: hashed, digested and compared
         launch = launch_digests(self.config, self.experiments, policy, inputs)
@@ -187,6 +193,10 @@ class Runner:
             "policy_sha256": policy.sha256,
             "experiments_sha256": self.experiments.sha256,
             "executor": type(self.executor).__name__,
+            "launcher": launcher_identity(root),
+            "environment_variables": recorded_variables(
+                self.config.str_list("registry.recorded_env_vars")
+            ),
         }
         if supersedes:
             provenance["supersede_reason"] = reason.strip()
@@ -326,14 +336,22 @@ class Runner:
 
 
 def merge_environment(collected: Mapping[str, Any], reported: Mapping[str, Any]) -> dict[str, Any]:
-    """Experiment-reported values never overwrite what qcal collected itself."""
-    merged = dict(collected)
+    """The launcher's values under ``launcher.``, the program's under their own names.
+
+    The two run in different interpreters, so their versions may differ; both are kept. A
+    program key inside a reserved namespace is kept under ``reported.``, so nothing the
+    program says can pass for a value the launcher collected, and nothing is dropped.
+    """
+    merged = {f"{LAUNCHER_PREFIX}{key}": value for key, value in collected.items()}
     for key, value in reported.items():
-        if key in collected and collected[key] != value:
+        if str(key).startswith((LAUNCHER_PREFIX, REPORTED_PREFIX)):
             _log.warning(
-                "experiment reported %s=%r; keeping collected %r", key, value, collected[key]
+                "experiment reported %s inside a reserved namespace; kept as %s%s",
+                key,
+                REPORTED_PREFIX,
+                key,
             )
-            merged[f"reported_{key}"] = value
+            merged[f"{REPORTED_PREFIX}{key}"] = value
         else:
             merged[key] = value
     return merged

@@ -355,3 +355,16 @@ def test_n8_git_index_file_cannot_hide_a_staged_change(
     code, _, err = qcal(project, "registry", "run", "C-a", "--seed", "0")
     assert code == 2
     assert "working tree is dirty" in err
+
+
+def test_a_qcal_installed_elsewhere_cannot_write_a_registered_record(
+    qcal: QcalRun, project: Path
+) -> None:
+    """PR-A2: with the switch on, the qcal that writes the record must be the repository's."""
+    text = (project / "qcal.toml").read_text()
+    (project / "qcal.toml").write_text(text + "require_code_in_root = true\n")
+    run_git(project, "commit", "-qam", "require repository code")
+    code, _, err = qcal(project, "registry", "run", "C-a", "--seed", "0")
+    assert code == 2
+    assert "require_code_in_root" in err
+    assert registry_is_empty(project)

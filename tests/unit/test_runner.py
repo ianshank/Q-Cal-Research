@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 
 from qcal.config import Config
+from qcal.registry.environment import launcher_identity
 from qcal.registry.executor import ExecutionResult, RunSpec, SubprocessExecutor
 from qcal.registry.experiments import Experiments, ExperimentsError, load_experiments
 from qcal.registry.gates import config_inputs, digest_of
@@ -254,6 +255,8 @@ def test_run_records_provenance(config: Config, fake_executor: FakeExecutor) -> 
         "policy_sha256": hashlib.sha256(policy.read_bytes()).hexdigest(),
         "experiments_sha256": runner.experiments.sha256,
         "executor": "FakeExecutor",
+        "launcher": launcher_identity(config.root),
+        "environment_variables": dict.fromkeys(config.str_list("registry.recorded_env_vars")),
         "inputs_unverified": ["EXPERIMENTS.yaml", "qcal.toml"],  # FakeExecutor reports none
     }
 
@@ -351,14 +354,14 @@ def test_run_uses_configured_status_names(make_config: Callable[[str], Config]) 
     assert [runner.run("C-a", 0).status, runner.run("C-a", 1).status] == ["done", "broken"]
 
 
-def test_run_merges_collected_and_reported_environment(config: Config) -> None:
+def test_run_records_the_launcher_and_the_program_under_separate_names(config: Config) -> None:
     reported = {"python": "2.7-claimed", "trt_version": "10.3.0"}
     executor = FakeExecutor([ExecutionResult(0, environment=reported)])
     record = make_runner(config, executor, collectors=["python"]).run("C-a", 0)
     assert dict(record.environment) == {
-        "python": platform.python_version(),
-        "python_impl": platform.python_implementation(),
-        "reported_python": "2.7-claimed",
+        "launcher.python": platform.python_version(),
+        "launcher.python_impl": platform.python_implementation(),
+        "python": "2.7-claimed",
         "trt_version": "10.3.0",
     }
 
@@ -366,25 +369,36 @@ def test_run_merges_collected_and_reported_environment(config: Config) -> None:
 @pytest.mark.parametrize(
     ("collected", "reported", "expected"),
     [
-        ({"python": "3.11"}, {}, {"python": "3.11"}),
+        ({"python": "3.11"}, {}, {"launcher.python": "3.11"}),
         ({}, {"trt_version": "10"}, {"trt_version": "10"}),
-        ({"python": "3.11"}, {"trt_version": "10"}, {"python": "3.11", "trt_version": "10"}),
-        ({"python": "3.11"}, {"python": "3.11"}, {"python": "3.11"}),
-        ({"python": "3.11"}, {"python": "2.7"}, {"python": "3.11", "reported_python": "2.7"}),
-        ({"gpu": None}, {"gpu": "A100"}, {"gpu": None, "reported_gpu": "A100"}),
+        ({"python": "3.11"}, {"python": "3.12"}, {"launcher.python": "3.11", "python": "3.12"}),
+        (
+            {"python": "3.11"},
+            {"launcher.python": "2.7"},
+            {"launcher.python": "3.11", "reported.launcher.python": "2.7"},
+        ),
+        ({}, {"reported.x": 1}, {"reported.reported.x": 1}),
+        ({"gpu": None}, {"gpu": "A100"}, {"launcher.gpu": None, "gpu": "A100"}),
     ],
-    ids=["nothing-reported", "only-reported", "disjoint", "agreeing", "conflict", "none-conflict"],
+    ids=[
+        "nothing-reported",
+        "only-reported",
+        "both-kept",
+        "forged-launcher-key",
+        "forged-reported-key",
+        "none-and-value",
+    ],
 )
-def test_merge_environment_never_lets_reported_values_overwrite_collected_ones(
+def test_merge_environment_never_lets_the_program_pass_for_the_launcher(
     collected: dict[str, Any], reported: dict[str, Any], expected: dict[str, Any]
 ) -> None:
     assert merge_environment(collected, reported) == expected
 
 
-def test_merge_environment_warns_about_conflicts(caplog: pytest.LogCaptureFixture) -> None:
+def test_merge_environment_warns_about_reserved_keys(caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level(logging.WARNING, logger="qcal"):
-        merge_environment({"python": "3.11"}, {"python": "2.7"})
-    assert "experiment reported python='2.7'; keeping collected '3.11'" in caplog.text
+        merge_environment({"python": "3.11"}, {"launcher.python": "2.7"})
+    assert "launcher.python inside a reserved namespace" in caplog.text
 
 
 def test_merge_environment_is_silent_without_conflicts(caplog: pytest.LogCaptureFixture) -> None:

@@ -33,6 +33,7 @@ from qcal.registry.executor import ExecutionResult, RunSpec, SubprocessExecutor
 from qcal.registry.experiments import Cell, load_experiments
 from qcal.registry.gates import (
     INPUTS_READ_KEY,
+    code_location_problems,
     input_mismatches,
     launch_digests,
     policy_state,
@@ -602,3 +603,46 @@ def test_a_pre_registration_outside_the_repository_is_refused(
 
 def test_category_check_skips_a_policy_without_a_categories_table() -> None:
     assert config_key_problems({"policy": {"categories": "x"}}, {"policy": {"categories": {}}})
+
+
+# -- code location (PR-A2) ----------------------------------------------------------------
+
+
+def _qcal_parent() -> Path:
+    import qcal
+
+    return Path(qcal.__file__).resolve().parent.parent
+
+
+def test_code_location_is_not_checked_when_the_switch_is_off(config: Config) -> None:
+    assert code_location_problems(config) == []
+
+
+def test_code_location_refuses_qcal_from_outside_the_source_dir(
+    make_config: Callable[[str], Config],
+) -> None:
+    config = make_config("[registry]\nrequire_code_in_root = true\n")
+    (problem,) = code_location_problems(config)
+    assert "not from" in problem
+    assert str((config.root / "src").resolve()) in problem
+    assert "registry.require_code_in_root" in problem
+
+
+def test_code_location_accepts_qcal_from_the_source_dir(
+    make_config: Callable[[str], Config],
+) -> None:
+    source = _qcal_parent()
+    config = make_config(
+        f'[paths]\nsource_dir = "{source.as_posix()}"\n[registry]\nrequire_code_in_root = true\n'
+    )
+    assert code_location_problems(config) == []
+
+
+def test_a_registered_run_refuses_qcal_from_elsewhere(
+    make_config: Callable[[str], Config], fake_executor: FakeExecutor
+) -> None:
+    config = make_config("[registry]\nrequire_code_in_root = true\n")
+    runner = runner_for(config, fake_executor)
+    with pytest.raises(RunRefusedError, match="require_code_in_root"):
+        runner.run("C-a", 0)
+    assert fake_executor.specs == []

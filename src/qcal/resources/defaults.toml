@@ -23,6 +23,7 @@ tables_dir = "paper/tables"
 table_specs_dir = "configs/tables"
 manifests_dir = "data/manifests"
 dataset_cards_dir = "docs/data"
+source_dir = "src"                    # where a registered run's own qcal must be imported from
 
 [logging]
 level = "INFO"
@@ -158,6 +159,16 @@ env_command_timeout_s = 10           # per external probe (nvidia-smi, nvpmodel)
 config_hash_inputs = ["configs/**/*.yaml", "configs/**/*.yml", "configs/**/*.toml"]
 max_runs_per_batch = 50
 require_clean_tree = false
+# Refuse a registered run whose qcal is not imported from paths.source_dir, so the code
+# that writes the record is the repository's own. Off here (tests and throwaway projects
+# import an installed qcal); qcal.toml turns it on.
+require_code_in_root = false
+# Environment variables that change how a program runs on a GPU, recorded verbatim in
+# provenance.environment_variables (null when unset).
+recorded_env_vars = [
+  "CUDA_VISIBLE_DEVICES", "CUDA_DEVICE_ORDER", "NVIDIA_TF32_OVERRIDE", "CUBLAS_WORKSPACE_CONFIG",
+  "PYTORCH_CUDA_ALLOC_CONF", "CUDA_MODULE_LOADING", "LD_LIBRARY_PATH", "OMP_NUM_THREADS",
+]
 require_supersede_reason = true       # `--reason` is recorded in provenance.supersede_reason
 ok_status = "ok"
 failed_status = "failed"
@@ -174,7 +185,8 @@ environment = "env."
 
 [executor]
 kind = "subprocess"                   # registered executor used when --executor is not given
-command = []                          # argv template; placeholders: {run_id} {cell_id} {seed} {seed_role} {result_path} {log_path} {root}
+command = []                          # argv template; placeholders: {python} {run_id} {cell_id} {seed} {seed_role} {result_path} {log_path} {root}
+# {python} is the launcher's own interpreter: no machine path enters the hashed command.
 timeout_s = 0                         # 0 disables the timeout
 result_filename = "{run_id}.json"
 log_filename = "{run_id}.log"
