@@ -267,19 +267,40 @@ def test_platt_flipping_scores_and_targets_negates_the_bias(
     assert (b.a, b.b) == pytest.approx((a.a, -a.b), abs=1e-6)
 
 
+def platt_curvature(x: Sequence[float], a: float, b: float) -> float:
+    """The smallest eigenvalue of the mean cross-entropy's Hessian at (a, b)."""
+    w = [s * (1 - s) for s in (1 / (1 + math.exp(-(a * xi + b))) for xi in x)]
+    haa = math.fsum(wi * xi * xi for wi, xi in zip(w, x, strict=True)) / len(x)
+    hab = math.fsum(wi * xi for wi, xi in zip(w, x, strict=True)) / len(x)
+    hbb = math.fsum(w) / len(x)
+    half_trace = (haa + hbb) / 2
+    return half_trace - math.sqrt(max(half_trace**2 - (haa * hbb - hab * hab), 0.0))
+
+
 @given(
     st.lists(INNER_GRID, min_size=3, max_size=40).filter(lambda s: len(set(s)) >= 2),
     st.floats(0.2, 3.0),
     st.floats(-2.0, 2.0),
 )
 @example(scores=[0.25, 0.5, 0.75], a_true=1.0, b_true=0.0)
+@example(scores=[0.025, 0.05, 0.05], a_true=3.0, b_true=-1.0)  # found by `explore`
 def test_platt_recovers_a_known_calibration_map(
     scores: list[float], a_true: float, b_true: float
 ) -> None:
-    """With targets exactly sigmoid(a* logit(p) + b*), the minimiser is (a*, b*)."""
+    """With targets exactly sigmoid(a* logit(p) + b*), the minimiser is (a*, b*).
+
+    The solver stops once the gradient is below its tolerance (as L-BFGS's gtol does in the
+    reference). Strong convexity bounds the distance to the minimiser by gradient / curvature,
+    so where every target is near 0 or 1 the loss is nearly flat and (a, b) are pinned only
+    that loosely. The calibrated map, which is what calibration is judged on, must match
+    everywhere.
+    """
     targets = [1 / (1 + math.exp(-(a_true * logit(p, EPSILON) + b_true))) for p in scores]
-    model = platt_inputs(scores, targets)[2]
-    assert (model.a, model.b) == pytest.approx((a_true, b_true), abs=1e-5)
+    x, _, model = platt_inputs(scores, targets)
+    fitted = [1 / (1 + math.exp(-(model.a * xi + model.b))) for xi in x]
+    assert fitted == pytest.approx(targets, abs=1e-6)
+    bound = 10 * model.gradient_tolerance / platt_curvature(x, a_true, b_true)
+    assert (model.a, model.b) == pytest.approx((a_true, b_true), abs=max(1e-5, bound))
 
 
 @given(INNER_GRID, st.lists(st.floats(0.05, 0.95), min_size=1, max_size=20))
