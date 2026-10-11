@@ -9,11 +9,11 @@ A proposal that edits the enforcement surface (`.claude/`, `.github/`, `Makefile
 
 | Proposal | Gate | Surface | Status |
 |---|---|---|---|
-| [phase-0-integrity-layer](phase-0-integrity-layer.md) | G0 | enforcement | merged (PR #2) |
-| [phase-0-hardening](phase-0-hardening.md) | G0 | enforcement | merged (PR #2) |
-| [reproduce-kuzucu-eccv24-baselines](reproduce-kuzucu-eccv24-baselines.md) | G1/K1 | `src/qcal_lab`, wiring | merged (PR #2); science inputs are Ian's |
+| [phase-0-integrity-layer](phase-0-integrity-layer.md) | G0 | enforcement | implemented (merged in PR #2) |
+| [phase-0-hardening](phase-0-hardening.md) | G0 | enforcement | implemented (merged in PR #2) |
+| [reproduce-kuzucu-eccv24-baselines](reproduce-kuzucu-eccv24-baselines.md) | G1/K1 | `src/qcal_lab`, wiring | implemented (merged in PR #2); science inputs are Ian's |
 | [cycle-2026-10-g1-readiness](cycle-2026-10-g1-readiness.md) | G0, G1 | plan only | proposed (PR #4) |
 | [registry-run-gates](registry-run-gates.md) | G0 | enforcement | proposed (PR #4); needs Ian's signature |
-| [evalloop-v2](evalloop-v2.md) | G1 | `src/qcal_lab`, docs | proposed (PR #4); interface for Ian to accept |
+| [evalloop-v2](evalloop-v2.md) | G1 | `src/qcal_lab`, docs; one signed `qcal.toml` line | proposed (PR #4); interface for Ian to accept |
 
-Status values: proposed, accepted (Ian), merged, superseded by another proposal.
+Status values, as in the template: proposed, accepted (Ian), implemented, superseded by another proposal.

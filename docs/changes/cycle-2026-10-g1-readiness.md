@@ -14,11 +14,40 @@ Progress on the agent branch (draft PR #4, base `civ`):
 | PR-D2 | interface proposal `docs/changes/evalloop-v2.md`; code after Ian accepts it |
 | others | not started: they wait on session 1 and on D1–D10 |
 
+These four share draft PR #4 instead of one PR each, as the delivery plan below intends. They
+were built in one session before the branch names were settled. The signed-surface changes
+sit in their own commits (`d707031`, `88563df`), so Ian can sign them alone or split the PR.
+Any later commit on the PR needs a fresh cross-review, because `qcal ci review-check` accepts
+only `review/` changes after the reviewed commit.
+
+**Advisory review of the PR-0 documents and the EvalLoop v2 proposal** (`adversarial-reviewer`
+on `76ab43d`): *revise*, 5 blocking and 24 non-blocking findings. The review is saved at
+`review/claude/claude-sdlc-agents-implementation-plan-gmb29t.md`.
+
+- `CONTRIBUTING.md`, B1: the signing recipe started from a hand-written path list, so Ian could
+  sign protected files he never read. It now starts from what `qcal ci verify-signatures`
+  lists, and refuses branches that touch Ian-only, `ian_data` or registry paths.
+- `CONTRIBUTING.md`, B3: a signed branch named `sign/<slug>` fell back to "any reviewer". It is
+  now `claude/<slug>-signed`.
+- B2, B4 and B5 changed `docs/changes/evalloop-v2.md`, whose own section records them.
+- Non-blocking findings applied:
+  - N15: signing prerequisites, `--no-track`, `rebase -S`, dropped merges.
+  - N16: the claims hook checks files.
+  - N17: Antigravity never edits the enforcement surface.
+  - N18: reporting until private reporting is on.
+  - N19: this paragraph.
+  - N20: unverified paper values.
+  - N21: D7's rationale.
+  - N22: D1 needs rule 3 and an amendment; PR-F depends on D8.
+  - N23: status words.
+  - N24: the note on line references below.
+
 ## Gate served
 G0 (Oct 23) and G1/K1 (Nov 8).
 
 ## Plan
-Commands and make targets called *planned* arrive with the PR that names them.
+Commands and make targets called *planned* arrive with the PR that names them. File and line
+references in the plan are to `d84b9e0`, the commit the audits read.
 
 ### Context
 
@@ -84,12 +113,14 @@ are the control". Until this lands, nothing agents build is under that control.
   `minitest` (Alg. A.1; App. C.2). The scaffold requires fit ≠ select ≠ evaluate as four
   disjoint subsets of val2017 (`experiment.py:183-187`; qcal's `defaults.toml:259`). Alg. A.1
   cannot run as published, and each split is a fraction of the paper's.
-- The paper's AP is COCO top-100 on calibrated, unthresholded detections (Table 5: isotonic
-  moves AP, Platt does not). `metrics()` receives only the post-`v_c` set
-  (`experiment.py:408-409`; `evaluation.py:68-71`). The paper's AP cannot be computed.
-- Table 9's ATSS-R50 (AP 43.1, LaECE0 19.1 → Platt 10.3 → isotonic 8.5) names no mmdet config;
-  the zoo's ATSS R50 1× is ≈39.4 AP [unverified; the spike checks]. A 2.5K re-split cannot close
-  that gap.
+- The panel reads the paper's AP as COCO top-100 on calibrated, unthresholded detections
+  (Table 5: isotonic moves AP, Platt does not) [unverified; Ian confirms under D4].
+  `metrics()` receives only the post-`v_c` set (`experiment.py:408-409`;
+  `evaluation.py:68-71`), so that AP cannot be computed.
+- Table 9's ATSS-R50 row names no mmdet config, and the panel recalls the model zoo's ATSS
+  R50 1× AP as several points below the published AP [unverified; the spike checks, and the
+  published values belong in Ian's `docs/reference/`]. A 2.5K re-split cannot close a gap of
+  that size.
 - In Phase 1 the seed draws nothing unless `calibrator_fit_split_size` is set; N seeds are N
   identical runs and `tables.py:218` would report a false zero variance. The actual variance
   sources (test-image sampling, split assignment, grid, inference stack) are unmeasured. The
@@ -132,10 +163,10 @@ touches a hashed format or a record (which is free now and expensive later).
 | D1 | Split design for the reproduction cells: (a) `paper` — fit = select = minival (2.5K), evaluate = minitest (2.5K), per Alg. A.1; (b) keep four disjoint splits and make the published-number comparison non-gating | **(a)**, pre-registered as a `split_design` factor; the evaluate split stays untouched (rule 3's intent); `trt_calib_images` from train2017; drop the 5000 fit-size level | CLAUDE.md rule 3 wording (signed); `split_roles`/`check_disjoint` (agent); manifests (Ian) |
 | D2 | Which ATSS-R50 checkpoint the paper used; the model-zoo AP it should reproduce | Identify before the spike; a pre-declared pass/fail sanity check (raw top-100 AP vs zoo value) that is never used to *choose* a checkpoint | `docs/models/atss_r50.md` (Ian); check (agent) |
 | D3 | Matching/τ protocol spec (τ per stage, ≥ vs >, greedy order, ties, crowd, bin edges, classes with GT but no detections) | Write `docs/reference/kuzucu_eccv24.md` protocol section *before* the loop; agents generate synthetic inputs that separate conventions, Ian runs the oracle on them | Ian (ian_data); synthetic cases (agent) |
-| D4 | Which detection set feeds which metric: raw / calibrated-unthresholded (top-100 AP) / operating (LaECE0, LRP) | Accept the `EvalLoop` v2 interface (three sets, per-image integer weights, match-once layer) | PR-D2 (agent drafts; Ian accepts before writing his loop) |
+| D4 | Which detection set feeds which metric: raw / calibrated-unthresholded (top-100 AP) / operating (LaECE0, LRP) | Accept the `EvalLoop` v2 interface (three sets, match-once layer, bootstrap by resampled datasets) | PR-D2 (agent drafts; Ian accepts before writing his loop) |
 | D5 | Numeric regime for G1 cells | `fp32_tf32_off`; deterministic flags on; `NVIDIA_TF32_OVERRIDE` recorded | PR-D1 |
-| D6 | G1 acceptance | Hard gate: oracle parity on identical detection files. Secondary: paired image-bootstrap 95% CI vs published; ordering checks (uncal > Platt > isotonic LaECE0; LRP unchanged; AP unchanged by Platt). One seed where the seed draws nothing; tables refuse CIs over identical runs | `EXPERIMENTS.yaml`/`DECISIONS.md` (Ian); harness (PR-F); tables refusal (PR-A2) |
-| D7 | Control plane: signing key, `enforce`, ruleset, `civ`→`main`, visibility, PRs #1/#3 | Do first (S0); do **not** enable GitHub's signed-commit rule (it forces squash and erases per-commit signatures; `qcal ci verify-signatures` is the control) | Ian, Oct 13 |
+| D6 | G1 acceptance | Hard gate: oracle parity on identical detection files. Secondary: paired image-bootstrap 95% CI vs published; ordering checks (uncal > Platt > isotonic LaECE0; LRP unchanged; AP unchanged by Platt, except classes where Platt's a = 0 or scores clip). One seed where the seed draws nothing; tables refuse CIs over identical runs | `EXPERIMENTS.yaml`/`DECISIONS.md` (Ian); harness (PR-F); tables refusal (PR-A2) |
+| D7 | Control plane: signing key, `enforce`, ruleset, `civ`→`main`, visibility, PRs #1/#3 | Do first (S0); do **not** enable GitHub's signed-commit rule (it rejects the agents' unsigned commits on every branch it covers [its effect on merge methods is unverified]; `qcal ci verify-signatures` is the control) | Ian, Oct 13 |
 | D8 | Who owns bootstrap/Holm code and system metrics (latency, thermal) given `AGENTS.md:17-18` ("only Ian's loop reports metrics") | Statistics over Ian's per-image outputs are agent code under test; system metrics are `environment`, not `metrics` | AGENTS.md wording (signed) |
 | D9 | Storage: retention, off-machine copy, cross-GPU cache-hit policy, `compute_budget` | Store under `runs/artifacts` (PR-G); one GPU0-vs-GPU1 measurement decides whether the GPU SKU enters the cache key | `DECISIONS.md` (Ian) |
 | D10 | Jetson execution model (Python 3.10 on JetPack 6.2 vs `requires-python >= 3.11`) | Decide in the spike: registry on-device vs remote worker | `DECISIONS.md` (Ian) |
@@ -190,11 +221,11 @@ is committed as `docs/changes/cycle-2026-10-g1-readiness.md` so `/weekly-review`
 | PR-A2 | `claude/registry-run-contract` | G1 | `src/qcal` (signed), `experiment.py` | A1 | 1.5 | **Session 1, Oct 17** |
 | PR-E | `claude/calibrator-verification` | G1 | `tests/`, `pyproject` dev extras (signed, 1 line) | – | 0.5 | Oct 17 (extras line in Session 1) |
 | PR-D1 | `claude/run-identity-and-formats` | G1 | `src/qcal_lab`, `configs/` | A1 | 0.5 | Oct 24 |
-| PR-D2 | `claude/evalloop-v2-and-replay` | G1 | `src/qcal_lab`, `docs/` | D4 | 1.0 (interface review) | **Oct 17 proposal; code Oct 24** |
+| PR-D2 | `claude/evalloop-v2-and-replay` | G1 | `src/qcal_lab`, `docs/`, `qcal.toml` (signed, 1 line) | D4 | 1.0 (interface review) | **Oct 17 proposal; code Oct 24** |
 | PR-B | `claude/qcal-foundations` | G1 | `src/qcal`, `.claude/` (signed) | A1 | 1.0 | **Session 2, Oct 24** |
 | PR-C | `claude/build-ci-alignment` | G1 | Makefile, workflows, pyproject, `uv.lock`, `envs/` (signed) | #3 merged | 0.5 | **Session 2, Oct 24** |
 | PR-G | `claude/artifact-store-and-cards` | G1 | `src/qcal` (signed), `docs/models/` | A2 | 0.5 | **Session 2, Oct 24** |
-| PR-F | `claude/g1-parity-and-bootstrap` | G1 | `src/qcal_lab`, `tests/parity`, `scripts/` | D2, E, D6 | 0.5 | Oct 31 (freeze) |
+| PR-F | `claude/g1-parity-and-bootstrap` | G1 | `src/qcal_lab`, `tests/parity`, `scripts/` | D2, E, D6, D8 | 0.5 | Oct 31 (freeze) |
 | post-G1 | WP3b conventions, WP4b reports, WP5 `/review-pr`, S17 protocols | – | – | – | – | after Nov 8 |
 
 **Parallelism (no shared files):** PR-0 ∥ WP0 ∥ PR-A1 ∥ PR-E (E is tests-only; its regression
@@ -213,7 +244,7 @@ checks → PR-A2's `resources` block (reserve the key only). **Never cut:** S0, 
 PR-D2's interface, PR-E's oracles, D1–D6.
 
 **Agents per PR:** `adversarial-reviewer` (advisory) on every PR, verdict saved to
-`review/claude/<slug>.md` and committed once per signing session; `data-leakage-checker` on
+`review/claude/<branch-slug>.md` and committed once per signing session; `data-leakage-checker` on
 A1, D1, D2, F; `paper-reproducer` (worktree, Bash allow-list) for `calib/` and parity work in
 D1, E, F; `prior-art-scout` for WP0; Explore/Plan agents for the `EvalLoop` v2 draft. No agent
 has Write plus unconstrained network (`SDLC` risk 18).
@@ -387,8 +418,11 @@ Lock-now decisions 1–3, 5, 8 (lab side) and the strict formats.
   become roles with single Phase 1 values; closed-world check that `factors.supported` and
   `factors.defaults` keys ⊆ roles; `_FACTOR_ROLES` stays in code; `RunPlan` maps each role to
   (dataset, detector, precision/target, source) (F11).
-- *Split design* (D1): `split_design = paper | disjoint`; `paper` allows fit = select and
-  keeps evaluate disjoint; `check_disjoint` enforces per design; leakage PASS still required.
+- *Split design* (D1): only after Ian's signed rewording of CLAUDE.md rule 3 and an
+  `AMENDMENTS.md` entry adding the `split_design` factor, since this relaxes the fit ≠ select
+  guard (`experiment.py:184-188`). `split_design = paper | disjoint`; `paper` allows
+  fit = select and keeps evaluate disjoint; `check_disjoint` enforces per design; leakage PASS
+  still required.
 - *Cache producer* (M3): a hit is accepted only if `produced_by` names a record in
   `runs/registry/` listing the same path and sha (else miss + warning); `put` is
   create-exclusive and an existing key with different bytes is a hard error; the sidecar stores
@@ -432,20 +466,21 @@ Lock-now decisions 1–3, 5, 8 (lab side) and the strict formats.
 **Goal.** The interface Ian writes against can compute the paper's metrics on the paper's
 detection sets, support paired bootstrap, and stay stable through Phase 2.
 
-- `docs/changes/evalloop-v2.md` **first** (by Oct 17, before Ian writes his loop): two layers —
-  `match(predictions, ground_truth, *, stage) → MatchTable` (per detection: image, label, score,
-  matched object or none, IoU; per class: object counts; crowd ignores) and metrics over the
-  table with per-image integer weights (bootstrap) and three detection sets (raw;
-  calibrated-unthresholded for top-100 AP; operating for LaECE0/LRP). `threshold_objective`
-  consumes a cached `MatchTable` and evaluates all candidates in one sorted pass. Test: "match
-  once, then threshold" ≡ re-matching. The fixture loop implements v2; the Protocol gains a
-  version; load-time check names the version.
-- Replay detector kind (F11): consumes a hashed raw-predictions file; lets G1 decompose the gap
-  into published − oracle, oracle − our pipeline on the oracle's detections, and our pipeline on
-  the oracle's detections − our full run; carries TensorRT/Jetson outputs in Phase 2.
-- `evaluation.py:9-11` docstring fix (F18).
-- Tests: contract suite (PR-E) runs against v2; replay detector fingerprint = file sha;
-  `data-leakage-checker` confirms the evaluate manifest is never read during fit/select.
+- `docs/changes/evalloop-v2.md` **first** (by Oct 17, before Ian writes his loop): two layers.
+  Ian's `match(predictions, ground_truth, *, stage) → MatchTable` (per detection: image, label,
+  score, matched object or none, IoU; per class: object counts; crowd ignores) runs once per
+  split and stage under three stated rules. `threshold_objectives` returns a whole curve from
+  one table, and `metrics` receives three detection sets (raw; calibrated before v_c; operating).
+  Test: "match once, then threshold" ≡ re-matching, including synthetic cases. The fixture loop
+  implements v2; Ian's module declares the version, checked at load time.
+- Replay detector kind (F11): consumes a raw-predictions file with a provenance sidecar from
+  `data/replay/` (`ian_data`, signed); lets G1 decompose the gap into published − oracle,
+  oracle − our pipeline on the oracle's detections, and our pipeline on the oracle's
+  detections − our full run; later carries TensorRT/Jetson outputs with device and engine
+  recorded.
+- `evaluation.py:9-11` and `two_threshold.py:14-15` docstring fixes (F18).
+- Tests: contract suite (PR-E) runs against v2; replay fingerprint covers file and sidecar;
+  an evaluate-invariance test and a spy show no evaluate image reaches matching or selection.
 
 #### PR-B — qcal foundations and agent guards (signed, G1; after A1)
 
@@ -530,7 +565,8 @@ Two commits in one PR, each reviewable alone.
   greedy order, crowd handling and bin edges each give different answers; Ian runs the oracle on
   them and commits the outputs.
 - Bootstrap harness (D6/F4, ownership per D8): paired image bootstrap over per-image outputs of
-  Ian's loop (v2 weights), 95% CIs vs published; ordering checks; per-class LaECE0 with CIs and
+  Ian's loop (resampled datasets under fresh ids, one `metrics` call per replicate), 95% CIs
+  vs published; ordering checks; per-class LaECE0 with CIs and
   per-class object counts per role (F15); refuses CIs over identical runs.
 - `python -m qcal_lab check-eval-loop [--json]` + status item, sharing PR-E's contract checks
   (MUST asserted, SHOULD reported; metric names only).
@@ -556,7 +592,7 @@ Two commits in one PR, each reviewable alone.
   fixed in pure Python first); the planned `mutate` target report-only on `calib/` then `integrity/claims.py`,
   with a committed triage baseline `tests/mutation/calib_baseline.toml` and a `mutmut` spike
   (src layout, `also_copy` for package data).
-- **WP5 `/review-pr`**: advisory; `<base-ref>` argument; writes `review/claude/<slug>.md`; runs
+- **WP5 `/review-pr`**: advisory; `<base-ref>` argument; writes `review/claude/<branch-slug>.md`; runs
   `qcal ci review-check` unmodified and states that `claude/*` branches need the gemini review.
 - **S17 protocols** to `qcal_lab` with the Phase 2 proposal; `docker/reference.Dockerfile` and
   the planned `reproduce-full` target at G4 (M13).
@@ -622,7 +658,7 @@ cross-review: **C** per CI's rule. Nobody else is **I**; the repository is the r
   `trt_jetson` cell is refused until a detector kind handles it; `fp32_tf32_off` is the default
   and the record shows every numerics flag.
 - PR-D2: the fixture loop passes the v2 contract; "match once then threshold" ≡ re-matching;
-  the replay detector reproduces a run from the oracle's detection file byte-for-byte.
+  the replay detector reproduces a run's raw predictions byte-for-byte (native format).
 - PR-B/C/G: `allow-only` denies the five chained/file-writing forms through the real wrapper;
   `uv sync --locked` in CI; every `uses:` SHA-pinned; `verify-artifacts` fails on a flipped
   byte; `qcal licenses` fails without a model card.

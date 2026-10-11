@@ -11,8 +11,9 @@ Training, Alg. A.1:
 
 Inference, Alg. A.2: drop scores below u_c, calibrate, then drop calibrated scores below v_c.
 
-The thresholds come from the fit and select roles only; the pipeline refuses to pass the
-evaluate split here. The objective and the matching targets come from Ian's evaluation loop
+The calibrator fits on the fit role; both thresholds are selected on the select role (u_c on
+raw scores, v_c on calibrated scores). The pipeline refuses to pass the evaluate split here.
+The objective and the matching targets come from Ian's evaluation loop
 (:mod:`qcal_lab.evaluation`).
 """
 

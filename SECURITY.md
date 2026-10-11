@@ -7,7 +7,9 @@ run produced.
 ## Reporting a vulnerability
 
 Report privately through GitHub's private vulnerability reporting on this repository
-(Security → Report a vulnerability). Do not open a public issue for a bypass.
+(Security → Report a vulnerability). Ian turns it on when the repository is public; until
+then, open an issue that asks for a private contact and gives no details. Do not describe a
+bypass in a public issue.
 
 Include the commit you tested, the command or file that shows the problem, and what it lets
 someone do. You will get an acknowledgement within a week; this is a one-person project, so
@@ -15,9 +17,9 @@ fixes land with the next signed change.
 
 ## In scope
 
-- **The signed-commit control.** A way to change a protected path (`.claude/`, `.github/`,
-  `src/qcal/`, `qcal.toml`, Ian-only or `ian_data` files) that `qcal ci verify-signatures`
-  accepts without Ian's signature.
+- **The signed-commit control.** A way to change any path in `signing.signed_categories`
+  (the enforcement surface, Ian-only and `ian_data` files, run records, committed reviews)
+  that `qcal ci verify-signatures` accepts without Ian's signature.
 - **The CI judge.** A pull request that changes the code, policy or keys that judge it, or
   that gets its head executed by `integrity.yml`.
 - **The registry.** A record that `qcal ci registry-immutable` accepts but that rewrites or

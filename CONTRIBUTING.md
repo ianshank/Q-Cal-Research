@@ -43,9 +43,11 @@ This file explains the workflow for humans, including the steps only Ian can tak
 
 ## Signing an agent branch (Ian)
 
-Agents may edit protected paths (`src/qcal/`, `.claude/`, `.github/`, `Makefile`,
-`pyproject.toml`, `qcal.toml`, `CLAUDE.md`, `AGENTS.md`) only on a branch, with a proposal.
-Their commits are unsigned, so `qcal ci verify-signatures` rejects them once
+A protected path is any path in a category listed in `signing.signed_categories`;
+`qcal policy check <path>` names a path's category. Claude Code edits the enforcement
+surface only on a branch, through a change proposal (CLAUDE.md rule 0); AGENTS.md forbids it
+for other agents. No agent ever writes Ian-only files, `ian_data` or the registry's files.
+Agent commits are unsigned, so `qcal ci verify-signatures` rejects them once
 `signing.mode = "enforce"`. Two rules apply, and both must hold:
 
 - every non-merge commit in the range that changes a protected path carries a good SSH
@@ -54,36 +56,58 @@ Their commits are unsigned, so `qcal ci verify-signatures` rejects them once
   range introduced.
 
 Commits that touch only agent-owned paths need no signature, and merging the base branch into
-a pull request needs none either. To sign an agent branch, first read the protected diff:
+a pull request needs none either.
+
+**Prerequisites.** Your key is already in the base branch's `allowed_signers`, git signs with
+SSH (`gpg.format = ssh`, `user.signingkey` set), and `user.email` equals your principal there.
+
+**1. Let the checker list what you would sign.** Never work from a hand-written path list:
+the checker names every unsigned commit and each protected file it changes.
 
 ```bash
 git fetch origin
-git diff origin/civ...origin/claude/<slug> -- src/qcal .claude .github Makefile pyproject.toml qcal.toml CLAUDE.md AGENTS.md
+qcal ci verify-signatures --base origin/civ --head origin/claude/<slug> --mode enforce
+git diff --name-only origin/civ...origin/claude/<slug> | xargs qcal policy check
 ```
 
-Then choose one of two ways.
+**2. Refuse, do not sign,** a branch whose changes include an `ian_only`, `ian_data` or
+`registry_only` path. Agents never write those, so such a change is a defect to report, not
+content to vouch for. Review files (`cross_review`) are expected only under `review/claude/`.
 
-**Keep the agent's commits** (each becomes a commit you signed as committer):
+**3. Read the full diff of every protected file the checker listed:**
 
 ```bash
-git switch -c sign/<slug> origin/claude/<slug>
-git rebase --exec "git commit --amend --no-edit -S" origin/civ
+git diff origin/civ...origin/claude/<slug> -- <each protected file listed above>
+```
+
+**4. Sign.** Both ways below sign every commit or the whole branch, so your signature vouches
+for its agent-owned changes too; read those diffs as well.
+
+*Keep the agent's commits.* Rebase re-creates each commit with you as committer and signs it.
+Rebase drops merge commits and replays their conflict resolutions, so read the result again.
+
+```bash
+git switch --no-track -c claude/<slug>-signed origin/claude/<slug>
+git rebase -S origin/civ
 qcal ci verify-signatures --base origin/civ --head HEAD --mode enforce
 ```
 
-**One signed commit** (simpler history; the agent's messages go into its body):
+*One signed commit.* Simpler history; the agent's commit messages go into its body.
 
 ```bash
-git switch -c sign/<slug> origin/civ
+git switch --no-track -c claude/<slug>-signed origin/civ
 git merge --squash origin/claude/<slug>
 git commit -S
 qcal ci verify-signatures --base origin/civ --head HEAD --mode enforce
 ```
 
-Push the signed branch and open its pull request, or replace the agent's branch with it. Only
-you push rewritten history: the agents' hooks deny force pushes. Signing changes every commit
-id, so the cross-review must name a commit of the signed branch as its `reviewed_sha`. Sign
-first, then ask for the review, then commit the review file (also a signed path).
+**5. Push under a `claude/` name.** The reviewer is chosen by branch prefix
+(`review.reviewer_by_branch_prefix`). A branch named outside `claude/` falls back to "any
+reviewer", so a Claude-authored change could pass on a Claude review. Either push the signed
+branch as `claude/<slug>-signed` and open its pull request, or replace the agent's branch with
+it yourself (agents' hooks deny force pushes). Signing changes every commit id, so the
+cross-review must name a commit of the signed branch as its `reviewed_sha`: sign first, then
+ask for the review, then commit the review file (also a signed path).
 
 ## What the hooks tell agents
 
@@ -96,8 +120,9 @@ and CI are. When a hook blocks an agent, its message says why:
 - **guard-bash** blocks force pushes, pushes to protected branches, push commands it cannot
   read literally (command substitution, deep nesting), the configured extra patterns (such as
   the init command with `--force`) and clean-room substrings.
-- **claims** runs when an agent stops and reports numbers without a run behind them; CI runs
-  the same check as the gate.
+- **claims** runs when an agent stops. It checks the repository's files (`paper/`,
+  `README.md`, `CLAIMS.md`) for numbers without a run reference, not what an agent says in
+  chat; CI runs the same check as the gate.
 - **session start** prints the guard, signing and review modes.
 
 `QCAL_GUARD_MODE=warn` or `off` relaxes the hooks for a session Ian launches; CI is unchanged.

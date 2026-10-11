@@ -38,7 +38,7 @@ Reading, deciding and signing, in hours.
 - [ ] `qcal leakage` PASS (all four splits) once manifests exist
 - [ ] parity tests green where a reference exists
 - [ ] no enforcement-surface edits without Ian's signed commit
-- [ ] advisory adversarial review saved under `review/claude/<slug>.md` and its blocking
+- [ ] advisory adversarial review saved under `review/claude/<branch-slug>.md` and its blocking
       findings fixed or answered here
 - [ ] RESEARCH_LOG.md entry; CLAIMS.md updated if numbers changed
 - [ ] the other model's review at review/<reviewer>/<branch-slug>.md passes `qcal ci review-check`
