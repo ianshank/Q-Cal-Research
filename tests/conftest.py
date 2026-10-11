@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from hypothesis import settings
 
 from qcal.config import Config, load_config
 from qcal.registry.executor import ExecutionResult, RunSpec
@@ -20,9 +21,37 @@ from qcal.registry.records import RunRecord
 REPO_ROOT = Path(__file__).resolve().parents[1]
 _ENV_PREFIXES = ("QCAL_", "QCAL__", "CLAUDE_")
 # Each top-level test directory is a suite with a marker of the same name: `pytest -m security`.
-SUITES = ("unit", "integration", "regression", "security", "e2e", "parity")
+SUITES = ("unit", "integration", "regression", "security", "e2e", "parity", "oracle", "contract")
+# Suites added after pyproject.toml's marker list was signed; registered here instead.
+_LATER_SUITES = {
+    "oracle": "independent mathematical oracles (scikit-learn, SciPy, pycocotools; tests/oracle)",
+    "contract": "the EvalLoop contract, run against the fixture and Ian's loop (tests/contract)",
+}
 # On CI a missing tool must fail, never skip: a silently skipped signing test proves nothing.
 REQUIRE_TOOLS_ENV = "CI"
+HYPOTHESIS_PROFILE_ENV = "HYPOTHESIS_PROFILE"
+
+# Hypothesis profiles. CI is derandomised (a signed gate must be reproducible) and has no
+# example database; `explore` searches wider and is randomised (weekly job, `make pre-pr`).
+# A failure found by `explore` is pinned with `@example` in the fix.
+settings.register_profile(
+    "ci", max_examples=200, derandomize=True, deadline=None, database=None, print_blob=True
+)
+settings.register_profile("dev", max_examples=50, deadline=None)
+settings.register_profile("explore", max_examples=500, deadline=None, print_blob=True)
+settings.load_profile(
+    os.environ.get(HYPOTHESIS_PROFILE_ENV)
+    or ("ci" if os.environ.get(REQUIRE_TOOLS_ENV, "").lower() in {"1", "true", "yes"} else "dev")
+)
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    for suite, description in _LATER_SUITES.items():
+        config.addinivalue_line("markers", f"{suite}: {description}")
+    config.addinivalue_line(
+        "markers",
+        "rule(*ids): the integrity rules a test enforces; scripts/traceability.py maps them",
+    )
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
@@ -55,8 +84,10 @@ def require_tool(name: str) -> str:
 def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Remove environment variables that change configuration or hook behaviour."""
     for name in list(os.environ):
-        if name.startswith(_ENV_PREFIXES):
+        # GIT_* too: a test run from inside a git hook would otherwise use the outer index.
+        if name.startswith((*_ENV_PREFIXES, "GIT_")):
             monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("LC_ALL", "C")  # git and tool messages in one language
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)  # no host signing helpers or hooks
     monkeypatch.setenv("GIT_AUTHOR_NAME", "Test")

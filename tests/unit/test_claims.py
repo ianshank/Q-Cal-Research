@@ -16,6 +16,8 @@ from qcal.registry.records import RunRecord
 from qcal.registry.store import RegistryStore
 from tests.conftest import make_record, write
 
+pytestmark = pytest.mark.rule("C1", "A1")
+
 BASE_TOML = '[registry]\nwrite_parquet = "never"\n'
 # These tests verify number matching; the complete-seed rule has its own tests.
 NO_COMPLETENESS = "require_complete_runs = false\n"

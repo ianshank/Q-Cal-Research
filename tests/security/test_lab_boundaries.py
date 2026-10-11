@@ -19,6 +19,8 @@ from qcal_lab.models import build_detector
 from tests.conftest import REPO_ROOT
 from tests.lab_support import ground_truth, lab_config
 
+pytestmark = pytest.mark.rule("C3", "C4", "A3", "A5")
+
 LAB_SRC = REPO_ROOT / "src/qcal_lab"
 
 

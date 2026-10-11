@@ -12,7 +12,8 @@ so the parity tests can compare its outputs directly:
 Duplicate scores are merged when they differ by less than ``duplicate_resolution`` from the
 first score of their group. scikit-learn's ``_make_unique`` uses the resolution of the input
 dtype (1e-15 for float64, 1e-6 for float32); the default assumes float64 scores, as in our
-prediction files [unverified against the oracle's dtype; the parity tests decide].
+prediction files. Both settings match scikit-learn 1.9.1 on tie-heavy inputs (tests/oracle);
+which dtype the fiveai oracle feeds the estimator is still for the parity tests to decide.
 """
 
 from __future__ import annotations

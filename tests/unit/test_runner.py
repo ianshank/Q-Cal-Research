@@ -32,6 +32,8 @@ from tests.conftest import (
     write,
 )
 
+pytestmark = pytest.mark.rule("C7")
+
 T0 = datetime(2026, 10, 9, 12, 0, 0, tzinfo=UTC)
 CELLS: list[dict[str, Any]] = [
     {"id": "C-a", "detector": "atss", "precision": "fp32"},

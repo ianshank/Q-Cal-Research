@@ -21,7 +21,7 @@ from qcal import cli
 from qcal.registry.store import RegistryStore
 from tests.conftest import executor_command, experiment_script, experiments_yaml, run_git, write
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.rule("C7")]
 
 
 @pytest.fixture

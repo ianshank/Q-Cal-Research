@@ -28,6 +28,8 @@ from qcal_lab.fixture_eval import (
 )
 from tests.lab_support import det, fixture_ground_truth, ground_truth, image, lab_config
 
+pytestmark = pytest.mark.rule("C4")
+
 
 def _lab(root: Path, module: str, factory: str = "build", options: str = ""):
     return lab_config(root, f'[eval_loop]\nmodule = "{module}"\nfactory = "{factory}"\n{options}')

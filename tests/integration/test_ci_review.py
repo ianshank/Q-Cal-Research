@@ -23,7 +23,7 @@ from qcal.config import Config, load_config
 from qcal.gitutil import GitError
 from tests.conftest import run_git, write
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.rule("A4")]
 BRANCH = "claude/fix-x"
 REVIEW = "review/gemini/claude-fix-x.md"
 

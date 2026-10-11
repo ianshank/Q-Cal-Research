@@ -8,6 +8,8 @@ import pytest
 
 from qcal.hooks.bash import analyze, current_branch, tokenize
 
+pytestmark = pytest.mark.rule("C0")
+
 PROTECTED = ["main", "civ"]
 DENY_FLAGS = [
     "--force",

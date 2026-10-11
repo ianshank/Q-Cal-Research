@@ -48,6 +48,8 @@ from tests.conftest import (
     write,
 )
 
+pytestmark = pytest.mark.rule("C7")
+
 CELLS = [{"id": "C-a", "detector": "atss"}, {"id": "C-b", "detector": "detr"}]
 
 

@@ -24,6 +24,8 @@ from qcal_lab.experiment import PlanError, RunRequest, run_experiment
 from tests.conftest import REPO_ROOT, experiments_yaml, write
 from tests.lab_support import fixture_project
 
+pytestmark = pytest.mark.rule("C2", "C7")
+
 
 def _run(root: Path, *args: str, environ: dict[str, str]) -> int:
     return cli.main(["--root", str(root), *args], out=io.StringIO(), environ=environ)

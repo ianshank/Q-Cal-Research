@@ -26,6 +26,8 @@ from qcal_lab.fixture_eval import FixtureEvalLoop
 from qcal_lab.predictions import read_predictions
 from tests.lab_support import fixture_project, lab_config
 
+pytestmark = pytest.mark.rule("C3")
+
 # --- plans -------------------------------------------------------------------------------------
 
 
