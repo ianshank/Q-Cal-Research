@@ -12,11 +12,23 @@ Progress on the agent branch (draft PR #4, base `civ`):
 | PR-A1 | implemented; `docs/changes/registry-run-gates.md`; waits on Ian's signature (session 1) |
 | PR-E | implemented (tests only, plus the one-line `oracle` extra, signed surface) |
 | PR-D2 | interface proposal `docs/changes/evalloop-v2.md`; code after Ian accepts it |
+| PR-A2 | implemented; `docs/changes/registry-run-contract.md`; waits on Ian's signature (session 1) |
+| PR-D1 | implemented (agent-owned); `docs/changes/run-identity-and-formats.md`; D5 and F10 are Ian's |
 | others | not started: they wait on session 1 and on D1–D10 |
 
-These four share draft PR #4 instead of one PR each, as the delivery plan below intends. They
+These six share draft PR #4 instead of one PR each, as the delivery plan below intends. They
 were built in one session before the branch names were settled. The signed-surface changes
-sit in their own commits (`d707031`, `88563df`), so Ian can sign them alone or split the PR.
+sit in their own commits, so Ian can sign them alone or split the PR: PR-A1 in `d707031` and
+`88563df`; PR-A2 in `5b9c36d`, `d125717`, `5a91857`, `a9a0bc9` and `06aba65`; the guard-bash
+fix in `cc41488`. `qcal ci verify-signatures --base origin/civ --head HEAD` lists these, plus
+PR-E's one-line `pyproject.toml` change (`88eeea4`) and the commits that add advisory reviews
+under `review/` (`8c76044`, and the wave-2 review). The PR-D1 commits touch no protected
+path.
+
+Open question for Ian from wave 2: `.gitleaksignore` (added in `3134df2` for one false
+positive, a golden sha256 digest) is not on the protected surface, so a line there could
+silence the secret scan without a signature. Adding it to the enforcement surface is a
+one-line change to `qcal.toml`, which is his.
 Any later commit on the PR needs a fresh cross-review, because `qcal ci review-check` accepts
 only `review/` changes after the reviewed commit.
 

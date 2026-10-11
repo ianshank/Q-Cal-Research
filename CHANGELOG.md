@@ -46,6 +46,55 @@ Registered-run gates (`docs/changes/registry-run-gates.md`, signed surface):
   repository git cannot read is refused; `audit --strict` fails on records whose policy was
   not verified (`uncommitted_policy`); category names in policy lists must exist.
 
+Registered-run contract (`docs/changes/registry-run-contract.md`, signed surface, PR-A2):
+- The experiment command names `{python}`, the launcher's own interpreter, run with `-I`;
+  `config_hash` still hashes the template. `provenance.launcher` records the interpreter and
+  the `qcal` that launched; `registry.require_code_in_root` refuses a `qcal` imported from
+  outside `paths.source_dir`.
+- Launcher environment keys live under `launcher.`; a program key that would collide is kept
+  under `reported.`. The `nvidia` collector lists every GPU (index, uuid, PCI bus, name,
+  capability, memory, driver). `registry.recorded_env_vars` records CUDA and threading
+  variables verbatim, null when unset.
+- The program runs in its own process group; a timeout or a launcher exception sends SIGTERM
+  to the group, then SIGKILL after `executor.kill_grace_s`, and a second interrupt kills at
+  once. The program writes a `qcal.executor_result` v1 envelope on every exit; it is read on
+  a non-zero exit too, and a malformed one fails the run. Records gain `failure_kind`
+  (timeout, cuda_oom, host_oom, cuda_error, plan, config, interrupted, unknown) and are
+  written on any `BaseException`, after which it is re-raised. An interrupted batch exits 130.
+- One `flock` per (cell, seed) from the duplicate check to the record; in-flight markers under
+  `paths.inflight_dir`, reported as stale by the audit; `provenance.batch_id` and `retry_of`.
+- `RunRecord.resources` (`res.*` columns): wall and CPU time and peak memory from `wait4`, and
+  the device and cache counts the program reports through an allowlist.
+- Index columns `config_inputs_sha256`, `batch_id`, `failure_kind`. Tables and claims refuse
+  to average runs of one row under different configuration files, and refuse a spread over
+  seeds the program reports as `seed_effective = false`. Table specs are no longer run inputs.
+- `data.manifest_pattern` may name `{dataset}` through one shared `leakage.manifest_path`.
+- guard-bash no longer crashes on a segment that is only a redirection.
+
+Run identity and formats (`docs/changes/run-identity-and-formats.md`, agent-owned, PR-D1):
+- Golden digests pin every run identity (`tests/regression/test_run_identity_goldens.py`);
+  each re-pin names the proposal step that moved it.
+- `target`, `quant_path`, `fit_precision`, `threshold_regime` and `split_design` are roles;
+  the factor tables may name roles only; a detector kind declares the targets it produces.
+  Smoke and fixture-loop settings move to the unhashed `resources/tooling.toml`.
+- Every saved format declares its name and version (`qcal_lab/formats.py`): predictions v2
+  with a source header and reserved row fields, calibrator (with Platt's solver settings and
+  boundary flag), calibration, cache sidecar, parity case (with `oracle.environment`) and a
+  package list.
+- `[numerics.regimes.*]`: `fp32` keeps torch's defaults, `fp32_tf32_off` turns TF32 and
+  autotuning off and determinism on; every switch in effect is recorded, with the device,
+  CUDA, cuDNN and torch's build digest. The default stays `fp32` (D5 is Ian's).
+- MMDetection detectors must set `score_threshold` and `max_per_image` (`configs/lab.toml`
+  pins 100; the threshold is Ian's, F10); the model's class names must equal the dataset's.
+- The prediction cache key covers the prediction modules' source, the source header, the
+  numerics and each kind's compute stack and resolved config, not the package version or the
+  images' path. A hit needs the producer's record to list the file; the cache never replaces
+  bytes; the detector is built on the first miss only.
+- Smoke runs the program with the registered command, `{python} -I`.
+- A Platt property test bounds parameter recovery by the loss's curvature (found by the
+  `explore` profile); Platt takes a full Newton step once the predicted decrease is below the
+  loss's resolution.
+
 Verification (PR-E):
 - Hypothesis invariants for isotonic regression, Platt scaling and Alg. A.1/A.2 against slow
   reference implementations; scikit-learn and SciPy oracles (`tests/oracle`, extra `oracle`)

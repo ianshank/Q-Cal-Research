@@ -85,6 +85,12 @@ never sees `QCAL__*` variables and reports the digest of every configuration fil
 file that changed while it ran fails the run. The registry's git queries ignore user and
 system git configuration and `GIT_*` redirection.
 
+The science code has its own layers: `src/qcal_lab/resources/defaults.toml` under
+`configs/lab.toml`, both hashed into every run's `config_hash`. Each precision names its torch
+switches under `[numerics.regimes.<precision>]`. Settings that never change what a run
+computes (the smoke test, the fixture stand-ins) live in `src/qcal_lab/resources/tooling.toml`,
+which is not hashed. `python -m qcal_lab status` lists what still blocks a registered run.
+
 ## Tests
 
 | Suite | Marker / target | What it covers |
