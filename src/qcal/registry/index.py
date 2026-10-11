@@ -24,7 +24,7 @@ from qcal.registry.records import RunRecord
 from qcal.registry.store import RegistryStore
 
 _log = get_logger("registry.index")
-_PREFIX_GROUPS = ("factors", "metrics", "environment")
+_PREFIX_GROUPS = ("factors", "metrics", "environment", "resources")
 
 
 @dataclass(frozen=True)

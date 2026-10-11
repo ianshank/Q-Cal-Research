@@ -85,6 +85,8 @@ class RunRecord:
     log_path: str | None = None
     error: str | None = None
     failure_kind: str | None = None  # one of FAILURE_KINDS for a failed run (schema 1, added)
+    #: What the run cost (wall and CPU time, memory, device, cache use); schema 1, added.
+    resources: Mapping[str, Any] = field(default_factory=dict)
     schema_version: int = SCHEMA_VERSION
     extra: Mapping[str, Any] = field(default_factory=dict)
 
@@ -126,6 +128,8 @@ class RunRecord:
         }
         if self.failure_kind is not None:  # absent from records written before it existed
             data["failure_kind"] = self.failure_kind
+        if self.resources:
+            data["resources"] = dict(self.resources)
         data.update({k: v for k, v in self.extra.items() if k not in data})
         return data
 
@@ -154,7 +158,7 @@ class RunRecord:
         seed = data["seed"]
         if isinstance(seed, bool) or not isinstance(seed, int):
             raise RecordError("seed must be an integer")
-        for key in ("provenance", "factors", "metrics", "environment"):
+        for key in ("provenance", "factors", "metrics", "environment", "resources"):
             if not isinstance(data.get(key, {}), Mapping):
                 raise RecordError(f"{key} must be an object")
         artifacts = data.get("artifacts", [])
@@ -194,6 +198,7 @@ class RunRecord:
             log_path=data.get("log_path"),
             error=data.get("error"),
             failure_kind=failure_kind,
+            resources=dict(data.get("resources", {})),
             schema_version=version,
             extra={k: v for k, v in data.items() if k not in known},
         )
@@ -218,6 +223,7 @@ class RunRecord:
             ("factors", self.factors),
             ("metrics", self.metrics),
             ("environment", self.environment),
+            ("resources", self.resources),
         ):
             prefix = prefixes.get(group, f"{group}.")
             for key, value in values.items():

@@ -93,3 +93,10 @@ def test_a_failed_run_records_why_and_what_the_program_saw(tmp_path: Path) -> No
     assert record.error.endswith(": CUDA out of memory")
     assert dict(record.metrics) == {}
     assert record.environment["torch"] == "2.9"
+
+
+def test_a_record_says_what_the_run_cost(tmp_path: Path) -> None:
+    """Gap: a record had duration_s only, no CPU time or memory."""
+    record = _runner(_project(tmp_path)).run("C-a", 0)
+    assert {"wall_s", "cpu_user_s", "cpu_sys_s", "peak_rss_kib"} <= set(record.resources)
+    assert record.resources["peak_rss_kib"] > 0

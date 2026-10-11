@@ -421,3 +421,16 @@ def test_failure_kind_round_trips_and_is_absent_when_unset() -> None:
 def test_failure_kind_must_be_a_string() -> None:
     with pytest.raises(RecordError, match="failure_kind must be a string or null"):
         RunRecord.from_dict({**make_record().to_dict(), "failure_kind": 3})
+
+
+def test_resources_round_trip_flatten_and_are_absent_when_empty() -> None:
+    record = make_record(resources={"wall_s": 1.5, "cache_hits": 2})
+    assert RunRecord.from_dict(record.to_dict()).resources == {"wall_s": 1.5, "cache_hits": 2}
+    assert "resources" not in make_record().to_dict()
+    row = record.flat({"resources": "res."})
+    assert (row["res.wall_s"], row["res.cache_hits"]) == (1.5, 2)
+
+
+def test_resources_must_be_an_object() -> None:
+    with pytest.raises(RecordError, match="resources must be an object"):
+        RunRecord.from_dict({**make_record().to_dict(), "resources": [1]})

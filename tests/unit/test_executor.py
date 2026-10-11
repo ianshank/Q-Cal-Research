@@ -493,6 +493,7 @@ def test_result_envelope_has_every_field() -> None:
         "metrics": {"AP": 1.0},
         "artifacts": [],
         "environment": {},
+        "resources": {},
     }
 
 
@@ -763,3 +764,54 @@ def test_a_group_we_may_not_signal_counts_as_alive(monkeypatch: pytest.MonkeyPat
 
 def test_resources_without_rusage_have_wall_time_only() -> None:
     assert executor_module._resources(1.23456, None) == {"wall_s": 1.235}
+
+
+# -- resources (PR-A2) --------------------------------------------------------------------
+
+
+def test_reported_resources_are_allowlisted_and_scalar(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    payload = {
+        "resources": {
+            "device_name": "NVIDIA RTX 5060",
+            "cache_hits": 3,
+            "wall_s": 0.001,  # measured by the launcher, never taken from the program
+            "gpu_busy_s": {"nested": 1},
+        }
+    }
+    with caplog.at_level(logging.WARNING, logger="qcal"):
+        result = read_result(result_file(tmp_path, payload), tmp_path)
+    assert result.resources == {"device_name": "NVIDIA RTX 5060", "cache_hits": 3}
+    assert "gpu_busy_s, wall_s" in caplog.text
+
+
+def test_a_failed_envelope_keeps_its_resources(tmp_path: Path) -> None:
+    payload = {
+        **ENVELOPE,
+        "status": STATUS_FAILED,
+        "failure_kind": "cuda_oom",
+        "resources": {"peak_gpu_mem_mib": 8100},
+    }
+    result = read_result(result_file(tmp_path, payload), tmp_path, 1)
+    assert result.resources == {"peak_gpu_mem_mib": 8100}
+
+
+def test_non_mapping_resources_are_ignored(tmp_path: Path) -> None:
+    assert read_result(result_file(tmp_path, {"resources": [1]}), tmp_path).resources == {}
+
+
+CLAIMS_ITS_OWN_TIME = """
+import json, sys
+json.dump({"format": "qcal.executor_result", "version": 1, "status": "ok",
+           "resources": {"wall_s": 0.0, "cache_misses": 2}}, open(sys.argv[1], "w"))
+"""
+
+
+@pytest.mark.integration
+def test_measured_resources_override_what_the_program_says(tmp_path: Path, config: Config) -> None:
+    program = script(tmp_path, CLAIMS_ITS_OWN_TIME)
+    executor = make_executor(config.root, [sys.executable, str(program), "{result_path}"])
+    resources = executor.execute(make_spec(config.root)).resources
+    assert resources["cache_misses"] == 2
+    assert resources["wall_s"] > 0

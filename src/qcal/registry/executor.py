@@ -57,6 +57,19 @@ STATUSES: Final = (STATUS_OK, STATUS_FAILED)
 #: How a failure the launcher detects itself is named; it overrides the program's.
 TIMEOUT_KIND: Final = "timeout"
 UNKNOWN_KIND: Final = "unknown"
+#: What a program may report in its envelope's ``resources``; the launcher measures time
+#: and memory itself (``os.wait4``), so a program cannot claim those.
+CHILD_RESOURCE_KEYS: Final = frozenset(
+    {
+        "device_kind",
+        "device_name",
+        "device_uuid",
+        "gpu_busy_s",
+        "peak_gpu_mem_mib",
+        "cache_hits",
+        "cache_misses",
+    }
+)
 
 
 class ExecutorNotConfiguredError(ConfigError):
@@ -141,6 +154,7 @@ def result_envelope(
     environment: Mapping[str, Any] | None = None,
     failure_kind: str | None = None,
     error: str | None = None,
+    resources: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The document an experiment program writes to ``{result_path}``, ok or failed."""
     if status not in STATUSES:
@@ -158,6 +172,7 @@ def result_envelope(
         "metrics": dict(metrics or {}),
         "artifacts": [dict(a) for a in artifacts or ()],
         "environment": dict(environment or {}),
+        "resources": dict(resources or {}),
     }
 
 
@@ -244,9 +259,9 @@ class SubprocessExecutor:
                 -1, error=f"cannot start {argv[0]}: {exc}", failure_kind=UNKNOWN_KIND
             )
         returncode, usage, timed_out = self._wait(proc)
-        resources = _resources(time.monotonic() - started, usage)
+        measured = _resources(time.monotonic() - started, usage)
         result = read_result(spec.result_path, self.root, returncode)
-        result.resources = resources
+        result.resources = {**result.resources, **measured}  # measured values always win
         if timed_out:
             result.returncode, result.metrics = -1, {}
             result.error = f"timed out after {self.timeout_s}s"
@@ -450,22 +465,43 @@ def read_result(path: Path, root: Path, returncode: int = 0) -> ExecutionResult:
         return ExecutionResult(returncode, error=str(exc), failure_kind=UNKNOWN_KIND)
     raw_environment = data.get("environment", {})
     environment = dict(raw_environment) if isinstance(raw_environment, Mapping) else {}
+    reported = _reported_resources(data.get("resources"))
     if returncode == 0 and status == STATUS_OK:
         try:
             metrics = _parse_metrics(data.get("metrics", {}))
             artifacts = _parse_artifacts(data.get("artifacts", []) or [], root)
         except _ResultError as exc:
             return ExecutionResult(
-                returncode, environment=environment, error=str(exc), failure_kind=UNKNOWN_KIND
+                returncode,
+                environment=environment,
+                error=str(exc),
+                failure_kind=UNKNOWN_KIND,
+                resources=reported,
             )
-        return ExecutionResult(returncode, metrics, artifacts, environment)
+        return ExecutionResult(returncode, metrics, artifacts, environment, resources=reported)
     return ExecutionResult(
         returncode,
         artifacts=_partial_artifacts(data.get("artifacts"), root),
         environment=environment,
         error=error or "the program reported a failure",
         failure_kind=kind or UNKNOWN_KIND,
+        resources=reported,
     )
+
+
+def _reported_resources(raw: Any) -> dict[str, Any]:
+    """The program's resource figures: allowlisted keys with scalar values only."""
+    if not isinstance(raw, Mapping):
+        return {}
+    kept = {
+        k: v
+        for k, v in raw.items()
+        if k in CHILD_RESOURCE_KEYS and (v is None or isinstance(v, str | int | float))
+    }
+    dropped = sorted(set(map(str, raw)) - set(kept))
+    if dropped:
+        _log.warning("program resources ignored (not reportable): %s", ", ".join(dropped))
+    return kept
 
 
 EXECUTORS.register("subprocess", SubprocessExecutor.from_config)

@@ -56,7 +56,9 @@ def test_run_writes_the_result_file(project: tuple[Path, list[str]]) -> None:
         "metrics",
         "artifacts",
         "environment",
+        "resources",
     }
+    assert set(data["resources"]) == {"cache_hits", "cache_misses"}
 
 
 def test_run_failures_exit_1_and_write_a_failed_envelope(project: tuple[Path, list[str]]) -> None:

@@ -976,3 +976,9 @@ def test_a_second_launcher_process_is_refused_while_the_first_holds_the_pair(
         if proc.stdout is not None:
             proc.stdout.close()
     assert make_runner(config, fake_executor).run("C-a", 0).status == "ok"
+
+
+def test_a_record_carries_what_the_run_cost(config: Config) -> None:
+    result = ExecutionResult(0, resources={"wall_s": 2.0, "cache_hits": 1})
+    record = make_runner(config, FakeExecutor([result])).run("C-a", 0)
+    assert dict(record.resources) == {"wall_s": 2.0, "cache_hits": 1}

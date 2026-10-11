@@ -141,6 +141,17 @@ def test_columns_order_groups_then_names() -> None:
     ]
 
 
+def test_resource_columns_follow_the_environment() -> None:
+    prefixes = {**PREFIXES, "resources": "res."}
+    row = {"run_id": "R1", "res.wall_s": 1.0, "env.python": "3.11", "metric.AP": 1.0}
+    assert columns_for([row], ["run_id"], prefixes) == [
+        "run_id",
+        "metric.AP",
+        "env.python",
+        "res.wall_s",
+    ]
+
+
 def test_columns_are_the_union_over_rows() -> None:
     rows = [{"run_id": "R1", "metric.AP": 1.0}, {"run_id": "R2", "metric.LRP": 2.0}]
     assert columns_for(rows, ["run_id"], PREFIXES) == ["run_id", "metric.AP", "metric.LRP"]

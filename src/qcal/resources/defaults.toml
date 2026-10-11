@@ -184,6 +184,7 @@ core_columns = [
 factors = "factor."
 metrics = "metric."
 environment = "env."
+resources = "res."
 
 [executor]
 kind = "subprocess"                   # registered executor used when --executor is not given

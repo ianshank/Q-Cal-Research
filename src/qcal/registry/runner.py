@@ -292,6 +292,7 @@ class Runner:
             log_path=_relative(spec.log_path, root),
             error=result.error,
             failure_kind=None if result.ok else (result.failure_kind or "unknown"),
+            resources=dict(result.resources),
             schema_version=SCHEMA_VERSION,
         )
         self.store.write(record)

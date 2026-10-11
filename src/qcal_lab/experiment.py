@@ -104,6 +104,8 @@ class ExperimentResult:
     metrics: dict[str, float]
     artifacts: list[dict[str, str]] = field(default_factory=list)
     environment: dict[str, Any] = field(default_factory=dict)
+    #: Figures the registry records under ``resources`` (``CHILD_RESOURCE_KEYS``).
+    resources: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         """The executor's result envelope for a successful run."""
@@ -112,6 +114,7 @@ class ExperimentResult:
             metrics=self.metrics,
             artifacts=self.artifacts,
             environment=self.environment,
+            resources=self.resources,
         )
 
 
@@ -454,7 +457,9 @@ def run_experiment(
         "program_python_version": platform.python_version(),
         INPUTS_READ_KEY: inputs_read(qcal_config, lab, experiments),
     }
-    return ExperimentResult(metrics, ctx.artifacts, environment)
+    hits = sum(bool(use.get("hit")) for use in ctx.cache_use.values())
+    resources = {"cache_hits": hits, "cache_misses": len(ctx.cache_use) - hits}
+    return ExperimentResult(metrics, ctx.artifacts, environment, resources)
 
 
 def inputs_read(qcal_config: Config, lab: LabConfig, experiments: Experiments) -> dict[str, str]:
