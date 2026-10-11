@@ -134,12 +134,23 @@ def test_platt_stops_at_the_iteration_cap(tmp_path: Path, caplog: pytest.LogCapt
 def test_platt_line_search_that_cannot_decrease_is_not_convergence(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
+    # Anti-correlated targets: the first Newton steps overshoot badly, and min_step forbids
+    # halving, so the line search gives up while the decrease is still resolvable.
     model = PlattScaling(
         epsilon=1e-7, max_iterations=50, gradient_tolerance=1e-30, ridge=1e-12, min_step=0.9
     )
-    model.fit([0.1, 0.9, 0.5, 0.3], [0.0, 1.0, 0.2, 0.6])
+    model.fit([0.01, 0.99, 0.02, 0.98], [0.99, 0.01, 0.97, 0.03])
     assert not model.converged
     assert "line search found no decrease" in caplog.text
+
+
+def test_platt_takes_the_full_newton_step_below_the_losss_resolution() -> None:
+    """Near the optimum the Armijo test only sees rounding; the solver must still reach a zero
+    gradient instead of stalling just above the tolerance."""
+    model = PlattScaling(epsilon=1e-7, max_iterations=50, gradient_tolerance=1e-30, ridge=1e-12)
+    model.fit([0.1, 0.9, 0.5, 0.3], [0.0, 1.0, 0.2, 0.6])
+    assert model.converged
+    assert model.iterations < 50
 
 
 def test_platt_save_and_load(lab) -> None:

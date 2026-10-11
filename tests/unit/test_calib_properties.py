@@ -502,3 +502,14 @@ def test_select_class_thresholds_reports_fallbacks() -> None:
     )
     assert chosen == {0: 0.0, 1: 0.0}  # class 1 has nothing: falls back to the first candidate
     assert fallbacks == [1]
+
+
+def test_platt_converges_when_the_loss_cannot_resolve_its_last_newton_step() -> None:
+    """Found by Hypothesis (dev profile): two points with an exact interior fit. Near the
+    optimum the Armijo test saw only rounding and accepted tiny steps until the iteration
+    limit, so a correct fit was reported as unconverged."""
+    x, y, model = platt_inputs([0.275, 0.75], [0.3149323842689515, 0.89453125])
+    assert model.converged
+    assert model.iterations < 10
+    ga, gb = platt_gradient(x, y, model.a, model.b)
+    assert max(abs(ga), abs(gb)) < 1e-9

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, Final
 
 from qcal.log import get_logger
 from qcal_lab.calib.base import (
@@ -35,6 +35,10 @@ def sigmoid(z: float) -> float:
         return 1.0 / (1.0 + math.exp(-z))
     e = math.exp(z)
     return e / (1.0 + e)
+
+
+#: Below this many units in the last place of the loss, a predicted decrease is rounding noise.
+_RESOLVABLE_ULPS: Final = 16
 
 
 def softplus(z: float) -> float:
@@ -131,6 +135,13 @@ class PlattScaling:
                 self.converged = True
                 break
             decrease = ga * da + gb * db
+            if decrease <= _RESOLVABLE_ULPS * math.ulp(loss):
+                # The predicted decrease is below what the loss can resolve, so the Armijo test
+                # would only see rounding and accept or refuse tiny steps at random. This close
+                # to the optimum of a convex loss the full Newton step converges on its own.
+                a, b = a - da, b - db
+                loss = mean_cross_entropy(x, y, a, b)
+                continue
             step = 1.0
             while True:
                 na, nb = a - step * da, b - step * db
