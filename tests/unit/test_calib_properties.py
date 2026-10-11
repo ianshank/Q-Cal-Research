@@ -353,6 +353,8 @@ def test_select_threshold_matches_the_reference(values: list[float]) -> None:
 
 
 @given(st.floats(0.0, 0.5), st.floats(0.5, 1.0), st.floats(0.01, 0.5))
+# Found by Hypothesis 6.168.5 in CI: the last point drifted to 1.000000000024, past stop and 1.0.
+@example(start=2.3728313513401887e-11, stop=1.0, step=0.5)
 def test_threshold_grid_points_lie_in_range_and_ascend(
     start: float, stop: float, step: float
 ) -> None:

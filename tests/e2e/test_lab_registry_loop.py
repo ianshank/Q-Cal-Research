@@ -70,7 +70,10 @@ def project(tmp_path_factory: pytest.TempPathFactory) -> Path:
     )
     run_git(root, "init", "-q", "-b", "main")
     run_git(root, "add", "-A")
-    run_git(root, "-c", "commit.gpgsign=false", "commit", "-qm", "fixture project")
+    # A module-scoped fixture runs outside the per-test environment, so the identity is
+    # explicit: CI runners have no global git identity.
+    identity = ("-c", "user.name=qcal e2e", "-c", "user.email=e2e@example.invalid")
+    run_git(root, *identity, "-c", "commit.gpgsign=false", "commit", "-qm", "fixture project")
     code, out = qcal(root, "registry", "run-batch", f"{CELL_PREFIX}*")
     assert code == 0, out
     return root
