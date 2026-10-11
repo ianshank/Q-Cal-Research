@@ -13,6 +13,7 @@ import os
 import subprocess
 import sys
 from collections.abc import Callable
+from pathlib import Path
 
 import pytest
 
@@ -27,6 +28,10 @@ from tests.lab_support import fixture_ground_truth
 pytestmark = pytest.mark.rule("C4")
 
 LOOPS = ("fixture", "configured")
+#: Files a loop may open while it is imported and built: its code, and qcal_lab's packaged
+#: tooling settings (the fixture loop's hit IoU). Nothing a split could be read from.
+CODE_SUFFIXES = (".py", ".pyc", ".so", ".pth")
+TOOLING_FILE = str(Path("qcal_lab") / "resources" / "tooling.toml")
 
 
 def loop_factory(which: str) -> Callable[[], EvalLoop]:
@@ -74,9 +79,20 @@ def test_the_loop_reads_no_files_and_opens_no_sockets(which: str) -> None:
     """Everything the loop needs is in its arguments; reading a manifest or the annotations
     behind the pipeline's back could reach the evaluate split (CLAUDE.md rule 3)."""
     loop_factory(which)
-    events = _run(which, "--audit")["events"]
+    report = _run(which, "--audit")
+    events, built = report["events"], report["build_events"]
     assert isinstance(events, list)
     assert events == [], events
+    assert isinstance(built, list)
+    # Building may load code and the packaged tooling settings, and nothing else: no
+    # manifest, annotations or socket that a loop could read at import and keep.
+    unexpected = [e for e in built if not _code_or_tooling(e)]
+    assert unexpected == [], unexpected
+
+
+def _code_or_tooling(event: list[str]) -> bool:
+    name, path = event
+    return name == "open" and (path.endswith(CODE_SUFFIXES) or path.endswith(TOOLING_FILE))
 
 
 def test_the_checks_catch_a_broken_loop() -> None:

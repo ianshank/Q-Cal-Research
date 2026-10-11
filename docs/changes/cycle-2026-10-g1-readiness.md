@@ -10,7 +10,7 @@ Progress on the agent branch (draft PR #4, base `civ`):
 |---|---|
 | PR-0 | this document, the template, the index, `SECURITY.md`, `CONTRIBUTING.md` |
 | PR-A1 | implemented; `docs/changes/registry-run-gates.md`; waits on Ian's signature (session 1) |
-| PR-E | implemented (tests only, plus the one-line `oracle` extra, signed surface) |
+| PR-E | implemented (tests, the one-line `oracle` extra and the CI `oracle` job, signed) |
 | PR-D2 | interface proposal `docs/changes/evalloop-v2.md`; code after Ian accepts it |
 | PR-A2 | implemented; `docs/changes/registry-run-contract.md`; waits on Ian's signature (session 1) |
 | PR-D1 | implemented (agent-owned); `docs/changes/run-identity-and-formats.md`; D5 and F10 are Ian's |
