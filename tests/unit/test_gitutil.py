@@ -72,10 +72,38 @@ def test_git_passes_timeout_and_argv_to_subprocess(
         return subprocess.CompletedProcess(argv, 0, stdout="ok", stderr="")
 
     monkeypatch.setattr(gitutil.subprocess, "run", fake_run)
+    monkeypatch.setenv("GIT_DIR", "/elsewhere/.git")
 
     assert git(["log"], tmp_path, timeout=5) == "ok"
-    assert seen["argv"] == ["git", "log"]
+    assert seen["argv"] == ["git", "-c", "core.fsmonitor=false", "log"]
     assert (seen["cwd"], seen["timeout"], seen["check"]) == (tmp_path, 5, False)
+    assert "GIT_DIR" not in seen["env"]
+    assert seen["env"]["GIT_NO_REPLACE_OBJECTS"] == "1"
+
+
+def test_git_environment_keeps_identity_and_drops_redirection() -> None:
+    env = gitutil.git_environment(
+        {
+            "PATH": "/bin",
+            "GIT_AUTHOR_NAME": "Ian",
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_DIR": "/x/.git",
+            "GIT_WORK_TREE": "/x",
+            "GIT_INDEX_FILE": "/x/index",
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "core.worktree",
+            "GIT_CONFIG_VALUE_0": "/x",
+            "GIT_CONFIG_PARAMETERS": "'core.worktree=/x'",
+            "GIT_OBJECT_DIRECTORY": "/x/objects",
+            "GIT_REPLACE_REF_BASE": "refs/x/",
+        }
+    )
+    assert env == {
+        "PATH": "/bin",
+        "GIT_AUTHOR_NAME": "Ian",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_NO_REPLACE_OBJECTS": "1",
+    }
 
 
 # --- try_git ------------------------------------------------------------------------------

@@ -22,6 +22,8 @@ dev = [
   "mypy>=1.10",
   "types-PyYAML>=6.0",
 ]
+# Test-only mathematical oracles (tests/oracle): never imported by src/. BSD-licensed.
+oracle = ["scikit-learn>=1.5", "scipy>=1.13", "pycocotools>=2.0.8", "numpy>=1.26"]
 
 [project.scripts]
 qcal = "qcal.cli:main"

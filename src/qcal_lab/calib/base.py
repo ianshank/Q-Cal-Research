@@ -1,8 +1,9 @@
 """Calibrator registry, input validation and the identity calibrator.
 
 Every calibrator implements :class:`qcal.protocols.Calibrator` and can be saved with
-``to_dict`` and restored with :func:`load_calibrator`. A fitted calibrator is stored as a
-run artifact, so the registry records exactly what was applied to the test predictions.
+:func:`save_calibrator` (its ``to_dict`` in a format envelope) and restored with
+:func:`load_calibrator`. A fitted calibrator is stored as a run artifact, so the registry
+records exactly what was applied to the test predictions.
 """
 
 from __future__ import annotations
@@ -10,11 +11,15 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Final, Protocol, runtime_checkable
 
 from qcal.components import ComponentRegistry
 from qcal.protocols import Calibrator
 from qcal_lab.config import LabConfig
+from qcal_lab.formats import envelope, open_envelope
+
+CALIBRATOR_FORMAT: Final = "qcal_lab.calibrator"
+CALIBRATOR_VERSION: Final = 1
 
 
 class CalibrationError(ValueError):
@@ -30,6 +35,9 @@ class SerializableCalibrator(Calibrator, Protocol):
 class CalibratorKind:
     build: Callable[[LabConfig], SerializableCalibrator]
     load: Callable[[Mapping[str, Any]], SerializableCalibrator]
+    #: Whether fitting reads the fit data. A kind that ignores it (the identity) makes the
+    #: fit draw, and so the seed, change nothing.
+    uses_fit_data: bool = True
 
 
 CALIBRATORS: ComponentRegistry[CalibratorKind] = ComponentRegistry("calibrator")
@@ -88,7 +96,9 @@ def _load_identity(data: Mapping[str, Any]) -> IdentityCalibrator:
 
 CALIBRATORS.register(
     IdentityCalibrator.name,
-    CalibratorKind(build=lambda _lab: IdentityCalibrator(), load=_load_identity),
+    CalibratorKind(
+        build=lambda _lab: IdentityCalibrator(), load=_load_identity, uses_fit_data=False
+    ),
 )
 
 
@@ -96,11 +106,20 @@ def build_calibrator(name: str, lab: LabConfig) -> SerializableCalibrator:
     return CALIBRATORS.get(name).build(lab)
 
 
+def save_calibrator(calibrator: SerializableCalibrator) -> dict[str, Any]:
+    """A calibrator as a saved document: its ``to_dict`` with format and version."""
+    return envelope(CALIBRATOR_FORMAT, CALIBRATOR_VERSION, calibrator.to_dict())
+
+
 def load_calibrator(data: Mapping[str, Any]) -> SerializableCalibrator:
-    name = data.get("name")
+    """Restore a :func:`save_calibrator` document; one without its envelope is refused."""
+    body = open_envelope(
+        data, CALIBRATOR_FORMAT, CALIBRATOR_VERSION, "a saved calibrator", error=CalibrationError
+    )
+    name = body.get("name")
     if not isinstance(name, str):
         raise CalibrationError("a saved calibrator needs a string 'name'")
-    return CALIBRATORS.get(name).load(data)
+    return CALIBRATORS.get(name).load(body)
 
 
 def finite_number(data: Mapping[str, Any], key: str) -> float:
@@ -110,8 +129,24 @@ def finite_number(data: Mapping[str, Any], key: str) -> float:
     return float(value)
 
 
+def saved_int(data: Mapping[str, Any], key: str) -> int:
+    value = data.get(key)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise CalibrationError(f"saved calibrator field {key!r} must be an integer")
+    return value
+
+
+def saved_flag(data: Mapping[str, Any], key: str) -> bool:
+    value = data.get(key)
+    if not isinstance(value, bool):
+        raise CalibrationError(f"saved calibrator field {key!r} must be true or false")
+    return value
+
+
 __all__ = [
     "CALIBRATORS",
+    "CALIBRATOR_FORMAT",
+    "CALIBRATOR_VERSION",
     "CalibrationError",
     "CalibratorKind",
     "IdentityCalibrator",
@@ -121,4 +156,7 @@ __all__ = [
     "check_scores",
     "finite_number",
     "load_calibrator",
+    "save_calibrator",
+    "saved_flag",
+    "saved_int",
 ]

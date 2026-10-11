@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from qcal.registry.records import (
+    SCHEMA_VERSION,
     ArtifactRef,
     RecordError,
     RunRecord,
@@ -211,7 +212,7 @@ def test_record_round_trips_through_dict() -> None:
         artifacts=(ArtifactRef("x.engine", "h" * 64, "engine", 10),),
         log_path="runs/logs/R2.log",
         error=None,
-        schema_version=3,
+        schema_version=1,
         extra={"note": "kept"},
     )
     assert RunRecord.from_dict(record.to_dict()) == record
@@ -314,6 +315,19 @@ def test_from_dict_reports_mistyped_fields_as_record_errors(
         RunRecord.from_dict(minimal_dict(**overrides))
 
 
+@pytest.mark.parametrize("version", [0, -1, SCHEMA_VERSION + 1, 99])
+def test_from_dict_refuses_schema_versions_this_code_cannot_read(version: int) -> None:
+    """A newer schema may mean what old code would misread, so old code refuses it."""
+    with pytest.raises(RecordError, match=f"schema_version {version} is not readable"):
+        RunRecord.from_dict(minimal_dict(schema_version=version))
+
+
+def test_from_dict_reads_records_without_a_schema_version_as_version_1() -> None:
+    data = minimal_dict()
+    data.pop("schema_version", None)
+    assert RunRecord.from_dict(data).schema_version == 1
+
+
 def test_from_dict_wraps_unexpected_type_errors() -> None:
     not_a_mapping: Any = list(REQUIRED)  # every required key is "in" it, but it is not a dict
     with pytest.raises(RecordError, match="malformed record"):
@@ -395,3 +409,42 @@ def test_effective_ignores_order_of_records() -> None:
 def test_effective_ignores_supersession_of_unknown_run() -> None:
     records = [make_record("R1"), make_record("R2", supersedes="R0")]
     assert [r.run_id for r in effective(records)] == ["R1", "R2"]
+
+
+def test_failure_kind_round_trips_and_is_absent_when_unset() -> None:
+    record = make_record(status="failed", failure_kind="timeout")
+    assert RunRecord.from_dict(record.to_dict()).failure_kind == "timeout"
+    assert "failure_kind" not in make_record().to_dict()
+    assert RunRecord.from_dict(make_record().to_dict()).failure_kind is None
+
+
+def test_failure_kind_must_be_a_string() -> None:
+    with pytest.raises(RecordError, match="failure_kind must be a string or null"):
+        RunRecord.from_dict({**make_record().to_dict(), "failure_kind": 3})
+
+
+def test_resources_round_trip_flatten_and_are_absent_when_empty() -> None:
+    record = make_record(resources={"wall_s": 1.5, "cache_hits": 2})
+    assert RunRecord.from_dict(record.to_dict()).resources == {"wall_s": 1.5, "cache_hits": 2}
+    assert "resources" not in make_record().to_dict()
+    row = record.flat({"resources": "res."})
+    assert (row["res.wall_s"], row["res.cache_hits"]) == (1.5, 2)
+
+
+def test_resources_must_be_an_object() -> None:
+    with pytest.raises(RecordError, match="resources must be an object"):
+        RunRecord.from_dict({**make_record().to_dict(), "resources": [1]})
+
+
+def test_flat_rows_carry_the_identity_columns() -> None:
+    record = make_record(
+        status="failed",
+        failure_kind="timeout",
+        provenance={"config_inputs_sha256": "c" * 64, "batch_id": "B1"},
+    )
+    row = record.flat({})
+    assert (row["config_inputs_sha256"], row["batch_id"], row["failure_kind"]) == (
+        "c" * 64,
+        "B1",
+        "timeout",
+    )

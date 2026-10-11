@@ -73,7 +73,9 @@ def test_a_clean_project_passes(repo: Path, tmp_path: Path) -> None:
 def test_nightly_glob_runs_pending_cells_first(repo: Path, tmp_path: Path, max_runs: str) -> None:
     program = tmp_path / "experiment.py"
     program.write_text(
-        "import json, sys\njson.dump({'metrics': {'AP': 40.0}}, open(sys.argv[1], 'w'))\n",
+        "import json, sys\n"
+        "ENVELOPE = {'format': 'qcal.executor_result', 'version': 1, 'status': 'ok'}\n"
+        "json.dump({**ENVELOPE, 'metrics': {'AP': 40.0}}, open(sys.argv[1], 'w'))\n",
         encoding="utf-8",
     )
     command = json.dumps([sys.executable, str(program), "{result_path}"])

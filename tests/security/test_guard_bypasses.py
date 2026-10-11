@@ -13,6 +13,8 @@ from qcal.hooks.bash import analyze
 from qcal.hooks.guards import root_for
 from tests.conftest import REPO_ROOT, run_git, write
 
+pytestmark = pytest.mark.rule("C0")
+
 WRAPPER = REPO_ROOT / ".claude" / "hooks" / "run_hook.sh"
 PROTECTED = ["main", "civ"]
 DENY_FLAGS = ["--force", "-f", "--force-with-lease", "--mirror", "--all", "--delete", "-d"]

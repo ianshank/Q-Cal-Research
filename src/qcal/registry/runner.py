@@ -2,32 +2,59 @@
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import hashlib
 import json
+import os
 import secrets
-from collections.abc import Callable, Mapping, Sequence
+import signal
+import sys
+import threading
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from qcal import gitutil
-from qcal.config import Config
-from qcal.globs import iter_files
+from qcal.config import Config, run_neutral_environment
 from qcal.log import get_logger
-from qcal.registry.environment import collect_environment
+from qcal.registry.environment import collect_environment, launcher_identity, recorded_variables
 from qcal.registry.executor import ExecutionResult, Executor, RunSpec
 from qcal.registry.experiments import Cell, Experiments, ExperimentsError
-from qcal.registry.records import RecordError, RunRecord, effective, validate_run_id
-from qcal.registry.store import RegistryStore
+from qcal.registry.gates import (
+    INPUTS_READ_KEY,
+    PolicyState,
+    config_inputs,
+    digest_of,
+    input_mismatches,
+    launch_digests,
+    policy_state,
+    run_input_problems,
+    unverified_inputs,
+)
+from qcal.registry.records import (
+    SCHEMA_VERSION,
+    RecordError,
+    RunRecord,
+    effective,
+    validate_run_id,
+)
+from qcal.registry.store import MARKER_SUFFIX, RegistryStore, pair_lock_name
 
 _log = get_logger("registry.runner")
 
 Clock = Callable[[], datetime]
+#: Environment keys the launcher collected itself; the program's keys keep their own names.
+LAUNCHER_PREFIX: Final = "launcher."
+#: Where a program key that would fall inside a reserved namespace is kept instead.
+REPORTED_PREFIX: Final = "reported."
 
 
 class RunRefusedError(RuntimeError):
-    """A run was refused before execution (unregistered seed, dirty tree, batch too large)."""
+    """A run was refused before execution (unregistered seed, dirty tree, batch too large,
+    configuration from the environment or from uncommitted files)."""
 
 
 @dataclass(frozen=True)
@@ -37,12 +64,78 @@ class PlannedRun:
     supersedes: str | None = None
 
 
+class LauncherSignal(KeyboardInterrupt):
+    """SIGTERM or SIGHUP to the launcher while a program runs (``kill``, a closed terminal).
+
+    Handled like Ctrl-C: the program's process group is terminated, the run is recorded, and
+    the launcher exits 130. The program runs in its own session, so without this it would
+    outlive the launcher unrecorded.
+    """
+
+
+#: Signals that end a launcher. While a program runs they interrupt it; while its record is
+#: written they wait.
+LAUNCHER_SIGNALS: Final = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+
+
+def _in_main_thread() -> bool:
+    return threading.current_thread() is threading.main_thread()
+
+
+@contextlib.contextmanager
+def _signals_interrupt() -> Iterator[None]:
+    """Turn SIGTERM and SIGHUP into :class:`LauncherSignal` (SIGINT already interrupts)."""
+    if not _in_main_thread():  # only the main thread may set handlers
+        yield
+        return
+
+    def interrupt(signum: int, _frame: Any) -> None:
+        raise LauncherSignal(f"signal {signal.Signals(signum).name}")
+
+    previous = {s: signal.signal(s, interrupt) for s in (signal.SIGTERM, signal.SIGHUP)}
+    try:
+        yield
+    finally:
+        for number, handler in previous.items():
+            signal.signal(number, handler)
+
+
+@contextlib.contextmanager
+def _signals_held() -> Iterator[None]:
+    """Hold :data:`LAUNCHER_SIGNALS` until the block ends; the first one is raised afterwards.
+
+    The handlers are swapped rather than the signals masked: a mask covers one thread only,
+    and with any other thread alive the kernel delivers the signal there while Python still
+    runs the handler in the main thread.
+    """
+    if not _in_main_thread():
+        yield
+        return
+    pending: list[int] = []
+
+    def defer(signum: int, _frame: Any) -> None:
+        pending.append(signum)
+
+    previous = {s: signal.signal(s, defer) for s in LAUNCHER_SIGNALS}
+    try:
+        yield
+    finally:
+        for number, handler in previous.items():
+            signal.signal(number, handler)
+        if pending:
+            _log.warning(
+                "delivering %s now that the run is recorded", signal.Signals(pending[0]).name
+            )
+            signal.raise_signal(pending[0])
+
+
 @dataclass
 class BatchResult:
     planned: list[PlannedRun] = field(default_factory=list)
     completed: list[RunRecord] = field(default_factory=list)
     failed: list[RunRecord] = field(default_factory=list)
     skipped: list[tuple[str, int, str]] = field(default_factory=list)
+    batch_id: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -80,33 +173,54 @@ class Runner:
         stamp = when.strftime(self.config.str_value("registry.timestamp_format"))
         return template.format(timestamp=stamp, cell_id=cell_id, seed=seed, nonce=self.nonce())
 
-    def config_hash(self, cell: Cell, seed: int) -> str:
+    def config_hash(self, cell: Cell, seed: int, inputs: Mapping[str, str] | None = None) -> str:
         """Hash of everything that defines the run: factors, seed, command, config files."""
-        root = self.config.root
-        inputs = {
-            str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
-            for p in iter_files(root, self.config.str_list("registry.config_hash_inputs"))
-        }
         payload = {
             "cell": cell.id,
             "factors": dict(cell.factors),
             "seed": seed,
             "command": self.config.get("executor.command"),
-            "inputs": inputs,
+            "inputs": dict(config_inputs(self.config) if inputs is None else inputs),
         }
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
         return hashlib.sha256(canonical.encode()).hexdigest()
 
+    def check_inputs(
+        self, policy: PolicyState | None = None, inputs: Mapping[str, str] | None = None
+    ) -> PolicyState:
+        """Refuse a run whose configuration does not come from committed files only."""
+        policy = policy or policy_state(self.config)
+        problems = run_input_problems(self.config, self.experiments, policy, inputs)
+        if problems:
+            _log.error("refusing a registered run: %s", "; ".join(problems))
+            raise RunRefusedError(
+                "registered runs read committed configuration only:\n  - " + "\n  - ".join(problems)
+            )
+        return policy
+
     def _output_paths(self) -> list[str]:
         """Registry outputs, which a run itself creates, never count as a dirty tree."""
         root = self.config.root
-        keys = ("registry_dir", "index_csv", "index_parquet", "logs_dir", "results_dir")
+        keys = (
+            "registry_dir",
+            "index_csv",
+            "index_parquet",
+            "logs_dir",
+            "results_dir",
+            "inflight_dir",
+        )
         paths = [self.config.path(k) for k in keys]
         return [p.relative_to(root).as_posix() for p in paths if p.is_relative_to(root)]
 
     # -- single run ---------------------------------------------------------------
     def run(
-        self, cell_id: str, seed: int, *, supersedes: str | None = None, reason: str = ""
+        self,
+        cell_id: str,
+        seed: int,
+        *,
+        supersedes: str | None = None,
+        reason: str = "",
+        batch_id: str | None = None,
     ) -> RunRecord:
         cell = self.experiments.cell(cell_id)
         allowed = self.experiments.seeds_for(cell)
@@ -114,7 +228,31 @@ class Runner:
             raise RunRefusedError(
                 f"seed {seed} is not pre-registered for {cell_id} (allowed: {list(allowed)})"
             )
-        self._check_not_duplicate(cell.id, seed, supersedes)
+        inputs = config_inputs(self.config)  # read once: compared, hashed and digested
+        policy = self.check_inputs(inputs=inputs)
+        with self._pair_lock(cell.id, seed):  # from the duplicate check to the record write
+            return self._run_locked(
+                cell,
+                seed,
+                policy,
+                inputs,
+                supersedes=supersedes,
+                reason=reason,
+                batch_id=batch_id,
+            )
+
+    def _run_locked(
+        self,
+        cell: Cell,
+        seed: int,
+        policy: PolicyState,
+        inputs: Mapping[str, str],
+        *,
+        supersedes: str | None,
+        reason: str,
+        batch_id: str | None,
+    ) -> RunRecord:
+        retry_of = self._check_not_duplicate(cell.id, seed, supersedes)
         if (
             supersedes
             and not reason.strip()
@@ -149,22 +287,80 @@ class Runner:
             log_path=self.config.path("logs_dir")
             / self.config.str_value("executor.log_filename").format_map(names),
             root=root,
+            python=sys.executable,
         )
+        launch = launch_digests(self.config, self.experiments, policy, inputs)
         provenance = {
             "git_sha": gitutil.head_sha(root),
             "git_dirty": dirty,
-            "config_hash": self.config_hash(cell, seed),
+            "config_hash": self.config_hash(cell, seed, inputs),
+            "config_inputs_sha256": digest_of(inputs),
+            "config_sources": list(self.config.sources),
+            "config_environment": run_neutral_environment(self.config),
+            "policy_source": policy.source,
+            "policy_sha256": policy.sha256,
             "experiments_sha256": self.experiments.sha256,
             "executor": type(self.executor).__name__,
+            "launcher": launcher_identity(root),
+            "environment_variables": recorded_variables(
+                self.config.str_list("registry.recorded_env_vars")
+            ),
+            "batch_id": batch_id,
+            "retry_of": retry_of,
         }
         if supersedes:
             provenance["supersede_reason"] = reason.strip()
-        _log.info("starting %s (cell=%s seed=%s)", run_id, cell.id, seed)
-        try:
-            result = self.executor.execute(spec)
-        except Exception as exc:  # noqa: BLE001 - a crash is recorded as a failed run, never lost
-            _log.exception("executor %s raised for %s", type(self.executor).__name__, run_id)
-            result = ExecutionResult(-1, error=f"executor raised {type(exc).__name__}: {exc}")
+        marker = self._mark_inflight(run_id, cell.id, seed, started)
+        with _signals_interrupt():  # SIGTERM/SIGHUP end the run like Ctrl-C, and record it
+            return self._execute_and_record(
+                spec, started, provenance, launch, marker, supersedes=supersedes
+            )
+
+    def _execute_and_record(
+        self,
+        spec: RunSpec,
+        started: datetime,
+        provenance: dict[str, Any],
+        launch: Mapping[str, str],
+        marker: Path,
+        *,
+        supersedes: str | None,
+    ) -> RunRecord:
+        run_id = spec.run_id
+        _log.info("starting %s (cell=%s seed=%s)", run_id, spec.cell.id, spec.seed)
+        result, interrupted = self._execute(spec)
+        # From here to the record write, an interrupt waits: losing the record of a run that
+        # finished (or the marker the audit would report) is worse than a short delay.
+        with _signals_held():
+            record = self._record(
+                spec, started, provenance, launch=launch, result=result, supersedes=supersedes
+            )
+            self.store.write(record)
+            marker.unlink(missing_ok=True)  # only once the record exists
+        if not result.ok:
+            _log.error("run %s failed (%s): %s", run_id, record.failure_kind, result.error)
+        if interrupted is not None:
+            raise interrupted
+        return record
+
+    def _record(
+        self,
+        spec: RunSpec,
+        started: datetime,
+        provenance: dict[str, Any],
+        *,
+        launch: Mapping[str, str],
+        result: ExecutionResult,
+        supersedes: str | None,
+    ) -> RunRecord:
+        run_id, cell, root = spec.run_id, spec.cell, self.config.root
+        reported = result.environment.get(INPUTS_READ_KEY)
+        changed = input_mismatches(launch, reported)
+        if changed and result.ok:
+            result.error = "; ".join(changed)
+            result.failure_kind = "config"
+            _log.error("run %s: %s", run_id, result.error)
+        provenance["inputs_unverified"] = unverified_inputs(launch, reported)
         finished = self.clock()
         environment = merge_environment(
             collect_environment(
@@ -178,10 +374,10 @@ class Runner:
             _log.warning("rerun %s failed; it does not supersede %s", run_id, supersedes)
             supersedes = None
         status_key = "registry.ok_status" if result.ok else "registry.failed_status"
-        record = RunRecord(
+        return RunRecord(
             run_id=run_id,
             cell_id=cell.id,
-            seed=seed,
+            seed=spec.seed,
             seed_role=self.experiments.seed_role,
             status=self.config.str_value(status_key),
             supersedes=supersedes,
@@ -192,18 +388,69 @@ class Runner:
             factors=dict(cell.factors),
             metrics=result.metrics if result.ok else {},
             environment=environment,
-            artifacts=tuple(result.artifacts) if result.ok else (),
+            artifacts=tuple(result.artifacts),  # a failed run keeps its partial artifacts
             log_path=_relative(spec.log_path, root),
             error=result.error,
-            schema_version=self.config.int_value("registry.schema_version"),
+            failure_kind=None if result.ok else (result.failure_kind or "unknown"),
+            resources=dict(result.resources),
+            schema_version=SCHEMA_VERSION,
         )
-        self.store.write(record)
-        if not result.ok:
-            _log.error("run %s failed: %s", run_id, result.error)
-        return record
 
-    def _check_not_duplicate(self, cell_id: str, seed: int, supersedes: str | None) -> None:
-        """One current ok run per (cell, seed): a second one needs an explicit supersede."""
+    # -- concurrency --------------------------------------------------------------
+    @contextlib.contextmanager
+    def _pair_lock(self, cell_id: str, seed: int) -> Iterator[None]:
+        """An advisory lock per (cell, seed), released by the kernel if the launcher dies,
+        so two launchers cannot both pass the duplicate check for one pair."""
+        directory = self.config.path("inflight_dir")
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / pair_lock_name(cell_id, seed)
+        with path.open("a", encoding="utf-8") as handle:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise RunRefusedError(
+                    f"{cell_id}@{seed} is being run by another launcher (lock {path})"
+                ) from None
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    def _mark_inflight(self, run_id: str, cell_id: str, seed: int, started: datetime) -> Path:
+        """A marker naming the running run; the audit reports markers a crash left behind."""
+        marker = self.config.path("inflight_dir") / f"{run_id}{MARKER_SUFFIX}"
+        payload = {
+            "run_id": run_id,
+            "cell_id": cell_id,
+            "seed": seed,
+            "started_at": started.isoformat(),
+            "pid": os.getpid(),
+        }
+        with marker.open("x", encoding="utf-8") as handle:
+            json.dump(payload, handle, sort_keys=True)
+        return marker
+
+    def _execute(self, spec: RunSpec) -> tuple[ExecutionResult, BaseException | None]:
+        """Run the program; a crash becomes a failed result, and an interrupt (Ctrl-C,
+        ``SystemExit``) is returned so the caller records the run before re-raising it."""
+        try:
+            return self.executor.execute(spec), None
+        except Exception as exc:  # noqa: BLE001 - a crash is recorded as a failed run, never lost
+            _log.exception("executor %s raised for %s", type(self.executor).__name__, spec.run_id)
+            error = f"executor raised {type(exc).__name__}: {exc}"
+            return ExecutionResult(-1, error=error, failure_kind="unknown"), None
+        except BaseException as exc:  # noqa: BLE001 - recorded here, re-raised by run()
+            _log.error(
+                "run %s interrupted (%s); recording it first", spec.run_id, type(exc).__name__
+            )
+            error = f"interrupted by {type(exc).__name__}"
+            return ExecutionResult(-1, error=error, failure_kind="interrupted"), exc
+
+    def _check_not_duplicate(self, cell_id: str, seed: int, supersedes: str | None) -> str | None:
+        """One current ok run per (cell, seed): a second one needs an explicit supersede.
+
+        Returns the latest current failed run of the pair, which this run retries (``None``
+        when superseding, or when the pair never failed)."""
         ok_status = self.config.str_value("registry.ok_status")
         current = {
             r.run_id: r
@@ -215,13 +462,20 @@ class Runner:
                 raise RunRefusedError(
                     f"cannot supersede {supersedes}: it is not a current run of {cell_id}@{seed}"
                 )
-            return
+            return None
         done = sorted(r.run_id for r in current.values() if r.status == ok_status)
         if done:
             raise RunRefusedError(
                 f"{cell_id}@{seed} already completed as {done[0]}; "
                 "replace it with `qcal registry run --supersedes` or `run-batch --rerun`"
             )
+        failed = sorted(current.values(), key=lambda r: (r.started_at, r.run_id))
+        return failed[-1].run_id if failed else None
+
+    def new_batch_id(self, when: datetime) -> str:
+        template = self.config.str_value("registry.batch_id_template")
+        stamp = when.strftime(self.config.str_value("registry.timestamp_format"))
+        return template.format(timestamp=stamp, nonce=self.nonce())
 
     # -- batches ------------------------------------------------------------------
     def plan(
@@ -276,8 +530,15 @@ class Runner:
         _log.info("batch %r: %d planned, %d skipped", patterns, len(planned), len(skipped))
         if dry_run:
             return batch
+        batch.batch_id = self.new_batch_id(self.clock())
         for item in planned:
-            record = self.run(item.cell.id, item.seed, supersedes=item.supersedes, reason=reason)
+            record = self.run(
+                item.cell.id,
+                item.seed,
+                supersedes=item.supersedes,
+                reason=reason,
+                batch_id=batch.batch_id,
+            )
             if record.status == self.config.str_value("registry.ok_status"):
                 batch.completed.append(record)
                 continue
@@ -289,14 +550,22 @@ class Runner:
 
 
 def merge_environment(collected: Mapping[str, Any], reported: Mapping[str, Any]) -> dict[str, Any]:
-    """Experiment-reported values never overwrite what qcal collected itself."""
-    merged = dict(collected)
+    """The launcher's values under ``launcher.``, the program's under their own names.
+
+    The two run in different interpreters, so their versions may differ; both are kept. A
+    program key inside a reserved namespace is kept under ``reported.``, so nothing the
+    program says can pass for a value the launcher collected, and nothing is dropped.
+    """
+    merged = {f"{LAUNCHER_PREFIX}{key}": value for key, value in collected.items()}
     for key, value in reported.items():
-        if key in collected and collected[key] != value:
+        if str(key).startswith((LAUNCHER_PREFIX, REPORTED_PREFIX)):
             _log.warning(
-                "experiment reported %s=%r; keeping collected %r", key, value, collected[key]
+                "experiment reported %s inside a reserved namespace; kept as %s%s",
+                key,
+                REPORTED_PREFIX,
+                key,
             )
-            merged[f"reported_{key}"] = value
+            merged[f"{REPORTED_PREFIX}{key}"] = value
         else:
             merged[key] = value
     return merged

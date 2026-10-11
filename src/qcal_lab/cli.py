@@ -9,11 +9,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import signal
 import sys
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
-from typing import IO
+from types import FrameType
+from typing import IO, Final
 
 from qcal.config import ConfigError, find_root, load_config
 from qcal.integrity.leakage import check_leakage, read_manifest
@@ -25,7 +28,13 @@ from qcal_lab.config import load_lab_config
 from qcal_lab.data.coco import DatasetError, load_coco
 from qcal_lab.data.splits import SplitError, manifest_path, partition, split_digest, write_manifest
 from qcal_lab.evaluation import EvaluationError
-from qcal_lab.experiment import PlanError, RunRequest, run_experiment, write_result
+from qcal_lab.experiment import (
+    PlanError,
+    RunRequest,
+    run_experiment,
+    write_failure,
+    write_result,
+)
 from qcal_lab.models import DetectorError
 from qcal_lab.predictions import PredictionsError
 
@@ -42,6 +51,49 @@ RUN_FAILURES = (
     PredictionsError,
     SplitError,
 )
+
+
+#: Exception class names (from libraries this module does not import) and the failure kind
+#: each means in the result envelope (``qcal.registry.records.FAILURE_KINDS``).
+_KIND_BY_CLASS_NAME: Final = {
+    "OutOfMemoryError": "cuda_oom",  # torch.cuda.OutOfMemoryError
+    "AcceleratorError": "cuda_error",  # torch >= 2.8 device-side errors
+    "CudaError": "cuda_error",
+}
+
+
+class RunInterrupted(BaseException):
+    """SIGTERM from the launcher (a timeout or its own interrupt): stop, record, exit."""
+
+
+def failure_kind(exc: BaseException) -> str:
+    """The result envelope's failure kind for an exception that ended a run."""
+    if isinstance(exc, KeyboardInterrupt | RunInterrupted):
+        return "interrupted"
+    if isinstance(exc, ConfigError):
+        return "config"
+    if isinstance(exc, PlanError | ExperimentsError):
+        return "plan"
+    if isinstance(exc, MemoryError):
+        return "host_oom"
+    for cls in type(exc).__mro__:
+        if cls.__name__ in _KIND_BY_CLASS_NAME:
+            return _KIND_BY_CLASS_NAME[cls.__name__]
+    return "unknown"
+
+
+@contextmanager
+def _sigterm_interrupts() -> Iterator[None]:
+    """Turn SIGTERM into :class:`RunInterrupted` so the run still writes its envelope."""
+
+    def handler(signum: int, _frame: FrameType | None) -> None:
+        raise RunInterrupted(f"signal {signum}")
+
+    previous = signal.signal(signal.SIGTERM, handler)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, previous)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -91,12 +143,26 @@ def _parse_sizes(text: str) -> list[tuple[str, int]]:
 
 
 def _cmd_run(args: argparse.Namespace, root: Path) -> int:
+    """Run one cell; the result envelope is written on every exit, ok or failed."""
     request = RunRequest(root, args.run_id, args.cell_id, args.seed, args.result_path)
+    progress: list[dict[str, str]] = []
     try:
-        result = run_experiment(request)
-    except RUN_FAILURES as exc:
-        _log.error("run %s failed: %s", args.run_id, exc)
-        return EXIT_FAILED
+        with _sigterm_interrupts():
+            result = run_experiment(request, progress=progress)
+    except BaseException as exc:
+        kind = failure_kind(exc)
+        write_failure(
+            args.result_path,
+            failure_kind=kind,
+            error=f"{type(exc).__name__}: {exc}",
+            artifacts=progress,
+        )
+        _log.error("run %s failed (%s): %s", args.run_id, kind, exc)
+        if isinstance(exc, ConfigError):
+            return EXIT_USAGE
+        if kind != "unknown" or isinstance(exc, RUN_FAILURES):
+            return EXIT_FAILED
+        raise  # an unexpected error: the envelope says "unknown"; the traceback goes to the log
     write_result(args.result_path, result)
     _log.info(
         "run %s: %d metric(s), %d artifact(s)",
@@ -194,4 +260,12 @@ def main(argv: Sequence[str] | None = None, *, out: IO[str] | None = None) -> in
 _COMMANDS = {"smoke": _cmd_smoke, "status": _cmd_status, "splits": _cmd_splits}
 
 
-__all__ = ["EXIT_FAILED", "EXIT_OK", "EXIT_USAGE", "build_parser", "main"]
+__all__ = [
+    "EXIT_FAILED",
+    "EXIT_OK",
+    "EXIT_USAGE",
+    "RunInterrupted",
+    "build_parser",
+    "failure_kind",
+    "main",
+]

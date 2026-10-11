@@ -18,7 +18,9 @@ def threshold_grid(start: float, stop: float, step: float) -> tuple[float, ...]:
     if step <= 0 or not 0.0 <= start <= stop <= 1.0:
         raise CalibrationError("threshold grid needs 0 <= start <= stop <= 1 and step > 0")
     count = math.floor((stop - start) / step + 1e-9) + 1
-    return tuple(round(start + i * step, _DIGITS) for i in range(count))
+    # The slack above lets a last point drift past stop (and past 1.0 when stop is 1.0);
+    # such a point means stop, so it is clamped there.
+    return tuple(min(round(start + i * step, _DIGITS), stop) for i in range(count))
 
 
 def select_threshold(

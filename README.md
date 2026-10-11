@@ -72,7 +72,25 @@ Every tunable value lives in configuration, never in code. The layers are:
 3. environment overrides on top of both: `QCAL__SECTION__KEY=<toml value>`, for example
    `QCAL__REGISTRY__MAX_RUNS_PER_BATCH=10`.
 
-`qcal config` prints the merged result.
+`qcal config` prints the merged result, its sources and the environment variables that
+shaped it. The set of keys is closed: `qcal config --check` fails on an unknown, removed or
+mistyped key, so a misspelled policy key cannot fall back to its default unnoticed.
+
+Environment overrides are a debugging aid. A registered run (`qcal registry run|run-batch`)
+refuses them, except `QCAL__LOGGING__*`. It also refuses a `QCAL_CONFIG` or `QCAL_ROOT` that
+points away from the repository, a root that is not the repository's top level, a
+`qcal.toml` or `EXPERIMENTS.yaml` that differs from `HEAD` (compared as the bytes actually
+parsed), an `--experiments` file other than the configured one, and a hashed configuration
+file (`registry.config_hash_inputs`) that differs from `HEAD`. The experiment program sees no
+`QCAL__*` variables except accepted `QCAL__LOGGING__*` ones, and reports the digest of every
+configuration file it read; a file that changed while it ran fails the run. The registry's git queries ignore user and
+system git configuration and `GIT_*` redirection.
+
+The science code has its own layers: `src/qcal_lab/resources/defaults.toml` under
+`configs/lab.toml`, both hashed into every run's `config_hash`. Each precision names its torch
+switches under `[numerics.regimes.<precision>]`. Settings that never change what a run
+computes (the smoke test, the fixture stand-ins) live in `src/qcal_lab/resources/tooling.toml`,
+which is not hashed. `python -m qcal_lab status` lists what still blocks a registered run.
 
 ## Tests
 
@@ -83,6 +101,8 @@ Every tunable value lives in configuration, never in code. The layers are:
 | regression | `make test-regression` | one test per fixed review, red-team or peer-review finding |
 | security | `make test-security` | bypass attempts on the guards and the signed-commit control |
 | e2e | `make test-e2e` | the documented workflow, `scripts/nightly.sh` and `make smoke` through the real CLI |
+| contract | `pytest tests/contract` | the `EvalLoop` MUST checks on the fixture loop, and on Ian's loop once it exists (NOT ASSESSED until then) |
+| oracle | `pytest tests/oracle` | the calibrators against scikit-learn and SciPy, installed with the `oracle` extra; `ORACLE_REQUIRED=1` turns skips into failures |
 | parity | `make parity` | `qcal_lab` and Ian's metrics against `fiveai/detection_calibration` outputs; skips, saying why, until those exist |
 
 The branch-coverage gate is set in `pyproject.toml` (`fail_under`).

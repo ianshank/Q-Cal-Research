@@ -5,14 +5,18 @@ Replaces the v1 ``ablation-auditor`` agent. It never proposes dropping cells.
 
 from __future__ import annotations
 
+import fcntl
+import json
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from qcal.config import Config
 from qcal.registry.experiments import Experiments
 from qcal.registry.records import RunRecord, effective
+from qcal.registry.store import MARKER_SUFFIX, pair_lock_name
 
 
 @dataclass
@@ -27,6 +31,9 @@ class AuditReport:
     placeholders: list[str] = field(default_factory=list)
     duplicates: list[str] = field(default_factory=list)
     bad_supersedes: list[str] = field(default_factory=list)
+    mixed_inputs: list[str] = field(default_factory=list)
+    uncommitted_policy: list[str] = field(default_factory=list)
+    stale_inflight: list[str] = field(default_factory=list)  # report only
     amendments: int = 0
 
     def ok(self, *, strict: bool = False) -> bool:
@@ -37,7 +44,13 @@ class AuditReport:
             or self.bad_supersedes
         )
         if strict:
-            problems = problems or bool(self.missing or self.failed_only or self.placeholders)
+            problems = problems or bool(
+                self.missing
+                or self.failed_only
+                or self.placeholders
+                or self.mixed_inputs
+                or self.uncommitted_policy
+            )
         return not problems
 
     def to_dict(self) -> dict[str, Any]:
@@ -53,6 +66,9 @@ class AuditReport:
             "placeholders": self.placeholders,
             "duplicates": self.duplicates,
             "bad_supersedes": self.bad_supersedes,
+            "mixed_inputs": self.mixed_inputs,
+            "uncommitted_policy": self.uncommitted_policy,
+            "stale_inflight": self.stale_inflight,
             "amendments": self.amendments,
         }
 
@@ -68,6 +84,9 @@ class AuditReport:
             "placeholders",
             "duplicates",
             "bad_supersedes",
+            "mixed_inputs",
+            "uncommitted_policy",
+            "stale_inflight",
         ):
             values = data[key]
             lines.append(f"{key}: {len(values)}")
@@ -119,6 +138,75 @@ def bad_supersedes(records: Sequence[RunRecord]) -> list[str]:
     return problems
 
 
+def mixed_inputs(current: Sequence[RunRecord], ok_status: str) -> list[str]:
+    """Cells whose current ok runs used different configuration files, policy or
+    pre-registration.
+
+    Tables aggregate a cell's seeds; seeds that ran under different configurations would be
+    averaged as if they were draws of one experiment. Records without
+    ``provenance.config_inputs_sha256`` (written before it existed) are not compared.
+    """
+    by_cell: dict[str, dict[str, list[str]]] = {}
+    for record in current:
+        p = record.provenance
+        digest = p.get("config_inputs_sha256")
+        if record.status == ok_status and isinstance(digest, str):
+            key = f"{digest}|{p.get('policy_sha256')}|{p.get('experiments_sha256')}"
+            by_cell.setdefault(record.cell_id, {}).setdefault(key, []).append(record.run_id)
+    return [
+        f"{cell}: {len(digests)} configurations ("
+        + "; ".join(", ".join(sorted(ids)) for _, ids in sorted(digests.items()))
+        + ")"
+        for cell, digests in sorted(by_cell.items())
+        if len(digests) > 1
+    ]
+
+
+def uncommitted_policy(current: Sequence[RunRecord], ok_status: str) -> list[str]:
+    """Current ok runs whose policy was not verified against a commit (``policy_source``)."""
+    return sorted(
+        f"{r.run_id}: policy_source={r.provenance['policy_source']}"
+        for r in current
+        if r.status == ok_status and r.provenance.get("policy_source", "head") != "head"
+    )
+
+
+def stale_inflight(config: Config, records: Sequence[RunRecord]) -> list[str]:
+    """In-flight markers whose run wrote no record and whose (cell, seed) is not locked:
+    a launcher died mid-run (power loss, SIGKILL). Report only; the next run of the pair
+    proceeds normally."""
+    directory = config.path("inflight_dir")
+    if not directory.is_dir():
+        return []
+    recorded = {r.run_id for r in records}
+    stale: list[str] = []
+    for marker in sorted(directory.glob(f"*{MARKER_SUFFIX}")):
+        run_id = marker.name.removesuffix(MARKER_SUFFIX)
+        if run_id in recorded:
+            continue
+        try:
+            data = json.loads(marker.read_text("utf-8"))
+            lock = directory / pair_lock_name(str(data["cell_id"]), int(data["seed"]))
+        except (OSError, ValueError, KeyError, TypeError):
+            stale.append(run_id)  # unreadable: certainly not a live run's marker
+            continue
+        if not _locked(lock):
+            stale.append(run_id)
+    return stale
+
+
+def _locked(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    with path.open("a", encoding="utf-8") as handle:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    return False
+
+
 def _supersede_cycle(record: RunRecord, by_id: Mapping[str, RunRecord]) -> list[str]:
     """The run ids of a cycle that starts at ``record``, or ``[]``."""
     chain = [record.run_id]
@@ -154,6 +242,9 @@ def audit(config: Config, experiments: Experiments, records: Sequence[RunRecord]
                 report.missing.append((cell.id, seed))
     report.duplicates = duplicate_pairs(current, ok_status)
     report.bad_supersedes = bad_supersedes(records)
+    report.mixed_inputs = mixed_inputs(current, ok_status)
+    report.uncommitted_policy = uncommitted_policy(current, ok_status)
+    report.stale_inflight = stale_inflight(config, records)
     for record in current:
         registered = known.get(record.cell_id)
         if registered is None:

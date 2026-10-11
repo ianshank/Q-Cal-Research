@@ -12,7 +12,7 @@ import yaml
 from qcal import cli
 from tests.conftest import executor_command, experiment_script, write
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.rule("C1", "A1")]
 
 
 def qcal(repo: Path, *args: str) -> tuple[int, str]:

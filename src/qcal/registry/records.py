@@ -13,6 +13,10 @@ RUN_ID_PATTERN: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 #: macro arguments, so they are limited to letters, digits and ``_ . @ -``.
 METRIC_NAME_PATTERN: Final = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.@-]*$")
 _REQUIRED: Final = ("run_id", "cell_id", "seed", "status", "started_at", "finished_at")
+#: The record schema this code writes and the newest it reads. Schema 1 only ever gains
+#: optional fields; a change that old readers would misread bumps it, and old readers then
+#: refuse the new records instead of misreading them.
+SCHEMA_VERSION: Final = 1
 _REQUIRED_STRINGS: Final = ("run_id", "cell_id", "status", "started_at", "finished_at")
 
 
@@ -49,6 +53,25 @@ class ArtifactRef:
         )
 
 
+#: Program-reported environment key: false when the seed changed nothing the run computed
+#: (every seed is then the same run, and a spread over seeds measures nothing).
+SEED_EFFECTIVE_KEY: Final = "seed_effective"
+#: Index column with the digest of the configuration files a run read.
+CONFIG_INPUTS_COLUMN: Final = "config_inputs_sha256"
+
+#: Why a run failed, as the executor result envelope and a failed record name it.
+FAILURE_KINDS: Final = (
+    "timeout",
+    "cuda_oom",
+    "host_oom",
+    "cuda_error",
+    "plan",
+    "config",
+    "interrupted",
+    "unknown",
+)
+
+
 @dataclass(frozen=True)
 class RunRecord:
     run_id: str
@@ -67,7 +90,10 @@ class RunRecord:
     artifacts: tuple[ArtifactRef, ...] = ()
     log_path: str | None = None
     error: str | None = None
-    schema_version: int = 1
+    failure_kind: str | None = None  # one of FAILURE_KINDS for a failed run (schema 1, added)
+    #: What the run cost (wall and CPU time, memory, device, cache use); schema 1, added.
+    resources: Mapping[str, Any] = field(default_factory=dict)
+    schema_version: int = SCHEMA_VERSION
     extra: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -106,6 +132,10 @@ class RunRecord:
             "log_path": self.log_path,
             "error": self.error,
         }
+        if self.failure_kind is not None:  # absent from records written before it existed
+            data["failure_kind"] = self.failure_kind
+        if self.resources:
+            data["resources"] = dict(self.resources)
         data.update({k: v for k, v in self.extra.items() if k not in data})
         return data
 
@@ -134,18 +164,26 @@ class RunRecord:
         seed = data["seed"]
         if isinstance(seed, bool) or not isinstance(seed, int):
             raise RecordError("seed must be an integer")
-        for key in ("provenance", "factors", "metrics", "environment"):
+        for key in ("provenance", "factors", "metrics", "environment", "resources"):
             if not isinstance(data.get(key, {}), Mapping):
                 raise RecordError(f"{key} must be an object")
         artifacts = data.get("artifacts", [])
         if not isinstance(artifacts, list) or not all(isinstance(a, Mapping) for a in artifacts):
             raise RecordError("artifacts must be a list of objects")
+        failure_kind = data.get("failure_kind")
+        if failure_kind is not None and not isinstance(failure_kind, str):
+            raise RecordError("failure_kind must be a string or null")
         supersedes = data.get("supersedes")
         if supersedes is not None and not isinstance(supersedes, str):
             raise RecordError("supersedes must be a run id string or null")
         version = data.get("schema_version", 1)
         if isinstance(version, bool) or not isinstance(version, int):
             raise RecordError("schema_version must be an integer")
+        if not 1 <= version <= SCHEMA_VERSION:
+            raise RecordError(
+                f"schema_version {version} is not readable by this qcal (it reads 1 to "
+                f"{SCHEMA_VERSION}); a newer record needs a newer qcal"
+            )
         known = set(cls.__dataclass_fields__) - {"extra"}
         duration = data.get("duration_s")
         return cls(
@@ -165,6 +203,8 @@ class RunRecord:
             artifacts=tuple(ArtifactRef.from_dict(a) for a in artifacts),
             log_path=data.get("log_path"),
             error=data.get("error"),
+            failure_kind=failure_kind,
+            resources=dict(data.get("resources", {})),
             schema_version=version,
             extra={k: v for k, v in data.items() if k not in known},
         )
@@ -184,11 +224,15 @@ class RunRecord:
             "git_sha": self.provenance.get("git_sha"),
             "git_dirty": self.provenance.get("git_dirty"),
             "config_hash": self.provenance.get("config_hash"),
+            CONFIG_INPUTS_COLUMN: self.provenance.get(CONFIG_INPUTS_COLUMN),
+            "batch_id": self.provenance.get("batch_id"),
+            "failure_kind": self.failure_kind,
         }
         for group, values in (
             ("factors", self.factors),
             ("metrics", self.metrics),
             ("environment", self.environment),
+            ("resources", self.resources),
         ):
             prefix = prefixes.get(group, f"{group}.")
             for key, value in values.items():

@@ -6,6 +6,8 @@ import pytest
 
 from qcal.policy import Policy
 
+pytestmark = pytest.mark.rule("C5", "C6")
+
 
 @pytest.fixture
 def policy(config) -> Policy:

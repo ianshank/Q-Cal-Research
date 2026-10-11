@@ -42,6 +42,9 @@ CORE = [
     "git_sha",
     "git_dirty",
     "config_hash",
+    "config_inputs_sha256",
+    "batch_id",
+    "failure_kind",
 ]
 finite_floats = st.floats(allow_nan=False, allow_infinity=False)
 
@@ -138,6 +141,17 @@ def test_columns_order_groups_then_names() -> None:
         "env.python",
         "alpha",
         "zeta",
+    ]
+
+
+def test_resource_columns_follow_the_environment() -> None:
+    prefixes = {**PREFIXES, "resources": "res."}
+    row = {"run_id": "R1", "res.wall_s": 1.0, "env.python": "3.11", "metric.AP": 1.0}
+    assert columns_for([row], ["run_id"], prefixes) == [
+        "run_id",
+        "metric.AP",
+        "env.python",
+        "res.wall_s",
     ]
 
 
@@ -244,9 +258,12 @@ def test_render_csv_uses_configured_core_columns_and_prefixes(
         "f_d",
         "m_AP",
         # flat fields that are not core columns still appear, after the groups, by name
+        "batch_id",
         "cell_id",
         "config_hash",
+        "config_inputs_sha256",
         "duration_s",
+        "failure_kind",
         "finished_at",
         "git_dirty",
         "git_sha",

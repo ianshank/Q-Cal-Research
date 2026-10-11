@@ -31,17 +31,21 @@ deny_categories = ["ian_only", "ian_data", "registry_only", "enforcement_surface
 
 [registry]
 # The packaged qcal_lab defaults hold science settings too, so they are part of config_hash.
+# Only that file: tooling settings beside it (smoke, fixture stand-ins) change no result.
 config_hash_inputs = [
   "configs/**/*.yaml",
   "configs/**/*.yml",
   "configs/**/*.toml",
-  "src/qcal_lab/resources/*.toml",
+  "src/qcal_lab/resources/defaults.toml",
 ]
+# A registered run's qcal must be this repository's (src/), not an installed copy.
+require_code_in_root = true
 
 [executor]
-# The Phase 1 experiment program (src/qcal_lab, `python -m qcal_lab run`). `-I` keeps a
-# stray module in the working directory from shadowing the installed package.
-command = ["python3", "-I", "-m", "qcal_lab", "--root", "{root}", "run", "--run-id", "{run_id}", "--cell-id", "{cell_id}", "--seed", "{seed}", "--result-path", "{result_path}"]
+# The Phase 1 experiment program (src/qcal_lab, `python -m qcal_lab run`), run by the
+# launcher's own interpreter ({python}). `-I` keeps a stray module in the working
+# directory from shadowing the installed package.
+command = ["{python}", "-I", "-m", "qcal_lab", "--root", "{root}", "run", "--run-id", "{run_id}", "--cell-id", "{cell_id}", "--seed", "{seed}", "--result-path", "{result_path}"]
 
 [licenses]
 # Dataset-card licenses accepted for public release (plan Appendix E.4). Ian confirms in DECISIONS.md.

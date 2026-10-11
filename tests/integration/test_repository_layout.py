@@ -15,7 +15,7 @@ from qcal.integrity.licenses import read_frontmatter
 from qcal.policy import Policy
 from tests.conftest import REPO_ROOT
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.rule("A3")]
 
 
 @pytest.fixture(scope="module")

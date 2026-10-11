@@ -15,6 +15,8 @@ from qcal.hooks.payload import HookPayload
 from qcal.policy import Policy
 from tests.conftest import run_git, write
 
+pytestmark = pytest.mark.rule("A4")
+
 # --- B1: reviews are signed, reviewers named exactly, resolutions are real commits ------------
 
 

@@ -16,6 +16,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 
 from qcal.config import Config
+from qcal.integrity.leakage import manifest_path as leakage_manifest_path
 from qcal.integrity.leakage import read_manifest
 from qcal.log import get_logger
 
@@ -110,9 +111,8 @@ def write_manifest(
 
 
 def manifest_path(config: Config, split: str) -> Path:
-    return config.path("manifests_dir") / config.str_value("data.manifest_pattern").format(
-        split=split
-    )
+    """The split's manifest for the default dataset (``qcal``'s rule, shared with leakage)."""
+    return leakage_manifest_path(config, split)
 
 
 def read_split(config: Config, split: str) -> tuple[str, ...]:

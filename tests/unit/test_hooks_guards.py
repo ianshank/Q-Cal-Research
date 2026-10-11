@@ -9,6 +9,8 @@ from qcal.hooks import guards
 from qcal.hooks.payload import HookPayload, PayloadError
 from qcal.policy import Policy
 
+pytestmark = pytest.mark.rule("C0", "C2", "C4", "C5", "A2")
+
 
 def payload(tool: str | None = "Write", **tool_input: object) -> HookPayload:
     data: dict[str, object] = {"tool_input": tool_input, "cwd": None}

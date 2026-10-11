@@ -1,0 +1,24 @@
+# Tooling settings for qcal_lab: the smoke test and the fixture stand-ins.
+#
+# Not part of any run's config_hash (qcal.toml hashes resources/defaults.toml only): nothing
+# here changes what a registered run computes. Science settings belong in defaults.toml.
+
+[smoke]
+images = 20
+categories = 3
+max_objects_per_image = 4
+seed = 0
+image_width = 640
+image_height = 480
+max_seconds = 300
+seeds = [0]
+# Fixture split sizes; they must sum to at most `images`.
+split_sizes = { trt_calib_images = 2, calibrator_fit_split = 8, val = 4, test = 6 }
+calibrator_fit_split_size = 6
+calibrators = ["none", "platt", "isotonic"]
+# The smoke project's registry probes only what is cheap and always present.
+env_collectors = ["python", "packages"]
+
+[fixture_eval]
+# The fixture loop's notion of "found": a fixture-only stand-in, not an evaluation threshold.
+hit_iou = 0.5

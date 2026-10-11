@@ -4,6 +4,8 @@
 # arrays and scalars replace. Environment variables of the form
 # QCAL__<SECTION>__<KEY>=<toml value> override both, for example
 #   QCAL__LOGGING__LEVEL='"DEBUG"'   or   QCAL__REGISTRY__MAX_RUNS_PER_BATCH=5
+# They are a debugging aid: registered runs refuse every override outside [logging], and
+# `qcal config --check` rejects unknown or mistyped keys from any layer.
 # Glob patterns are anchored at the repository root; use "**/" to match at any depth.
 
 [paths]
@@ -17,10 +19,12 @@ index_csv = "runs/index.csv"
 index_parquet = "runs/index.parquet"
 logs_dir = "runs/logs"
 results_dir = "runs/results"
+inflight_dir = "runs/inflight"         # per-(cell, seed) locks and markers of running runs
 tables_dir = "paper/tables"
 table_specs_dir = "configs/tables"
 manifests_dir = "data/manifests"
 dataset_cards_dir = "docs/data"
+source_dir = "src"                    # where a registered run's own qcal must be imported from
 
 [logging]
 level = "INFO"
@@ -148,8 +152,8 @@ extra_bash_deny = [
 ]
 
 [registry]
-schema_version = 1
 run_id_template = "R{timestamp}-{cell_id}-s{seed}-{nonce}"
+batch_id_template = "B{timestamp}-{nonce}"   # provenance.batch_id of the runs of one run-batch
 timestamp_format = "%Y%m%dT%H%M%SZ"
 nonce_bytes = 3
 env_collectors = ["python", "host", "git", "packages", "nvidia", "torch", "tensorrt", "jetson"]
@@ -157,6 +161,16 @@ env_command_timeout_s = 10           # per external probe (nvidia-smi, nvpmodel)
 config_hash_inputs = ["configs/**/*.yaml", "configs/**/*.yml", "configs/**/*.toml"]
 max_runs_per_batch = 50
 require_clean_tree = false
+# Refuse a registered run whose qcal is not imported from paths.source_dir, so the code
+# that writes the record is the repository's own. Off here (tests and throwaway projects
+# import an installed qcal); qcal.toml turns it on.
+require_code_in_root = false
+# Environment variables that change how a program runs on a GPU, recorded verbatim in
+# provenance.environment_variables (null when unset).
+recorded_env_vars = [
+  "CUDA_VISIBLE_DEVICES", "CUDA_DEVICE_ORDER", "NVIDIA_TF32_OVERRIDE", "CUBLAS_WORKSPACE_CONFIG",
+  "PYTORCH_CUDA_ALLOC_CONF", "CUDA_MODULE_LOADING", "LD_LIBRARY_PATH", "OMP_NUM_THREADS",
+]
 require_supersede_reason = true       # `--reason` is recorded in provenance.supersede_reason
 ok_status = "ok"
 failed_status = "failed"
@@ -164,17 +178,22 @@ write_parquet = "auto"                # auto | always | never
 core_columns = [
   "run_id", "cell_id", "seed", "seed_role", "status", "supersedes",
   "started_at", "finished_at", "duration_s", "git_sha", "git_dirty", "config_hash",
+  "config_inputs_sha256", "batch_id", "failure_kind",
 ]
 
 [registry.column_prefixes]
 factors = "factor."
 metrics = "metric."
 environment = "env."
+resources = "res."
 
 [executor]
 kind = "subprocess"                   # registered executor used when --executor is not given
-command = []                          # argv template; placeholders: {run_id} {cell_id} {seed} {seed_role} {result_path} {log_path} {root}
+command = []                          # argv template; placeholders: {python} {run_id} {cell_id} {seed} {seed_role} {result_path} {log_path} {root}
+# {python} is the launcher's own interpreter: no machine path enters the hashed command.
 timeout_s = 0                         # 0 disables the timeout
+kill_grace_s = 30                     # after a timeout or interrupt: SIGTERM, wait this long, SIGKILL
+poll_interval_s = 0.2                 # how often the launcher checks on the program
 result_filename = "{run_id}.json"
 log_filename = "{run_id}.log"
 env_prefix = "QCAL_RUN_"
@@ -257,7 +276,8 @@ superseded_is_error = true
 
 [data]
 splits = ["trt_calib_images", "calibrator_fit_split", "val", "test"]
-manifest_pattern = "{split}.txt"
+manifest_pattern = "{split}.txt"      # may also name {dataset}
+datasets = ["id"]                    # the first is the default {dataset} of a manifest
 comment_prefix = "#"
 
 [licenses]

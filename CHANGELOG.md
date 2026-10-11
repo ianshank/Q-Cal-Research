@@ -6,6 +6,120 @@ All notable changes to the `qcal` tooling and the agent layer. The format follow
 
 ## [Unreleased]
 
+### Cycle 2026-10: G0 → G1 readiness
+
+Plan: `docs/changes/cycle-2026-10-g1-readiness.md` (reviewed by the adversarial reviewer and a
+four-lens expert panel).
+
+Process (PR-0):
+- The cycle plan is committed as a change document; `docs/changes/README.md` indexes every
+  proposal; the template gains Status, Decisions, Compatibility, Ian decisions requested and
+  Ian hours.
+- `SECURITY.md` (private reporting; what counts as a bypass) and `CONTRIBUTING.md` (the
+  workflow, how Ian signs an agent branch, what the hooks tell agents, the test suites).
+- `docs/AGENT_LAYER.md` lists the scoped hooks each subagent carries, `allow-only` included.
+
+Proposed, for Ian to accept by Oct 17: `docs/changes/evalloop-v2.md`, a two-layer evaluation
+interface (matching once, then objectives and metrics), three detection sets, a bootstrap
+over resampled datasets (copies under fresh ids, no weights), and a replay detector.
+
+Registered-run gates (`docs/changes/registry-run-gates.md`, signed surface):
+- A registered run reads committed configuration only. `qcal registry run|run-batch` refuses
+  `QCAL__*` overrides (except `logging`), a `QCAL_CONFIG`/`QCAL_ROOT` that points away from
+  the repository, a `qcal.toml` that differs from `HEAD`, unknown or mistyped configuration
+  keys, and an `--experiments` file other than the configured one (`--dry-run` excepted).
+- The experiment program's environment no longer carries configuration variables; it reports
+  the digest of every configuration file it read, and a file that changed during the run
+  fails it.
+- Records gain `provenance.{config_inputs_sha256, config_sources, config_environment,
+  policy_source, policy_sha256}`; `qcal registry audit --strict` fails when a cell's seeds ran
+  under different configuration files.
+- Git runs without redirecting `GIT_*` variables, with replacement objects ignored and
+  `core.fsmonitor` off.
+- `qcal config --check` rejects unknown, removed and mistyped keys (run by `make integrity`
+  and CI); `qcal config` shows the environment inputs.
+- The record schema version is a code constant (`records.SCHEMA_VERSION`); records claiming a
+  newer schema are refused. `registry.schema_version` is removed from the defaults.
+- After Copilot's review: every `registry.config_hash_inputs` file must equal `HEAD`, read
+  once for the gate and the hash; a project outside git is never compared with `HEAD`; the
+  fields of list-of-table keys are type-checked.
+- After the adversarial review: the run root must be the repository's top level;
+  `EXPERIMENTS.yaml` must equal `HEAD`; the parsed bytes, not a later read, are compared;
+  the registry's git queries are isolated from user and system git configuration; a
+  repository git cannot read is refused; `audit --strict` fails on records whose policy was
+  not verified (`uncommitted_policy`); category names in policy lists must exist.
+
+Registered-run contract (`docs/changes/registry-run-contract.md`, signed surface, PR-A2):
+- The experiment command names `{python}`, the launcher's own interpreter, run with `-I`;
+  `config_hash` still hashes the template. `provenance.launcher` records the interpreter and
+  the `qcal` that launched; `registry.require_code_in_root` refuses a `qcal` imported from
+  outside `paths.source_dir`.
+- Launcher environment keys live under `launcher.`; a program key that would collide is kept
+  under `reported.`. The `nvidia` collector lists every GPU (index, uuid, PCI bus, name,
+  capability, memory, driver). `registry.recorded_env_vars` records CUDA and threading
+  variables verbatim, null when unset.
+- The program runs in its own process group; a timeout or a launcher exception sends SIGTERM
+  to the group, then SIGKILL after `executor.kill_grace_s`, and a second interrupt kills at
+  once. The program writes a `qcal.executor_result` v1 envelope on every exit; it is read on
+  a non-zero exit too, and a malformed one fails the run. Records gain `failure_kind`
+  (timeout, cuda_oom, host_oom, cuda_error, plan, config, interrupted, unknown) and are
+  written on any `BaseException`, after which it is re-raised. An interrupted batch exits 130.
+- One `flock` per (cell, seed) from the duplicate check to the record; in-flight markers under
+  `paths.inflight_dir`, reported as stale by the audit; `provenance.batch_id` and `retry_of`.
+- `RunRecord.resources` (`res.*` columns): wall and CPU time and peak memory from `wait4`, and
+  the device and cache counts the program reports through an allowlist.
+- Index columns `config_inputs_sha256`, `batch_id`, `failure_kind`. Tables and claims refuse
+  to average runs of one row under different configuration files, and refuse a spread over
+  seeds the program reports as `seed_effective = false`. Table specs are no longer run inputs.
+- `data.manifest_pattern` may name `{dataset}` through one shared `leakage.manifest_path`.
+- guard-bash no longer crashes on a segment that is only a redirection.
+- After the adversarial review: the program reports each artifact's sha256 and a file that
+  changed before the record fails the run; signals after the program's exit wait for the
+  record, and the in-flight marker goes only once it exists; SIGTERM and SIGHUP end a run
+  like Ctrl-C, so a killed launcher no longer orphans its program; envelopes must be
+  self-consistent; leftover workers are terminated before hashing.
+
+Run identity and formats (`docs/changes/run-identity-and-formats.md`, agent-owned, PR-D1):
+- Golden digests pin every run identity (`tests/regression/test_run_identity_goldens.py`);
+  each re-pin names the proposal step that moved it.
+- `target`, `quant_path`, `fit_precision`, `threshold_regime` and `split_design` are roles;
+  the factor tables may name roles only; a detector kind declares the targets it produces.
+  Smoke and fixture-loop settings move to the unhashed `resources/tooling.toml`.
+- Every saved format declares its name and version (`qcal_lab/formats.py`): predictions v2
+  with a source header and reserved row fields, calibrator (with Platt's solver settings and
+  boundary flag), calibration, cache sidecar, parity case (with `oracle.environment`) and a
+  package list.
+- `[numerics.regimes.*]`: `fp32` keeps torch's defaults, `fp32_tf32_off` turns TF32 and
+  autotuning off and determinism on; every switch in effect is recorded, with the device,
+  CUDA, cuDNN and torch's build digest. The default stays `fp32` (D5 is Ian's).
+- MMDetection detectors must set `score_threshold` and `max_per_image` (`configs/lab.toml`
+  pins 100; the threshold is Ian's, F10); the model's class names must equal the dataset's.
+- The prediction cache key covers the prediction modules' source, the source header, the
+  numerics and each kind's compute stack and resolved config, not the package version or the
+  images' path. A hit needs the producer's record to list the file; the cache never replaces
+  bytes; the detector is built on the first miss only.
+- Smoke runs the program with the registered command, `{python} -I`.
+- After the adversarial review: a cache hit hashes, vouches for and parses one read of the
+  file; supported values are checked per role, also under a renamed factor; the TF32 and
+  cuBLAS variables are in the cache key; `seed_effective` is true only for a proper-subset
+  draw into a calibrator that reads it.
+- A Platt property test bounds parameter recovery by the loss's curvature (found by the
+  `explore` profile); Platt takes a full Newton step once the predicted decrease is below the
+  loss's resolution.
+
+Verification (PR-E):
+- Hypothesis invariants for isotonic regression, Platt scaling and Alg. A.1/A.2 against slow
+  reference implementations; scikit-learn and SciPy oracles (`tests/oracle`, extra `oracle`)
+  agree to 1e-12 and 1e-10 in loss (evidence for TD-13 and TD-16).
+- `tests/contract`: the EvalLoop contract on the fixture loop and, once it exists, Ian's. The
+  file and socket audit starts before the loop is imported, so a loop cannot read data while
+  it is built and keep it.
+- CI job `oracle` installs the `oracle` extra and runs the properties, oracles and contract
+  with `ORACLE_REQUIRED=1`, so a missing library fails instead of skipping.
+- `tests/e2e/test_lab_registry_loop.py`: a lab number through the registry to a claim.
+- `scripts/traceability.py --check`: every integrity rule in CLAUDE.md and AGENTS.md maps to
+  tests (`@pytest.mark.rule`); Hypothesis profiles `ci`, `dev`, `explore`.
+
 ### Phase 1 scaffold
 
 Change proposal: `docs/changes/reproduce-kuzucu-eccv24-baselines.md`. Reference:

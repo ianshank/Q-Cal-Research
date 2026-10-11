@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+import fcntl
+import hashlib
 import itertools
 import logging
+import os
 import platform
 import re
+import signal
+import subprocess
 import sys
+import threading
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -15,11 +22,19 @@ from typing import Any
 import pytest
 
 from qcal.config import Config
+from qcal.registry.environment import launcher_identity
 from qcal.registry.executor import ExecutionResult, RunSpec, SubprocessExecutor
 from qcal.registry.experiments import Experiments, ExperimentsError, load_experiments
-from qcal.registry.records import ArtifactRef, effective
-from qcal.registry.runner import PlannedRun, Runner, RunRefusedError, merge_environment
-from qcal.registry.store import RegistryStore
+from qcal.registry.gates import config_inputs, digest_of
+from qcal.registry.records import SCHEMA_VERSION, ArtifactRef, effective
+from qcal.registry.runner import (
+    LauncherSignal,
+    PlannedRun,
+    Runner,
+    RunRefusedError,
+    merge_environment,
+)
+from qcal.registry.store import MARKER_SUFFIX, RegistryStore, pair_lock_name
 from tests.conftest import (
     FakeExecutor,
     executor_command,
@@ -29,6 +44,8 @@ from tests.conftest import (
     run_git,
     write,
 )
+
+pytestmark = pytest.mark.rule("C7")
 
 T0 = datetime(2026, 10, 9, 12, 0, 0, tzinfo=UTC)
 CELLS: list[dict[str, Any]] = [
@@ -235,23 +252,46 @@ def test_run_rounds_duration_to_milliseconds(config: Config, fake_executor: Fake
     assert make_runner(config, fake_executor, clock=clock).run("C-a", 0).duration_s == 1.235
 
 
-def test_run_records_provenance(config: Config, fake_executor: FakeExecutor) -> None:
+def test_run_records_provenance(
+    config: Config, fake_executor: FakeExecutor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recorded = config.str_list("registry.recorded_env_vars")
+    for name in recorded:  # the test's environment, not the machine's (CI sets some)
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/opt/lib")
     runner = make_runner(config, fake_executor)
     record = runner.run("C-a", 0)
+    policy = config.root / "qcal.toml"
     assert dict(record.provenance) == {
         "git_sha": None,
         "git_dirty": None,
         "config_hash": runner.config_hash(runner.experiments.cell("C-a"), 0),
+        "config_inputs_sha256": digest_of(config_inputs(config)),
+        "config_sources": list(config.sources),
+        "config_environment": {},
+        "policy_source": "worktree",
+        "policy_sha256": hashlib.sha256(policy.read_bytes()).hexdigest(),
         "experiments_sha256": runner.experiments.sha256,
         "executor": "FakeExecutor",
+        "launcher": launcher_identity(config.root),
+        "environment_variables": {**dict.fromkeys(recorded), "LD_LIBRARY_PATH": "/opt/lib"},
+        "batch_id": None,
+        "retry_of": None,
+        "inputs_unverified": ["EXPERIMENTS.yaml", "qcal.toml"],  # FakeExecutor reports none
     }
 
 
-def test_run_uses_configured_schema_version(
+def test_records_carry_the_code_schema_version(config: Config, fake_executor: FakeExecutor) -> None:
+    assert make_runner(config, fake_executor).run("C-a", 0).schema_version == SCHEMA_VERSION
+
+
+def test_the_removed_schema_version_key_refuses_the_run(
     make_config: Callable[[str], Config], fake_executor: FakeExecutor
 ) -> None:
     config = make_config("[registry]\nschema_version = 7\n")
-    assert make_runner(config, fake_executor).run("C-a", 0).schema_version == 7
+    with pytest.raises(RunRefusedError, match=r"registry\.schema_version was removed"):
+        make_runner(config, fake_executor).run("C-a", 0)
+    assert fake_executor.specs == []
 
 
 def test_run_hands_the_executor_a_complete_spec(
@@ -306,20 +346,57 @@ def test_run_records_artifacts_of_successful_runs(config: Config) -> None:
     assert make_runner(config, executor).run("C-a", 0).artifacts == (artifact,)
 
 
-def test_run_records_failures_without_metrics_or_artifacts(config: Config) -> None:
+def test_run_records_failures_without_metrics_but_with_partial_artifacts(config: Config) -> None:
     artifact = ArtifactRef("x", "h")
-    executor = FakeExecutor(
-        [ExecutionResult(0, metrics={"AP": 1.0}, artifacts=[artifact], error="bad result")]
+    result = ExecutionResult(
+        0, metrics={"AP": 1.0}, artifacts=[artifact], error="bad result", failure_kind="cuda_oom"
     )
-    runner = make_runner(config, executor)
+    runner = make_runner(config, FakeExecutor([result]))
     record = runner.run("C-a", 0)
     assert (record.status, record.error, dict(record.metrics), record.artifacts) == (
         "failed",
         "bad result",
         {},
-        (),
+        (artifact,),
     )
+    assert record.failure_kind == "cuda_oom"
     assert runner.store.exists(record.run_id)
+
+
+def test_a_failure_without_a_kind_is_recorded_as_unknown(config: Config) -> None:
+    record = make_runner(config, FakeExecutor([FAILED])).run("C-a", 0)
+    assert record.failure_kind == "unknown"
+
+
+def test_an_ok_run_has_no_failure_kind(config: Config, fake_executor: FakeExecutor) -> None:
+    record = make_runner(config, fake_executor).run("C-a", 0)
+    assert record.failure_kind is None
+    assert "failure_kind" not in record.to_dict()
+
+
+class InterruptingExecutor(FakeExecutor):
+    def __init__(self, exc: BaseException) -> None:
+        super().__init__()
+        self.exc = exc
+
+    def execute(self, spec: RunSpec) -> ExecutionResult:
+        raise self.exc
+
+
+@pytest.mark.parametrize("exc", [KeyboardInterrupt(), SystemExit(3)], ids=["ctrl-c", "exit"])
+def test_an_interrupted_run_is_recorded_then_re_raised(config: Config, exc: BaseException) -> None:
+    runner = make_runner(config, InterruptingExecutor(exc))
+    with pytest.raises(type(exc)):
+        runner.run("C-a", 0)
+    (record,) = runner.store.load_all()
+    assert (record.status, record.failure_kind) == ("failed", "interrupted")
+    assert record.error == f"interrupted by {type(exc).__name__}"
+
+
+def test_a_crashing_executor_is_recorded_as_unknown(config: Config) -> None:
+    runner = make_runner(config, InterruptingExecutor(RuntimeError("boom")))
+    record = runner.run("C-a", 0)
+    assert (record.failure_kind, record.error) == ("unknown", "executor raised RuntimeError: boom")
 
 
 def test_run_logs_failures(config: Config, caplog: pytest.LogCaptureFixture) -> None:
@@ -334,14 +411,14 @@ def test_run_uses_configured_status_names(make_config: Callable[[str], Config]) 
     assert [runner.run("C-a", 0).status, runner.run("C-a", 1).status] == ["done", "broken"]
 
 
-def test_run_merges_collected_and_reported_environment(config: Config) -> None:
+def test_run_records_the_launcher_and_the_program_under_separate_names(config: Config) -> None:
     reported = {"python": "2.7-claimed", "trt_version": "10.3.0"}
     executor = FakeExecutor([ExecutionResult(0, environment=reported)])
     record = make_runner(config, executor, collectors=["python"]).run("C-a", 0)
     assert dict(record.environment) == {
-        "python": platform.python_version(),
-        "python_impl": platform.python_implementation(),
-        "reported_python": "2.7-claimed",
+        "launcher.python": platform.python_version(),
+        "launcher.python_impl": platform.python_implementation(),
+        "python": "2.7-claimed",
         "trt_version": "10.3.0",
     }
 
@@ -349,25 +426,36 @@ def test_run_merges_collected_and_reported_environment(config: Config) -> None:
 @pytest.mark.parametrize(
     ("collected", "reported", "expected"),
     [
-        ({"python": "3.11"}, {}, {"python": "3.11"}),
+        ({"python": "3.11"}, {}, {"launcher.python": "3.11"}),
         ({}, {"trt_version": "10"}, {"trt_version": "10"}),
-        ({"python": "3.11"}, {"trt_version": "10"}, {"python": "3.11", "trt_version": "10"}),
-        ({"python": "3.11"}, {"python": "3.11"}, {"python": "3.11"}),
-        ({"python": "3.11"}, {"python": "2.7"}, {"python": "3.11", "reported_python": "2.7"}),
-        ({"gpu": None}, {"gpu": "A100"}, {"gpu": None, "reported_gpu": "A100"}),
+        ({"python": "3.11"}, {"python": "3.12"}, {"launcher.python": "3.11", "python": "3.12"}),
+        (
+            {"python": "3.11"},
+            {"launcher.python": "2.7"},
+            {"launcher.python": "3.11", "reported.launcher.python": "2.7"},
+        ),
+        ({}, {"reported.x": 1}, {"reported.reported.x": 1}),
+        ({"gpu": None}, {"gpu": "A100"}, {"launcher.gpu": None, "gpu": "A100"}),
     ],
-    ids=["nothing-reported", "only-reported", "disjoint", "agreeing", "conflict", "none-conflict"],
+    ids=[
+        "nothing-reported",
+        "only-reported",
+        "both-kept",
+        "forged-launcher-key",
+        "forged-reported-key",
+        "none-and-value",
+    ],
 )
-def test_merge_environment_never_lets_reported_values_overwrite_collected_ones(
+def test_merge_environment_never_lets_the_program_pass_for_the_launcher(
     collected: dict[str, Any], reported: dict[str, Any], expected: dict[str, Any]
 ) -> None:
     assert merge_environment(collected, reported) == expected
 
 
-def test_merge_environment_warns_about_conflicts(caplog: pytest.LogCaptureFixture) -> None:
+def test_merge_environment_warns_about_reserved_keys(caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level(logging.WARNING, logger="qcal"):
-        merge_environment({"python": "3.11"}, {"python": "2.7"})
-    assert "experiment reported python='2.7'; keeping collected '3.11'" in caplog.text
+        merge_environment({"python": "3.11"}, {"launcher.python": "2.7"})
+    assert "launcher.python inside a reserved namespace" in caplog.text
 
 
 def test_merge_environment_is_silent_without_conflicts(caplog: pytest.LogCaptureFixture) -> None:
@@ -461,7 +549,10 @@ def test_run_in_a_clean_repository_records_head_and_clean_tree(
 def test_run_in_a_dirty_repository_records_it_and_warns(
     git_repo: Path, config: Config, fake_executor: FakeExecutor, caplog: pytest.LogCaptureFixture
 ) -> None:
-    runner = make_runner(config, fake_executor)  # EXPERIMENTS.yaml is untracked: dirty
+    runner = make_runner(config, fake_executor)
+    run_git(git_repo, "add", "EXPERIMENTS.yaml")
+    run_git(git_repo, "commit", "-q", "-m", "pre-register")
+    write(git_repo, "notes.txt", "uncommitted\n")  # dirty, but not an input the gates check
     with caplog.at_level(logging.WARNING, logger="qcal"):
         record = runner.run("C-a", 0)
     assert record.provenance["git_dirty"] is True
@@ -474,6 +565,9 @@ def test_run_refuses_a_dirty_tree_when_a_clean_one_is_required(
 ) -> None:
     config = make_config("[registry]\nrequire_clean_tree = true\n")
     runner = make_runner(config, fake_executor)
+    run_git(git_repo, "add", "qcal.toml", "EXPERIMENTS.yaml")
+    run_git(git_repo, "commit", "-q", "-m", "require a clean tree")
+    write(git_repo, "notes.txt", "uncommitted\n")
     with pytest.raises(RunRefusedError, match="working tree is dirty"):
         runner.run("C-a", 0)
     assert fake_executor.specs == []
@@ -794,3 +888,183 @@ def test_run_with_subprocess_executor_records_the_experiment_result(
     assert record.provenance["executor"] == "SubprocessExecutor"
     assert (config.root / record.log_path).is_file()
     assert sys.executable in str(config.get("executor.command"))
+
+
+# -- bookkeeping and concurrency (PR-A2) --------------------------------------------------
+
+
+def test_a_retry_names_the_latest_failed_run_of_its_pair(config: Config) -> None:
+    runner = make_runner(config, FakeExecutor([FAILED, FAILED, ExecutionResult(0)]))
+    first = runner.run("C-a", 0)
+    second = runner.run("C-a", 0)
+    third = runner.run("C-a", 0)
+    assert first.provenance["retry_of"] is None
+    assert second.provenance["retry_of"] == first.run_id
+    assert third.provenance["retry_of"] == second.run_id
+
+
+def test_a_batch_shares_one_batch_id(config: Config, fake_executor: FakeExecutor) -> None:
+    runner = make_runner(config, fake_executor)
+    batch = runner.run_batch("C-*")
+    ids = {r.provenance["batch_id"] for r in batch.completed}
+    assert ids == {batch.batch_id}
+    assert batch.batch_id is not None
+    assert re.fullmatch(r"B\d{8}T\d{6}Z-n\d+", batch.batch_id)
+    assert runner.run("D-c", 5).provenance["batch_id"] is None
+
+
+def test_a_dry_run_batch_has_no_batch_id(config: Config, fake_executor: FakeExecutor) -> None:
+    assert make_runner(config, fake_executor).run_batch("C-*", dry_run=True).batch_id is None
+
+
+def test_a_pair_locked_by_another_launcher_is_refused(
+    config: Config, fake_executor: FakeExecutor
+) -> None:
+    runner = make_runner(config, fake_executor)
+    directory = config.path("inflight_dir")
+    directory.mkdir(parents=True, exist_ok=True)
+    with (directory / pair_lock_name("C-a", 0)).open("a") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        with pytest.raises(RunRefusedError, match="being run by another launcher"):
+            runner.run("C-a", 0)
+    assert fake_executor.specs == []
+    assert runner.run("C-a", 0).status == "ok"  # the lock is released with its holder
+
+
+def test_a_running_run_has_an_inflight_marker_that_is_removed_after(config: Config) -> None:
+    seen: list[list[str]] = []
+
+    def look() -> None:
+        seen.append(sorted(p.name for p in config.path("inflight_dir").glob(f"*{MARKER_SUFFIX}")))
+
+    record = make_runner(config, MutatingExecutor(look)).run("C-a", 0)
+    assert seen == [[f"{record.run_id}{MARKER_SUFFIX}"]]
+    assert list(config.path("inflight_dir").glob(f"*{MARKER_SUFFIX}")) == []
+
+
+def test_the_marker_is_removed_when_the_run_is_interrupted(config: Config) -> None:
+    class Interrupt(FakeExecutor):
+        def execute(self, spec: RunSpec) -> ExecutionResult:
+            raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        make_runner(config, Interrupt()).run("C-a", 0)
+    assert list(config.path("inflight_dir").glob(f"*{MARKER_SUFFIX}")) == []
+
+
+def test_lock_names_are_safe_for_any_cell_id() -> None:
+    name = pair_lock_name("a/b c", 3)
+    assert "/" not in name
+    assert " " not in name
+    assert name.startswith("a_b_c@3-")
+    assert name != pair_lock_name("a_b_c", 3)  # the digest keeps sanitised names apart
+
+
+LOCK_HOLDER = """
+import fcntl, sys, time
+handle = open(sys.argv[1], "a")
+fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+print("locked", flush=True)
+time.sleep(60)
+"""
+
+
+@pytest.mark.integration
+def test_a_second_launcher_process_is_refused_while_the_first_holds_the_pair(
+    config: Config, fake_executor: FakeExecutor, tmp_path: Path
+) -> None:
+    directory = config.path("inflight_dir")
+    directory.mkdir(parents=True, exist_ok=True)
+    holder = tmp_path / "holder.py"
+    holder.write_text(LOCK_HOLDER)
+    lock = directory / pair_lock_name("C-a", 0)
+    proc = subprocess.Popen(
+        [sys.executable, str(holder), str(lock)], stdout=subprocess.PIPE, text=True
+    )
+    try:
+        assert proc.stdout is not None
+        assert proc.stdout.readline().strip() == "locked"
+        with pytest.raises(RunRefusedError, match="being run by another launcher"):
+            make_runner(config, fake_executor).run("C-a", 0)
+    finally:
+        proc.kill()
+        proc.wait()
+        if proc.stdout is not None:
+            proc.stdout.close()
+    assert make_runner(config, fake_executor).run("C-a", 0).status == "ok"
+
+
+def test_a_record_carries_what_the_run_cost(config: Config) -> None:
+    result = ExecutionResult(0, resources={"wall_s": 2.0, "cache_hits": 1})
+    record = make_runner(config, FakeExecutor([result])).run("C-a", 0)
+    assert dict(record.resources) == {"wall_s": 2.0, "cache_hits": 1}
+
+
+# -- signals around a run (wave-2 review, B5 and B6) ------------------------------------------
+
+
+class SignallingExecutor(FakeExecutor):
+    """Sends the launcher a signal while the program "runs", as `kill` or a closed terminal."""
+
+    def __init__(self, number: int) -> None:
+        super().__init__()
+        self.number = number
+
+    def execute(self, spec: RunSpec) -> ExecutionResult:
+        os.kill(os.getpid(), self.number)
+        time.sleep(5)  # the handler interrupts this
+        raise AssertionError("the signal did not interrupt the run")
+
+
+@pytest.mark.parametrize("number", [signal.SIGTERM, signal.SIGHUP], ids=["sigterm", "sighup"])
+def test_sigterm_and_sighup_end_a_run_like_ctrl_c(config: Config, number: int) -> None:
+    previous = signal.getsignal(number)
+    runner = make_runner(config, SignallingExecutor(number))
+    with pytest.raises(LauncherSignal):
+        runner.run("C-a", 0)
+    (record,) = runner.store.load_all()
+    assert (record.status, record.failure_kind) == ("failed", "interrupted")
+    assert signal.getsignal(number) is previous  # the launcher's own handler is restored
+
+
+def test_an_interrupt_while_recording_waits_for_the_record(
+    config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ctrl-C after the program finished (while collectors import torch) used to lose it."""
+    from qcal.registry import runner as runner_module
+
+    def collect_then_interrupt(*_: Any, **__: Any) -> dict[str, Any]:
+        os.kill(os.getpid(), signal.SIGINT)
+        return {}
+
+    monkeypatch.setattr(runner_module, "collect_environment", collect_then_interrupt)
+    runner = make_runner(config, FakeExecutor())
+    # Another live thread, as a launcher may have: the kernel can deliver the signal to it,
+    # so masking the main thread alone would not hold it.
+    done = threading.Event()
+    other = threading.Thread(target=done.wait, daemon=True)
+    other.start()
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            runner.run("C-a", 0)
+    finally:
+        done.set()
+        other.join()
+    (record,) = runner.store.load_all()
+    assert record.status == "ok"  # the run finished; the record says so
+    assert list(config.path("inflight_dir").glob(f"*{MARKER_SUFFIX}")) == []
+
+
+def test_the_marker_stays_when_the_record_cannot_be_written(
+    config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The audit reports a run that left no record; deleting its marker would hide it."""
+    runner = make_runner(config, FakeExecutor())
+
+    def full_disk(_: Any) -> None:
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(runner.store, "write", full_disk)
+    with pytest.raises(OSError, match="no space"):
+        runner.run("C-a", 0)
+    assert len(list(config.path("inflight_dir").glob(f"*{MARKER_SUFFIX}"))) == 1

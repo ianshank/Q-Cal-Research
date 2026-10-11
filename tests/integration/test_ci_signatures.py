@@ -26,7 +26,7 @@ from qcal.ci.signatures import (
 )
 from tests.conftest import require_tool, run_git, write
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.rule("C0")]
 signing = pytest.mark.requires_ssh_keygen
 
 ENFORCE = '[signing]\nmode = "enforce"\n'

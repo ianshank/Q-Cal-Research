@@ -13,6 +13,8 @@ from qcal_lab.calib import build_calibrator
 from qcal_lab.config import load_lab_config
 from qcal_lab.fixture_eval import FixtureEvalLoop
 from qcal_lab.parity import (
+    CASE_FORMAT,
+    CASE_VERSION,
     ParityError,
     check_calibrator_case,
     check_metric_case,
@@ -20,18 +22,23 @@ from qcal_lab.parity import (
     load_case,
     load_cases,
 )
-from qcal_lab.predictions import PredictionsHeader, write_predictions
-from qcal_lab.smoke import SmokeReport, run_smoke
+from qcal_lab.predictions import write_predictions
+from qcal_lab.smoke import SmokeReport, expected_artifacts, run_smoke, smoke_settings
 from qcal_lab.status import build_status
-from tests.lab_support import det, image, lab_config
+from tests.lab_support import det, image, lab_config, predictions_header
 
-ORACLE = {"repository": "fiveai/detection_calibration", "commit": "abc123"}
+ORACLE = {
+    "repository": "fiveai/detection_calibration",
+    "commit": "abc123",
+    "environment": {"python": "3.8.18", "cuda": "11.8"},
+}
 
 
 def _case(directory: Path, name: str, data: dict[str, Any]) -> Path:
+    """A parity case file; ``data`` is its body, written inside the case envelope."""
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{name}.json"
-    path.write_text(json.dumps(data))
+    path.write_text(json.dumps({"format": CASE_FORMAT, "version": CASE_VERSION, **data}))
     return path
 
 
@@ -48,11 +55,29 @@ def test_compare() -> None:
         ({"kind": "table"}, "'kind' must be one of"),
         ({"kind": "metric"}, "'oracle' must record"),
         ({"kind": "metric", "oracle": {"repository": "x", "commit": ""}}, "'oracle' must record"),
+        (
+            {"kind": "metric", "oracle": {"repository": "x", "commit": "c"}},
+            "oracle.environment' must record",
+        ),
+        (
+            {"kind": "metric", "oracle": {"repository": "x", "commit": "c", "environment": {}}},
+            "oracle.environment' must record",
+        ),
     ],
 )
 def test_case_validation(tmp_path: Path, data: dict[str, Any], message: str) -> None:
     with pytest.raises(ParityError, match=message):
         load_case(_case(tmp_path, "c", data))
+
+
+def test_a_case_without_its_envelope_is_refused(tmp_path: Path) -> None:
+    path = tmp_path / "bare.json"
+    path.write_text(json.dumps({"kind": "metric", "oracle": ORACLE}))
+    with pytest.raises(ParityError, match=r"not a qcal_lab\.parity_case document"):
+        load_case(path)
+    path.write_text(json.dumps({"format": CASE_FORMAT, "version": 0, "kind": "metric"}))
+    with pytest.raises(ParityError, match="version 0 is not supported"):
+        load_case(path)
 
 
 def test_unreadable_case_and_missing_directory(tmp_path: Path) -> None:
@@ -97,7 +122,7 @@ def test_metric_cases(tmp_path: Path) -> None:
     first = next(a for a in doc["annotations"] if a["image_id"] == 1)
     x, y, w, h = first["bbox"]
     label = first["category_id"] - 1  # categories 1..n map to labels 0..n-1
-    header = PredictionsHeader("x", "test", "raw", "d", "s", (1, 2, 3))
+    header = predictions_header("x", "test", category_ids=(1, 2, 3))
     hit = det(0.5, label, (x, y, x + w, y + h))  # exactly the object: target 1, gap 0.5
     write_predictions(directory / "p.jsonl", header, [image("1", hit)])
     case = {"kind": "metric", "oracle": ORACLE, "predictions": "p.jsonl", "ground_truth": "gt.json"}
@@ -136,7 +161,7 @@ def test_metric_cases_through_the_repository_loop(repo: Path) -> None:
     directory = repo / "cases"
     write_fixture(directory / "gt.json", fixture_document())
     write_predictions(
-        directory / "p.jsonl", PredictionsHeader("x", "test", "raw", "d", "s", (1, 2, 3)), []
+        directory / "p.jsonl", predictions_header("x", "test", category_ids=(1, 2, 3)), []
     )
     case = load_case(
         _case(
@@ -168,6 +193,7 @@ def test_status_checks_the_checkpoint_digest_and_the_images(repo: Path) -> None:
     body = (
         '[datasets.id]\nimages_dir = "images"\n'
         '[detectors.atss_r50]\nconfig = "atss.py"\ncheckpoint = "w.pth"\n'
+        "score_threshold = 0.05\nmax_per_image = 100\n"
     )
     good = hashlib.sha256(b"weights").hexdigest()
     (repo / "configs").mkdir()
@@ -178,9 +204,24 @@ def test_status_checks_the_checkpoint_digest_and_the_images(repo: Path) -> None:
         assert items["detector atss_r50"][0] is ok, items["detector atss_r50"]
         assert items["in-domain images"][0] is True
     assert "does not match" in items["detector atss_r50"][1]
+    (repo / "configs/lab.toml").write_text(
+        body.replace("score_threshold = 0.05\n", "") + f'checkpoint_sha256 = "{good}"\n'
+    )
+    report = build_status(load_config(repo, environ={}), load_lab_config(repo))
+    state, detail = {n: (s, d) for n, s, d in report.items}["detector atss_r50"]
+    assert (state, detail) == (False, "detectors.atss_r50.score_threshold is not set")
     (repo / "images").rmdir()
     report = build_status(load_config(repo, environ={}), load_lab_config(repo))
     assert {n: s for n, s, _ in report.items}["in-domain images"] is False
+
+
+def test_status_reports_a_detector_without_a_kind(repo: Path) -> None:
+    (repo / "configs").mkdir()
+    (repo / "configs/lab.toml").write_text('[detectors.odd]\nconfig = "x.py"\n')
+    report = build_status(load_config(repo, environ={}), load_lab_config(repo))
+    state, detail = {n: (s, d) for n, s, d in report.items}["detector odd"]
+    assert state is False
+    assert "detectors.odd.kind must name a detector kind" in detail
 
 
 def test_status_reports_broken_loops_and_cases(repo: Path) -> None:
@@ -203,8 +244,12 @@ def test_smoke_report_rendering() -> None:
 
 
 def test_smoke_detects_a_failing_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    lab = lab_config(tmp_path, '[smoke]\ncalibrators = ["none"]\n')
-    report = run_smoke(lab, tmp_path / "w", python=str(tmp_path / "no-such-python"))
+    report = run_smoke(
+        lab_config(tmp_path),
+        tmp_path / "w",
+        python=str(tmp_path / "no-such-python"),
+        settings={"calibrators": ["none"]},
+    )
     assert not report.passed
     failed = {name for name, ok, _ in report.checks if not ok}
     assert "every pre-registered run succeeded" in failed
@@ -228,4 +273,35 @@ def test_smoke_refuses_split_sizes_larger_than_the_fixture(tmp_path: Path) -> No
     from qcal_lab.data.splits import SplitError
 
     with pytest.raises(SplitError, match="only 20 exist"):
-        run_smoke(lab_config(tmp_path, "[smoke.split_sizes]\ntest = 100\n"), tmp_path / "w")
+        run_smoke(lab_config(tmp_path), tmp_path / "w", settings={"split_sizes": {"test": 100}})
+
+
+def test_smoke_settings_are_tooling_with_overrides() -> None:
+    settings = smoke_settings({"split_sizes": {"test": 3}, "seeds": [0, 1]})
+    assert settings["split_sizes"]["test"] == 3
+    assert settings["split_sizes"]["val"] == smoke_settings()["split_sizes"]["val"]  # deep merge
+    assert settings["seeds"] == [0, 1]
+    assert smoke_settings()["seeds"] == [0]  # overrides never leak into the packaged settings
+
+
+def test_expected_artifacts_follow_the_split_roles() -> None:
+    roles = {"fit": "a", "select": "b", "evaluate": "c"}
+    assert expected_artifacts(roles) == {
+        "predictions_raw_a",
+        "predictions_raw_b",
+        "predictions_raw_c",
+        "calibration",
+        "predictions_calibrated_c",
+        "packages",
+    }
+
+
+def test_smoke_runs_the_program_as_registered_runs_do(tmp_path: Path) -> None:
+    """Smoke exercises the repository's own command: the launcher's interpreter, isolated."""
+    from qcal_lab.smoke import PROGRAM_COMMAND, PYTHON_PLACEHOLDER, write_project
+    from tests.conftest import REPO_ROOT
+
+    registered = load_config(REPO_ROOT, environ={}).str_list("executor.command")
+    assert [PYTHON_PLACEHOLDER, *PROGRAM_COMMAND] == registered
+    write_project(tmp_path / "p", lab_config(tmp_path), settings={"calibrators": ["none"]})
+    assert load_config(tmp_path / "p", environ={}).str_list("executor.command") == registered

@@ -16,6 +16,7 @@ from qcal.registry.records import RunRecord
 from qcal.registry.store import RegistryStore
 from qcal.registry.tables import (
     ColumnSpec,
+    TableDataError,
     TableResult,
     TableSpec,
     build_tables,
@@ -672,3 +673,36 @@ def test_explicit_headers_are_raw_latex(config: Config) -> None:
 def test_table_names_cannot_escape_the_tables_directory(config: Config, name: str) -> None:
     with pytest.raises(ConfigError, match="table name"):
         specs_from(config, SPEC.replace('name = "main"', f'name = "{name}"'))
+
+
+# -- unsound aggregates (PR-A2) -----------------------------------------------------------
+
+
+def _with(rows: list[dict[str, str]], **columns: str) -> list[dict[str, str]]:
+    return [{**r, **columns} for r in rows]
+
+
+def test_a_row_mixing_configuration_files_is_refused(config: Config) -> None:
+    index = [
+        {**row("R1", AP=1.0), "config_inputs_sha256": "a" * 64},
+        {**row("R2", AP=2.0), "config_inputs_sha256": "b" * 64},
+    ]
+    with pytest.raises(TableDataError, match="ran under different configuration files"):
+        render_table(config, spec(), index)
+
+
+def test_runs_under_the_same_configuration_files_are_averaged(config: Config) -> None:
+    index = _with([row("R1", AP=1.0), row("R2", AP=2.0)], config_inputs_sha256="a" * 64)
+    assert "{1.50}" in render_table(config, spec(), index)
+
+
+def test_a_spread_over_seeds_that_drew_nothing_is_refused(config: Config) -> None:
+    index = _with([row("R1", AP=1.0), row("R2", AP=1.0)], **{"env.seed_effective": "false"})
+    with pytest.raises(TableDataError, match="false zero variance"):
+        render_table(config, spec(ColumnSpec("AP", "std", 2, "AP")), index)
+    assert "{1.00}" in render_table(config, spec(), index)  # the mean of identical runs is fine
+
+
+def test_a_spread_over_seeds_that_drew_is_allowed(config: Config) -> None:
+    index = _with([row("R1", AP=1.0), row("R2", AP=3.0)], **{"env.seed_effective": "true"})
+    assert "{1.41}" in render_table(config, spec(ColumnSpec("AP", "std", 2, "AP")), index)
