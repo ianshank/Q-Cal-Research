@@ -240,8 +240,22 @@ def _parse_header(line: str, path: Path) -> PredictionsHeader:
 
 def read_predictions(path: Path) -> tuple[PredictionsHeader, tuple[ImageDetections, ...]]:
     try:
-        lines = path.read_text("utf-8").splitlines()
-    except (OSError, UnicodeDecodeError) as exc:
+        data = path.read_bytes()
+    except OSError as exc:
+        raise PredictionsError(f"cannot read {path}: {exc}") from exc
+    return loads_predictions(data, path)
+
+
+def loads_predictions(
+    data: bytes, path: Path
+) -> tuple[PredictionsHeader, tuple[ImageDetections, ...]]:
+    """Parse predictions from ``data``, the bytes of ``path`` (named in errors only).
+
+    A caller that hashes ``data`` and parses it here uses exactly the bytes it verified.
+    """
+    try:
+        lines = data.decode("utf-8").splitlines()
+    except UnicodeDecodeError as exc:
         raise PredictionsError(f"cannot read {path}: {exc}") from exc
     if not lines:
         raise PredictionsError(f"{path} is empty")
@@ -372,6 +386,7 @@ __all__ = [
     "PredictionsHeader",
     "cache_key",
     "dumps",
+    "loads_predictions",
     "read_predictions",
     "validate",
     "write_predictions",

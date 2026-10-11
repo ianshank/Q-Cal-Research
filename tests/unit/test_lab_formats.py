@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
+import os
 from pathlib import Path
 
 import pytest
@@ -76,3 +78,28 @@ def test_exclusive_writes_never_replace_a_file(tmp_path: Path) -> None:
         write_bytes_exclusive(path, b"two")
     assert path.read_bytes() == b"one"
     assert [p.name for p in path.parent.iterdir()] == ["f.bin"]
+
+
+@pytest.mark.parametrize("number", [errno.EPERM, errno.EOPNOTSUPP])
+def test_exclusive_writes_work_without_hard_links(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, number: int
+) -> None:
+    def no_links(*_: object) -> None:
+        raise OSError(number, "no hard links here")
+
+    monkeypatch.setattr(os, "link", no_links)
+    path = tmp_path / "f.bin"
+    assert write_bytes_exclusive(path, b"one") == hashlib.sha256(b"one").hexdigest()
+    with pytest.raises(FileExistsError):
+        write_bytes_exclusive(path, b"two")
+    assert path.read_bytes() == b"one"
+    assert [p.name for p in tmp_path.iterdir()] == ["f.bin"]
+
+
+def test_other_link_errors_are_not_hidden(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def broken(*_: object) -> None:
+        raise OSError(errno.EIO, "input/output error")
+
+    monkeypatch.setattr(os, "link", broken)
+    with pytest.raises(OSError, match="input/output error"):
+        write_bytes_exclusive(tmp_path / "f.bin", b"one")

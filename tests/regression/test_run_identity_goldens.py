@@ -178,3 +178,30 @@ def test_fixture_detector_predictions(tmp_path: Path) -> None:
     assert sha(json.dumps(canonical).encode()) == (
         "941fc214a764c78b472d2c10e8a514e0c9bad5c075d1186d77428d9ffae57e96"
     )
+
+
+def test_prediction_key_composition(monkeypatch: pytest.MonkeyPatch) -> None:
+    """What the cache key is made of, not just cache_key() itself (wave-2 review, N13).
+
+    Pinned over a fixed context with the code digest stubbed, so dropping or renaming any
+    part (source, numerics and its environment, kind parts, images) moves it, while editing a
+    prediction module does not.
+    """
+    from types import SimpleNamespace
+
+    from qcal_lab import experiment
+    from qcal_lab.numerics import Regime
+
+    monkeypatch.setattr(experiment, "prediction_code_digest", lambda: "c" * 64)
+    for name in ("NVIDIA_TF32_OVERRIDE", "CUBLAS_WORKSPACE_CONFIG"):
+        monkeypatch.delenv(name, raising=False)
+    ctx = SimpleNamespace(
+        fingerprint={"name": "golden", "files": {}, "packages": {}},
+        source=PredictionSource("fp32", "torch_fp32", "none", "id", "golden"),
+        regime=Regime("fp32", {}),
+        key_parts={"stack": {"cuda": "12.8"}},
+        dataset=SimpleNamespace(sha256="d" * 64),
+        images_dir=None,
+    )
+    key = experiment.prediction_key(ctx, "e" * 64, ["1", "2"])  # type: ignore[arg-type]
+    assert key == ("c304d6e2ba0473fb6a44bb0feada5ab54b1b070543f63cf8014fb9fbb94303ed")

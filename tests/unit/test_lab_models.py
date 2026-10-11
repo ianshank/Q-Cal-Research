@@ -471,7 +471,7 @@ def test_mmdet_key_parts_hold_the_stack_and_the_resolved_config(mmdet_setup) -> 
         "torch": "2.9.0+cu128",
         "cuda": "12.8",
         "cudnn": 91000,
-        "torch_build_sha256": parts["stack"]["torch_build_sha256"],
+        "torch_build_sha256": hashlib.sha256(b"PyTorch built with: CUDA 12.8").hexdigest(),
         "capability": "12.0",
     }
     FakeConfig.texts = {config_path: "model = dict(type='ATSS', neck=...)"}  # a _base_ changed
@@ -483,3 +483,50 @@ def test_mmdet_key_parts_hold_the_stack_and_the_resolved_config(mmdet_setup) -> 
     FakeConfig.texts = {}
     with pytest.raises(DetectorError, match="cannot resolve the MMDetection config"):
         mmdet_module.key_parts(lab, "atss_r50")
+
+
+class DictConfig:
+    """A resolved config exposing ``to_dict``, as mmengine's does."""
+
+    def __init__(self, data: dict[str, Any]) -> None:
+        self.data = data
+        self.pretty_text = repr(data)  # depends on formatting; must not be what is hashed
+
+    def to_dict(self) -> dict[str, Any]:
+        return self.data
+
+
+def test_the_resolved_config_is_hashed_as_canonical_json(mmdet_setup) -> None:
+    """Key order and yapf's formatting must not move the cache key."""
+    s = mmdet_setup
+    loaded: list[dict[str, Any]] = [{"model": {"type": "ATSS", "neck": "FPN"}}]
+    s.modules["mmengine.config"] = SimpleNamespace(
+        Config=SimpleNamespace(fromfile=lambda _path: DictConfig(loaded[0]))
+    )
+    lab = lab_config(s.tmp, s.body)
+    first = mmdet_module.key_parts(lab, "atss_r50")["resolved_config_sha256"]
+    loaded[0] = {"model": {"neck": "FPN", "type": "ATSS"}}  # same config, other key order
+    assert mmdet_module.key_parts(lab, "atss_r50")["resolved_config_sha256"] == first
+
+    def broken(_path: str) -> None:
+        raise ImportError("a custom module the config imports is missing")
+
+    s.modules["mmengine.config"] = SimpleNamespace(Config=SimpleNamespace(fromfile=broken))
+    with pytest.raises(DetectorError, match="cannot resolve the MMDetection config"):
+        mmdet_module.key_parts(lab, "atss_r50")
+
+
+def test_switches_are_recorded_as_they_stand_once_the_model_is_built(mmdet_setup) -> None:
+    """Building the model may change a switch; inference runs under what is recorded."""
+    s = mmdet_setup
+    real_init = s.api.init_detector
+
+    def init_and_turn_on_autotuning(*args: Any, **kwargs: Any) -> Any:
+        s.torch.backends.cudnn.benchmark = True
+        return real_init(*args, **kwargs)
+
+    s.api.init_detector = init_and_turn_on_autotuning
+    detector = build_detector(
+        lab_config(s.tmp, s.body), "atss_r50", s.gt, precision="fp32", images_dir=s.images
+    )
+    assert detector.runtime["numerics"]["effective"]["cudnn_benchmark"] is True

@@ -8,12 +8,20 @@ first registered run a format only gains fields, and a change of meaning bumps i
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
+import secrets
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Final
+
+from qcal.log import get_logger
+
+_log = get_logger("lab.formats")
+#: os.link errors meaning "this filesystem has no hard links", not "the file exists".
+_NO_HARD_LINKS: Final = frozenset({errno.EPERM, errno.EOPNOTSUPP, errno.ENOTSUP, errno.EXDEV})
 
 FORMAT_KEY: Final = "format"
 VERSION_KEY: Final = "version"
@@ -49,10 +57,15 @@ def open_envelope(
     return {k: v for k, v in data.items() if k not in ENVELOPE_KEYS}
 
 
+def _temporary(path: Path) -> Path:
+    """A sibling temporary name no other writer uses (pids repeat across containers)."""
+    return path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(6)}.tmp")
+
+
 def write_bytes_atomic(path: Path, data: bytes) -> str:
     """Write ``data`` through a temporary file and a rename; returns its sha256."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp = _temporary(path)
     tmp.write_bytes(data)
     tmp.replace(path)
     return hashlib.sha256(data).hexdigest()
@@ -62,13 +75,23 @@ def write_bytes_exclusive(path: Path, data: bytes) -> str:
     """Create ``path`` holding ``data``, atomically; :class:`FileExistsError` if it exists.
 
     The bytes go to a temporary file first and are hard-linked into place, so a reader never
-    sees a partial file and two writers never both succeed.
+    sees a partial file and two writers never both succeed. Where the filesystem has no hard
+    links (exFAT, some network and FUSE mounts) the file is created exclusively and written
+    in place: still never two writers, but a reader may briefly see it partial.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp = _temporary(path)
     tmp.write_bytes(data)
     try:
         os.link(tmp, path)
+    except FileExistsError:
+        raise
+    except OSError as exc:
+        if exc.errno not in _NO_HARD_LINKS:
+            raise
+        _log.warning("%s has no hard links (%s); creating %s in place", path.parent, exc, path.name)
+        with path.open("xb") as handle:
+            handle.write(data)
     finally:
         tmp.unlink()
     return hashlib.sha256(data).hexdigest()

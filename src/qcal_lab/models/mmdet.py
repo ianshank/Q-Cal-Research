@@ -15,6 +15,7 @@ checkpoint's class names must equal the dataset's, in label order.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from collections.abc import Mapping, Sequence
 from importlib import import_module
@@ -33,7 +34,7 @@ from qcal_lab.models.base import (
     DetectorError,
     setting_int,
 )
-from qcal_lab.numerics import apply_regime, device_record, load_regime
+from qcal_lab.numerics import apply_regime, device_record, effective_switches, load_regime
 
 _log = get_logger("lab.models.mmdet")
 
@@ -180,7 +181,7 @@ def _build(context: DetectorContext) -> MMDetDetector:
     numerics = apply_regime(torch, regime, os.environ)  # before the model is built
     api = _import(API_MODULE, "the MMDetection detector cannot run")
     device = lab.text(f"{prefix}.device")
-    return MMDetDetector(
+    detector = MMDetDetector(
         name=context.name,
         ground_truth=context.ground_truth,
         images_dir=context.images_dir,
@@ -195,6 +196,19 @@ def _build(context: DetectorContext) -> MMDetDetector:
             "device": device_record(torch, device),
         },
     )
+    # Importing mmdet and building the model may change switches; inference runs under these.
+    detector.runtime["numerics"]["effective"] = effective_switches(torch)
+    return detector
+
+
+def _resolved_text(config: Any) -> str:
+    """The resolved config as canonical JSON (sorted keys), so it does not depend on yapf's
+    formatting the way ``pretty_text`` does; ``pretty_text`` only for a config without
+    ``to_dict``."""
+    to_dict = getattr(config, "to_dict", None)
+    if callable(to_dict):
+        return json.dumps(to_dict(), sort_keys=True, default=str)
+    return str(config.pretty_text)
 
 
 def key_parts(lab: LabConfig, name: str) -> dict[str, Any]:
@@ -209,8 +223,16 @@ def key_parts(lab: LabConfig, name: str) -> dict[str, Any]:
     config_file = lab.file(f"{prefix}.config")
     mmengine = _import(CONFIG_MODULE, "the MMDetection detector's cache key needs it")
     try:
-        resolved = str(mmengine.Config.fromfile(str(config_file)).pretty_text)
-    except (OSError, SyntaxError, ValueError, TypeError, KeyError) as exc:
+        resolved = _resolved_text(mmengine.Config.fromfile(str(config_file)))
+    except (
+        OSError,
+        SyntaxError,
+        ValueError,
+        TypeError,
+        KeyError,
+        ImportError,
+        AssertionError,
+    ) as exc:
         raise DetectorError(f"cannot resolve the MMDetection config {config_file}: {exc}") from exc
     return {
         "stack": {field: device.get(field) for field in STACK_FIELDS},

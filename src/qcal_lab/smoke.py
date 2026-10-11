@@ -280,12 +280,18 @@ def _check_determinism(report: SmokeReport, project: Path, record: Any) -> None:
         qcal_config=load_config(project, environ=without_config_environment(os.environ)),
         lab=LabConfig(uncached.config, lab_file, uncached.sha256),
     )
-    recorded = {a.kind: a.sha256 for a in record.artifacts}
-    rerun = {a["kind"]: sha256_file(project / a["path"]) for a in result.artifacts}
+    # The package list describes the interpreter, not the computation: the in-process rerun
+    # runs without -I, so a user site-packages could differ. It must exist, not match.
+    recorded = {a.kind: a.sha256 for a in record.artifacts if a.kind != PACKAGES_KIND}
+    rerun = {
+        a["kind"]: sha256_file(project / a["path"])
+        for a in result.artifacts
+        if a["kind"] != PACKAGES_KIND
+    }
     same = result.metrics == dict(record.metrics) and rerun == recorded
     report.add(
         "an uncached re-run reproduces predictions, calibration and metrics byte for byte",
-        ok=same and set(rerun) == EXPECTED_ARTIFACTS,
+        ok=same and set(rerun) | {PACKAGES_KIND} == EXPECTED_ARTIFACTS,
         detail=record.cell_id,
     )
 

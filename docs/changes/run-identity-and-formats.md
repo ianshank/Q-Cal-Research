@@ -156,6 +156,44 @@ In order, each step a separate commit:
 - Cache: every existing cache entry misses once. No registered run exists.
 - Parity fixtures: none committed yet; the parity-case envelope applies from the first one.
 
+## Adversarial review (advisory) and what changed
+`adversarial-reviewer` on `f57816f`: **block** (full report in
+`review/claude/claude-sdlc-agents-implementation-plan-gmb29t.md`). The program's blocking
+findings, each fixed with a test that fails without its fix:
+- **B1 (program side).** Every artifact the program lists carries the sha256 of the bytes it
+  wrote or read; the launcher compares it. A cache hit reads the file once: those bytes are
+  hashed, checked against the producer's record and parsed (`loads_predictions`), so a file
+  swapped after the sidecar check is never used.
+- **B2.** The supported-value check looked roles up by factor name, so under a rename
+  (`[factors] split_design = "split"`) it checked nothing. It now checks each role's
+  effective value, and a cell may use factor names only.
+- **B3.** `NVIDIA_TF32_OVERRIDE` and `CUBLAS_WORKSPACE_CONFIG` change results beneath torch
+  and were recorded but not keyed; the cache key now includes them.
+- **B4.** `seed_effective` was true whenever a fit size was set. It is now true only when the
+  draw is a proper subset of the fit split and the calibrator reads fit data
+  (`CalibratorKind.uses_fit_data`, false for the identity).
+
+Non-blocking findings applied:
+- N3: exclusive writes work without hard links, and temporary names are unique across
+  containers.
+- N9: smoke's byte-for-byte check leaves out the package list, which describes the
+  interpreter.
+- N10: switches are recorded after the model is built.
+- N11: the resolved config is hashed as canonical JSON, independent of yapf.
+- N13: a golden pins the cache key's composition.
+- N14: a test assertion that compared a value with itself.
+- N15: a stale comment.
+
+Follow-ups:
+- N2: cache bytes no record lists still block their key. They could be quarantined and
+  replaced.
+- N11: a cache hit still needs torch, mmengine and the same compute capability, by design:
+  they are in the key.
+- N14: real `init_detector` substitutes COCO class names when a checkpoint has none. The
+  label-map check then compares those names with the dataset's.
+- N16: `_RESOLVABLE_ULPS` is recorded in the solver settings but is not configuration. The
+  fixture loop's hit IoU is unhashed tooling that decides the smoke runs' fixture metrics.
+
 ## Out of scope
 - The split design (`paper`) waits for D1 and its rule 3 rewording.
 - Dataset kind, split namespace and label-map fields under `[datasets.*]`. The label-map

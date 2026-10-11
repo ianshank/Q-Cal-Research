@@ -739,3 +739,99 @@ def test_altered_scores_under_a_recorded_path_are_not_served(
     second = run_experiment(_request(root, cells[0], run_id="R-b"))
     assert second.environment["prediction_cache"]["val"]["hit"] is False
     assert second.metrics == first.metrics
+
+
+# -- wave-2 review fixes ------------------------------------------------------------------------
+
+
+def test_a_renamed_factor_is_still_checked_against_its_supported_values(tmp_path: Path) -> None:
+    """B2: supported values are keyed by role; a rename must not switch their check off."""
+    lab = lab_config(tmp_path, '[factors]\nsplit_design = "split"\n')
+    with pytest.raises(PlanError, match="factor split='paper' is not supported"):
+        resolve_plan({"detector": "a", "split": "paper"}, lab)
+    with pytest.raises(PlanError, match="does not understand: split_design"):
+        resolve_plan({"detector": "a", "split_design": "paper"}, lab)  # the role is not a name
+    assert resolve_plan({"detector": "a", "split": "disjoint"}, lab).split_design == "disjoint"
+
+
+@pytest.mark.parametrize(
+    ("factors", "fit_ids", "effective"),
+    [
+        ({"calibrator": "platt", "calibrator_fit_split_size": 2}, ["a", "b"], True),
+        ({"calibrator": "platt", "calibrator_fit_split_size": 3}, ["a", "b", "c"], False),
+        ({"calibrator": "none", "calibrator_fit_split_size": 2}, ["a", "b"], False),
+        ({"calibrator": "platt"}, ["a", "b", "c"], False),
+    ],
+    ids=["subset", "whole-split", "identity", "no-draw"],
+)
+def test_a_seed_is_effective_only_when_it_changes_what_is_fit(
+    tmp_path: Path, factors: dict[str, Any], fit_ids: list[str], effective: bool
+) -> None:
+    """B4: tables refuse a spread over seeds that change nothing; this decides which."""
+    from qcal_lab.experiment import seed_effective
+
+    plan = resolve_plan({"detector": "a", **factors}, lab_config(tmp_path))
+    assert seed_effective(plan, fit_ids, ["a", "b", "c"]) is effective
+
+
+def test_runs_record_whether_their_seed_mattered(project: tuple[Path, list[str]]) -> None:
+    root, cells = project  # cells: none, none, platt, platt, isotonic, isotonic
+    assert run_experiment(_request(root, cells[0])).environment["seed_effective"] is False
+    platt = run_experiment(_request(root, cells[2], run_id="R-p"))
+    assert platt.environment["seed_effective"] is True
+
+
+def test_tf32_variables_beneath_torch_are_part_of_the_key(
+    project: tuple[Path, list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B3: NVIDIA_TF32_OVERRIDE changes the numbers without changing any setting."""
+    root, cells = project
+    monkeypatch.delenv("NVIDIA_TF32_OVERRIDE", raising=False)
+    first = run_experiment(_request(root, cells[0], run_id="R-a"))
+    register(root, "R-a", first.artifacts)
+    monkeypatch.setenv("NVIDIA_TF32_OVERRIDE", "0")
+    second = run_experiment(_request(root, cells[0], run_id="R-b"))
+    assert not any(use["hit"] for use in second.environment["prediction_cache"].values())
+
+
+def test_every_artifact_carries_the_digest_of_its_bytes(project: tuple[Path, list[str]]) -> None:
+    """B1: the launcher compares these with the files when it writes the record."""
+    import hashlib
+
+    root, cells = project
+    first = run_experiment(_request(root, cells[0], run_id="R-a"))
+    register(root, "R-a", first.artifacts)
+    second = run_experiment(_request(root, cells[2], run_id="R-b"))  # cache hits included
+    assert any(use["hit"] for use in second.environment["prediction_cache"].values())
+    for artifact in [*first.artifacts, *second.artifacts]:
+        expected = hashlib.sha256((root / artifact["path"]).read_bytes()).hexdigest()
+        assert artifact["sha256"] == expected, artifact["kind"]
+
+
+def test_bytes_swapped_after_the_sidecar_check_are_never_used(
+    project: tuple[Path, list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B1: the bytes vouched for by the producer's record are the bytes parsed, one read."""
+    from qcal_lab.predictions import PredictionCache
+
+    root, cells = project
+    first = run_experiment(_request(root, cells[0], run_id="R-a"))
+    register(root, "R-a", first.artifacts)
+    real_get = PredictionCache.get
+
+    def get_then_swap(self: PredictionCache, key: str) -> Any:
+        entry = real_get(self, key)  # the sidecar agrees with the genuine bytes here
+        if entry is not None:
+            header, *rows = entry.path.read_text().splitlines()
+            forged = [json.loads(row) for row in rows]
+            for row in forged:
+                for detection in row["detections"]:
+                    detection[4] = 1.0
+            lines = [json.dumps(r, sort_keys=True, separators=(",", ":")) for r in forged]
+            entry.path.write_text("\n".join([header, *lines]) + "\n")
+        return entry
+
+    monkeypatch.setattr(PredictionCache, "get", get_then_swap)
+    second = run_experiment(_request(root, cells[0], run_id="R-b"))
+    assert not any(use["hit"] for use in second.environment["prediction_cache"].values())
+    assert second.metrics == first.metrics

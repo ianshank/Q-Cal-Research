@@ -71,7 +71,9 @@ config = ""               # MMDetection config file; the environment spike decid
 checkpoint = ""
 checkpoint_sha256 = ""    # verified before loading when set
 device = "cuda:0"
-# Optional MMDetection overrides (model.test_cfg.*); omitted keys keep the config's own values.
+# MMDetection test-time overrides (model.test_cfg.*), both required: a run refuses while one
+# is missing, so the predictions header's test_cfg is all that applied. Set in
+# configs/lab.toml (max_per_image is pinned there; score_threshold is Ian's, F10).
 # score_threshold = 0.0
 # max_per_image = 100
 

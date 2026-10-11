@@ -35,6 +35,9 @@ class SerializableCalibrator(Calibrator, Protocol):
 class CalibratorKind:
     build: Callable[[LabConfig], SerializableCalibrator]
     load: Callable[[Mapping[str, Any]], SerializableCalibrator]
+    #: Whether fitting reads the fit data. A kind that ignores it (the identity) makes the
+    #: fit draw, and so the seed, change nothing.
+    uses_fit_data: bool = True
 
 
 CALIBRATORS: ComponentRegistry[CalibratorKind] = ComponentRegistry("calibrator")
@@ -93,7 +96,9 @@ def _load_identity(data: Mapping[str, Any]) -> IdentityCalibrator:
 
 CALIBRATORS.register(
     IdentityCalibrator.name,
-    CalibratorKind(build=lambda _lab: IdentityCalibrator(), load=_load_identity),
+    CalibratorKind(
+        build=lambda _lab: IdentityCalibrator(), load=_load_identity, uses_fit_data=False
+    ),
 )
 
 

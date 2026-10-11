@@ -76,6 +76,7 @@ from qcal_lab.predictions import (
     PredictionsHeader,
     PredictionSource,
     cache_key,
+    loads_predictions,
     read_predictions,
     write_predictions,
 )
@@ -206,21 +207,18 @@ def resolve_plan(factors: Mapping[str, Any], lab: LabConfig) -> RunPlan:
             "label runs it never ran"
         )
     passthrough = set(lab.config.str_list("factors.passthrough"))
-    unknown = sorted(
-        k
-        for k in factors
-        if k not in names.values() and k not in supported and k not in passthrough
-    )
+    unknown = sorted(k for k in factors if k not in names.values() and k not in passthrough)
     if unknown:
         raise PlanError(f"cell factors this program does not understand: {', '.join(unknown)}")
     effective = {role: factors.get(name, defaults.get(role)) for role, name in names.items()}
-    role_of = {name: role for role, name in names.items()}
-    for key, allowed in supported.items():
+    for role, allowed in supported.items():  # keyed by role, whatever the factor is named
         if not isinstance(allowed, list):
-            raise ConfigError(f"factors.supported.{key} must be a list")
-        current = effective[role_of[key]] if key in role_of else factors.get(key)
+            raise ConfigError(f"factors.supported.{role} must be a list")
+        current = effective[role]
         if current is not None and current not in allowed:
-            raise PlanError(f"factor {key}={current!r} is not supported (allowed: {allowed})")
+            raise PlanError(
+                f"factor {names[role]}={current!r} is not supported (allowed: {allowed})"
+            )
 
     def value(role: str) -> Any:
         return effective[role]
@@ -248,6 +246,13 @@ def resolve_plan(factors: Mapping[str, Any], lab: LabConfig) -> RunPlan:
         if not isinstance(label, str) or not label:
             raise PlanError(f"{names[role]} must be a non-empty string, got {label!r}")
     return RunPlan(detector, calibrator, str(scope), size, shift, str(precision), **labels)
+
+
+def seed_effective(plan: RunPlan, fit_ids: Sequence[str], fit_split: Sequence[str]) -> bool:
+    """Whether this run's seed changed anything: it drew a proper subset of the fit split,
+    and the calibrator reads the data it is fit on (the identity does not)."""
+    drew = plan.fit_size is not None and len(fit_ids) < len(fit_split)
+    return drew and CALIBRATORS.get(plan.calibrator).uses_fit_data
 
 
 def split_roles(lab: LabConfig, qcal_config: Config) -> dict[str, str]:
@@ -317,8 +322,10 @@ class _Context:
         root = self.qcal_config.root
         return path.relative_to(root).as_posix() if path.is_relative_to(root) else str(path)
 
-    def add_artifact(self, path: Path, kind: str) -> None:
-        self.artifacts.append({"path": self.relative(path), "kind": kind})
+    def add_artifact(self, path: Path, kind: str, sha256: str) -> None:
+        """List an artifact with the sha256 of the bytes this program wrote or read; the
+        launcher fails the run if the file holds other bytes when it records it."""
+        self.artifacts.append({"path": self.relative(path), "kind": kind, "sha256": sha256})
 
     def header(self, split: str, ids: Sequence[str], stage: str) -> PredictionsHeader:
         return PredictionsHeader(
@@ -447,8 +454,8 @@ def installed_packages() -> dict[str, str]:
 def _write_packages(ctx: _Context) -> None:
     body = {"python": platform.python_version(), "packages": installed_packages()}
     path = ctx.artifact_dir / PACKAGES_FILE
-    write_bytes_atomic(path, json_bytes(envelope(PACKAGES_FORMAT, PACKAGES_VERSION, body)))
-    ctx.add_artifact(path, PACKAGES_KIND)
+    data = json_bytes(envelope(PACKAGES_FORMAT, PACKAGES_VERSION, body))
+    ctx.add_artifact(path, PACKAGES_KIND, write_bytes_atomic(path, data))
 
 
 def _images_digest(ctx: _Context, ids: Sequence[str]) -> str:
@@ -472,11 +479,16 @@ def _cache(lab: LabConfig) -> PredictionCache:
 
 
 def _cached_images(
-    entry: CacheEntry, header: PredictionsHeader, ids: Sequence[str]
+    entry: CacheEntry, header: PredictionsHeader, ids: Sequence[str], data: bytes | None = None
 ) -> tuple[ImageDetections, ...] | None:
-    """The cached predictions, if they are exactly what this run would compute."""
+    """The cached predictions, if they are exactly what this run would compute.
+
+    ``data`` are the entry's bytes as already read and verified; they are parsed, not reread.
+    """
     try:
-        found, images = read_predictions(entry.path)
+        found, images = (
+            read_predictions(entry.path) if data is None else loads_predictions(data, entry.path)
+        )
     except PredictionsError as exc:
         _log.warning("ignoring cached predictions %s: %s", entry.path.name, exc)
         return None
@@ -511,7 +523,10 @@ def prediction_key(ctx: _Context, split_sha256: str, ids: Sequence[str]) -> str:
     return cache_key(
         detector=ctx.fingerprint,
         source=ctx.source.to_dict(),
-        numerics=ctx.regime.to_dict(),
+        numerics={
+            "regime": ctx.regime.to_dict(),
+            "environment": recorded_environment(os.environ),  # NVIDIA_TF32_OVERRIDE and kin
+        },
         kind=ctx.key_parts,
         dataset_sha256=ctx.dataset.sha256,
         split_sha256=split_sha256,
@@ -526,37 +541,48 @@ def _raw_predictions(
     header = ctx.header(split, ids, "raw")
     key = prediction_key(ctx, header.split_sha256, ids)
     entry = cache.get(key)
-    if entry is not None and not _recorded_by_producer(ctx, entry):
-        _log.warning(
-            "ignoring cached predictions %s: no record of %s lists them",
-            entry.path.name,
-            entry.produced_by,
-        )
-        entry = None
-    images = _cached_images(entry, header, ids) if entry is not None else None
+    data = b""
+    if entry is not None:
+        # One read: these bytes are hashed, vouched for by the producer's record and parsed,
+        # so a file swapped after the sidecar check is never used.
+        try:
+            data = entry.path.read_bytes()
+        except OSError:
+            entry = None
+    if entry is not None:
+        entry = dataclasses.replace(entry, sha256=hashlib.sha256(data).hexdigest())
+        if not _recorded_by_producer(ctx, entry):
+            _log.warning(
+                "ignoring cached predictions %s: no record of %s lists them",
+                entry.path.name,
+                entry.produced_by,
+            )
+            entry = None
+    images = _cached_images(entry, header, ids, data) if entry is not None else None
     if entry is not None and images is not None:
         _log.info("using raw predictions for %s cached by %s", split, entry.produced_by)
         ctx.cache_use[split] = {"hit": True, "produced_by": entry.produced_by}
-        ctx.add_artifact(entry.path, RAW_PREDICTIONS_KIND.format(split=split))
+        ctx.add_artifact(entry.path, RAW_PREDICTIONS_KIND.format(split=split), entry.sha256)
         return images
     _log.info("running %s on %d %s images", ctx.plan.detector, len(ids), split)
     images = tuple(ctx.detector().predict(list(ids)))
     if [i.image_id for i in images] != list(ids):
         raise PlanError(f"{ctx.plan.detector} returned images out of order or incomplete")
     use: dict[str, Any] = {"hit": False, "produced_by": ctx.request.run_id}
-    path = cache.path(key)
+    path, digest = cache.path(key), ""
     if path is not None:
         try:
-            path = cache.put(key, header, images, produced_by=ctx.request.run_id).path
+            written = cache.put(key, header, images, produced_by=ctx.request.run_id)
+            path, digest = written.path, written.sha256
         except CacheConflictError as exc:
             _log.warning("%s; this run keeps its own predictions next to it", exc)
             use["conflict"] = {"key": key, "cached_sha256": exc.existing_sha256}
             path = None
     if path is None:
         path = ctx.artifact_dir / RAW_PREDICTIONS_FILE.format(split=split)
-        write_predictions(path, header, images)
+        digest = write_predictions(path, header, images)
     ctx.cache_use[split] = use
-    ctx.add_artifact(path, RAW_PREDICTIONS_KIND.format(split=split))
+    ctx.add_artifact(path, RAW_PREDICTIONS_KIND.format(split=split), digest)
     return images
 
 
@@ -687,7 +713,8 @@ def run_experiment(
             }
             for role in ROLES
         },
-        SEED_EFFECTIVE_KEY: plan.fit_size is not None,  # tables refuse a spread otherwise
+        SEED_EFFECTIVE_KEY: seed_effective(plan, fit_ids, ids["fit"]),  # tables refuse a
+        # spread over seeds that change nothing
         "fit_draw": {
             "seeded": plan.fit_size is not None,
             "size": len(fit_ids),
@@ -744,11 +771,11 @@ def _write_outputs(
     evaluated: Sequence[ImageDetections],
 ) -> None:
     calibration_path = ctx.artifact_dir / CALIBRATION_FILE
-    write_calibration(calibration_path, calibration)
-    ctx.add_artifact(calibration_path, CALIBRATION_KIND)
+    digest = write_calibration(calibration_path, calibration)
+    ctx.add_artifact(calibration_path, CALIBRATION_KIND, digest)
     path = ctx.artifact_dir / CALIBRATED_PREDICTIONS_FILE.format(split=split)
-    write_predictions(path, ctx.header(split, ids, "calibrated"), evaluated)
-    ctx.add_artifact(path, CALIBRATED_PREDICTIONS_KIND.format(split=split))
+    digest = write_predictions(path, ctx.header(split, ids, "calibrated"), evaluated)
+    ctx.add_artifact(path, CALIBRATED_PREDICTIONS_KIND.format(split=split), digest)
 
 
 def _write_envelope(path: Path, envelope: Mapping[str, Any]) -> None:
@@ -811,6 +838,7 @@ __all__ = [
     "program_code",
     "resolve_plan",
     "run_experiment",
+    "seed_effective",
     "source_digest",
     "split_roles",
     "write_failure",
