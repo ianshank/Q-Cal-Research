@@ -12,6 +12,7 @@ import yaml
 from qcal.config import ConfigError, load_config
 from qcal.protocols import ImageDetections
 from qcal.registry.experiments import ExperimentsError
+from qcal_lab.calib.two_threshold import read_calibration
 from qcal_lab.config import load_lab_config
 from qcal_lab.data.coco import GroundTruth
 from qcal_lab.evaluation import HandwrittenMissingError
@@ -29,6 +30,7 @@ from qcal_lab.experiment import (
     write_result,
 )
 from qcal_lab.fixture_eval import FixtureEvalLoop
+from qcal_lab.models import KIND_SCORE_DEFINITIONS
 from qcal_lab.predictions import read_predictions
 from tests.lab_support import fixture_project, lab_config
 
@@ -410,6 +412,27 @@ def test_a_run_records_each_roles_source(project: tuple[Path, list[str]]) -> Non
         "target": "torch_fp32",
         "source": "live",
     }
+
+
+def test_a_run_records_what_produced_its_predictions(project: tuple[Path, list[str]]) -> None:
+    root, cells = project
+    result = run_experiment(_request(root, cells[0]))
+    source = result.environment["predictions_source"]
+    assert source == {
+        "precision": "fp32",
+        "target": "torch_fp32",
+        "quant_path": "none",
+        "shift": "id",
+        "score_definition": KIND_SCORE_DEFINITIONS["fixture"],
+        "model_sha256": "",  # the fixture detector has no checkpoint
+        "test_cfg": {},
+    }
+    for artifact in result.artifacts:
+        if artifact["path"].endswith(".jsonl"):
+            header, _ = read_predictions(root / artifact["path"])
+            assert header.source.to_dict() == source, artifact["kind"]
+    calibration = next(a for a in result.artifacts if a["kind"] == "calibration")
+    read_calibration(root / calibration["path"])  # the saved calibration carries its envelope
 
 
 def test_unregistered_seed_or_cell_is_refused(project: tuple[Path, list[str]]) -> None:

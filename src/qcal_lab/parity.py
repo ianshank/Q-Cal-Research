@@ -5,19 +5,25 @@ CUDA 11.8; plan §5 Phase 1), and only its outputs are committed, under
 ``parity.fixtures_dir``. Nothing in this package imports it. ``qcal licenses`` allows the
 import only under ``tests/parity/``.
 
-A case is one JSON file:
+A case is one JSON file, in the ``qcal_lab.parity_case`` format (version 1):
 
-    {"kind": "calibrator", "calibrator": "isotonic",
+    {"format": "qcal_lab.parity_case", "version": 1,
+     "kind": "calibrator", "calibrator": "isotonic",
      "oracle": {"repository": "fiveai/detection_calibration", "commit": "<sha>",
-                "command": "<what was run>"},
+                "command": "<what was run>",
+                "environment": {"python": "3.8.18", "torch": "1.13.1", "cuda": "11.8"}},
      "fit": {"scores": [...], "targets": [...]},
      "transform": {"scores": [...], "expected": [...]},
      "tolerance": 1e-6}
 
-    {"kind": "metric", "metric": "LaECE0", "oracle": {...},
+    {"format": "qcal_lab.parity_case", "version": 1,
+     "kind": "metric", "metric": "LaECE0", "oracle": {...},
      "predictions": "<predictions .jsonl, relative to the case>",
      "ground_truth": "<COCO json, relative to the case>",
      "expected": 12.34, "tolerance": 1e-6}
+
+``oracle.environment`` records the oracle's own environment (its interpreter and library
+versions), so a parity mismatch can be traced to a version difference.
 
 Calibrator cases test this package. Metric cases test Ian's hand-written evaluation loop:
 a mismatch is reported, never fixed by editing his file (CLAUDE.md rule 4).
@@ -25,7 +31,6 @@ a mismatch is reported, never fixed by editing his file (CLAUDE.md rule 4).
 
 from __future__ import annotations
 
-import json
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -37,10 +42,14 @@ from qcal_lab.calib import build_calibrator
 from qcal_lab.config import LabConfig
 from qcal_lab.data.coco import load_coco
 from qcal_lab.evaluation import EvalLoop, load_eval_loop
+from qcal_lab.formats import open_envelope, read_json
 from qcal_lab.predictions import read_predictions
 
+CASE_FORMAT: Final = "qcal_lab.parity_case"
+CASE_VERSION: Final = 1
 KINDS: Final = ("calibrator", "metric")
 _ORACLE_KEYS: Final = ("repository", "commit")
+_ORACLE_ENVIRONMENT: Final = "environment"
 
 
 class ParityError(ValueError):
@@ -79,17 +88,21 @@ def _numbers(section: Mapping[str, Any], key: str, where: str) -> list[float]:
 
 
 def load_case(path: Path) -> OracleCase:
-    try:
-        data = json.loads(path.read_text("utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ParityError(f"cannot read parity case {path}: {exc}") from exc
-    if not isinstance(data, Mapping) or data.get("kind") not in KINDS:
+    raw = read_json(path, error=ParityError)
+    data = open_envelope(raw, CASE_FORMAT, CASE_VERSION, path.name, error=ParityError)
+    if data.get("kind") not in KINDS:
         raise ParityError(f"{path.name}: 'kind' must be one of {KINDS}")
     oracle = data.get("oracle")
     if not isinstance(oracle, Mapping) or not all(
         isinstance(oracle.get(k), str) and oracle.get(k) for k in _ORACLE_KEYS
     ):
         raise ParityError(f"{path.name}: 'oracle' must record {', '.join(_ORACLE_KEYS)}")
+    environment = oracle.get(_ORACLE_ENVIRONMENT)
+    if not isinstance(environment, Mapping) or not environment:
+        raise ParityError(
+            f"{path.name}: 'oracle.{_ORACLE_ENVIRONMENT}' must record the oracle's interpreter "
+            "and library versions"
+        )
     return OracleCase(path, str(data["kind"]), data)
 
 
@@ -162,6 +175,8 @@ def check_metric_case_with_repository_loop(
 
 
 __all__ = [
+    "CASE_FORMAT",
+    "CASE_VERSION",
     "KINDS",
     "OracleCase",
     "ParityError",

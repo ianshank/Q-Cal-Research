@@ -63,15 +63,21 @@ In order, each step a separate commit:
      `[detectors.fixture]`, because it decides the fixture runs' predictions, so it is an
      input of those runs; it is looked up like every other detector.
    - Artifact file names become code constants.
-3. **Strict formats.**
-   - Predictions version 2. The header gains precision, target, quant path, shift, score
-     definition, model sha256 and the effective `test_cfg`. Rows reserve `source_index`,
-     `class_logit` and `aux_logit`.
-   - `cache_key` refuses parts named `format` or `version`.
+3. **Strict formats.** One module (`qcal_lab/formats.py`) writes and checks every envelope.
+   - Predictions version 2. The header gains a `source`: precision, target, quant path,
+     shift, score definition, model sha256 and the `test_cfg` overrides the detector applies.
+     The overrides are recorded, not the merged MMDetection values: those follow from the
+     overrides plus the config file, whose sha256 the detector fingerprint already records,
+     and resolving them would need MMDetection on every cache hit. A source is computed from
+     configuration alone, so a cache hit never builds the detector (step 5).
+   - The header lists the row fields. Rows reserve `source_index`, `class_logit` and
+     `aux_logit`, written as null; a reader refuses a value there rather than drop it.
+   - `cache_key` refuses parts named `format` or `version`, and covers the source.
    - Envelopes with a format name and version: calibrator, calibration (written atomically),
-     cache sidecar and parity case. A file without its envelope is refused.
-   - The calibrator envelope also records Platt's solver settings and any class where the
-     slope stopped at the a = 0 bound.
+     cache sidecar and parity case. A file without its envelope is refused; a cache sidecar
+     without one is a miss.
+   - The calibrator envelope also records Platt's solver settings and whether the fit ended
+     on the a = 0 bound, per class. A parity case records `oracle.environment`.
 4. **Numerics and the program's environment.**
    - `[numerics.regimes.<precision>]` names each regime's torch and cuDNN settings.
      - `fp32` keeps torch's defaults, as today.
@@ -118,8 +124,10 @@ In order, each step a separate commit:
 - Goldens re-pinned by this change, each named in the commit that changes it:
   - effective lab configuration (tables moved out, regimes added);
   - predictions bytes (version 2 header);
-  - `cache_key` (parts and module list);
-  - the fixture detector's output, through its header.
+  - `cache_key` (format version, then parts and module list);
+  - the fixture detector's output, once: it is now pinned over the detections themselves,
+    so later format changes leave it alone. Re-encoded in the version 1 layout, the same
+    detections still hash to the earlier golden.
 
   `cell_id`, `split_digest`, `rank_key`, `draw`, `config_hash` and the fixture bytes do not
   change.

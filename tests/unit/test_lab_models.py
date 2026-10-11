@@ -15,11 +15,15 @@ from qcal_lab.data.coco import parse_coco
 from qcal_lab.data.fixture import NotFixtureError, build_fixture, fixture_bytes, is_fixture
 from qcal_lab.models import (
     DETECTORS,
+    KIND_SCORE_DEFINITIONS,
     KIND_TARGETS,
+    TEST_CFG_SETTINGS,
     DetectorError,
     build_detector,
     detector_spec,
     detector_targets,
+    detector_test_cfg,
+    score_definition,
 )
 from qcal_lab.models import mmdet as mmdet_module
 from qcal_lab.models.base import setting_int, setting_number
@@ -344,3 +348,30 @@ def test_detector_targets_follow_the_configured_kind(tmp_path: Path) -> None:
     assert detector_targets(lab, "mystery") == frozenset()  # an unknown kind produces nothing
     with pytest.raises(ConfigError, match="not configured"):
         detector_targets(lab, "absent")
+
+
+# --- what a detector's predictions are (predictions headers) ---------------------------------
+
+
+def test_every_registered_kind_says_what_its_scores_are() -> None:
+    assert set(KIND_SCORE_DEFINITIONS) == set(DETECTORS.names())
+    assert all(definition.strip() for definition in KIND_SCORE_DEFINITIONS.values())
+
+
+def test_a_kind_that_does_not_define_its_scores_is_refused(tmp_path: Path) -> None:
+    lab = lab_config(tmp_path, '[detectors.mystery]\nkind = "onnx"\n')
+    assert score_definition(lab, "fixture") == KIND_SCORE_DEFINITIONS["fixture"]
+    with pytest.raises(ConfigError, match="does not define what its scores are"):
+        score_definition(lab, "mystery")
+
+
+def test_the_mmdet_adapter_overrides_exactly_the_recorded_test_cfg_settings() -> None:
+    assert set(mmdet_module._CFG_OPTIONS) == set(TEST_CFG_SETTINGS)
+
+
+def test_detector_test_cfg_records_only_configured_overrides(tmp_path: Path) -> None:
+    lab = lab_config(
+        tmp_path, '[detectors.m]\nkind = "mmdet"\nmax_per_image = 100\nconfig = "c.py"\n'
+    )
+    assert detector_test_cfg(lab, "m") == {"max_per_image": 100}
+    assert detector_test_cfg(lab, "fixture") == {}

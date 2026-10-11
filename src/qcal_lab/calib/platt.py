@@ -7,7 +7,8 @@ its matched object, and 0 for a false positive (App. C.3, Eq. A.39 to A.41). The
 L-BFGS. The objective is convex in (a, b), so this damped Newton method with an Armijo
 backtracking line search reaches the same minimiser. When the unconstrained minimiser has
 a < 0, the constrained one lies on the boundary a = 0. There the loss depends on b alone and
-is minimised at sigmoid(b) = mean target.
+is minimised at sigmoid(b) = mean target. A saved calibrator says whether its fit ended on that
+boundary (``boundary``), with the solver settings it ran with.
 """
 
 from __future__ import annotations
@@ -24,6 +25,8 @@ from qcal_lab.calib.base import (
     check_fit_inputs,
     check_scores,
     finite_number,
+    saved_flag,
+    saved_int,
 )
 from qcal_lab.config import LabConfig
 
@@ -87,6 +90,7 @@ class PlattScaling:
         self.fitted = fitted
         self.iterations = 0
         self.converged = fitted
+        self.boundary = False  # the fit's unconstrained optimum had a < 0
 
     @classmethod
     def from_config(cls, lab: LabConfig) -> PlattScaling:
@@ -155,14 +159,27 @@ class PlattScaling:
             a, b, loss = na, nb, new_loss
         if not self.converged:
             _log.warning("Platt scaling stopped unconverged after %d iteration(s)", self.iterations)
-        if a < 0.0:  # the boundary solution is exact only at a converged unconstrained optimum
+        self.boundary = a < 0.0
+        if self.boundary:  # the boundary solution is exact only at a converged optimum
             a, b = 0.0, logit(math.fsum(y) / len(y), self.epsilon)
+            _log.info("Platt scaling ended on the boundary a = 0 (scores carry no ranking)")
         self.a, self.b, self.fitted = a, b, True
 
     def transform(self, scores: Sequence[float]) -> list[float]:
         if not self.fitted:
             raise CalibrationError("Platt scaling used before fit")
         return [sigmoid(self.a * logit(p, self.epsilon) + self.b) for p in check_scores(scores)]
+
+    def solver_settings(self) -> dict[str, Any]:
+        """The settings the fit ran with, saved so that it can be audited and repeated."""
+        return {
+            "max_iterations": self.max_iterations,
+            "gradient_tolerance": self.gradient_tolerance,
+            "ridge": self.ridge,
+            "armijo": self.armijo,
+            "min_step": self.min_step,
+            "resolvable_ulps": _RESOLVABLE_ULPS,
+        }
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -172,6 +189,8 @@ class PlattScaling:
             "epsilon": self.epsilon,
             "iterations": self.iterations,
             "converged": self.converged,
+            "boundary": self.boundary,
+            "solver": self.solver_settings(),
         }
 
 
@@ -181,15 +200,24 @@ def load_platt(data: Mapping[str, Any]) -> PlattScaling:
     a = finite_number(data, "a")
     if a < 0:
         raise CalibrationError("a saved Platt calibrator must have a >= 0")
-    return PlattScaling(
+    solver = data.get("solver")
+    if not isinstance(solver, Mapping):
+        raise CalibrationError("a saved Platt calibrator must record its solver settings")
+    model = PlattScaling(
         epsilon=finite_number(data, "epsilon"),
-        max_iterations=1,
-        gradient_tolerance=1.0,
-        ridge=0.0,
+        max_iterations=saved_int(solver, "max_iterations"),
+        gradient_tolerance=finite_number(solver, "gradient_tolerance"),
+        ridge=finite_number(solver, "ridge"),
+        armijo=finite_number(solver, "armijo"),
+        min_step=finite_number(solver, "min_step"),
         a=a,
         b=finite_number(data, "b"),
         fitted=True,
     )
+    model.iterations = saved_int(data, "iterations")
+    model.converged = saved_flag(data, "converged")
+    model.boundary = saved_flag(data, "boundary")
+    return model
 
 
 CALIBRATORS.register(

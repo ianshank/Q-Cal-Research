@@ -10,7 +10,8 @@ import pytest
 
 from qcal_lab import experiment
 from qcal_lab.models.mmdet import set_tf32, tf32_flags
-from qcal_lab.predictions import CacheEntry, PredictionsHeader
+from qcal_lab.predictions import CacheEntry
+from tests.lab_support import predictions_header
 
 
 def fake_torch(*, matmul: bool, cudnn: bool) -> SimpleNamespace:
@@ -65,7 +66,7 @@ def test_a_corrupt_cached_prediction_file_is_ignored_with_a_warning(
 ) -> None:
     cached = tmp_path / "cached.jsonl"
     cached.write_text("not a predictions file\n")
-    header = PredictionsHeader("fixture", "val", "raw", "d", "s", (1, 2))
+    header = predictions_header(category_ids=(1, 2))
     with caplog.at_level(logging.WARNING, logger="qcal.lab.experiment"):
         assert experiment._cached_images(CacheEntry(cached, "R1", "now"), header, ["1"]) is None
     assert "ignoring cached predictions cached.jsonl" in caplog.text

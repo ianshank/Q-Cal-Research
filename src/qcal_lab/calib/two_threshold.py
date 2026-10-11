@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Final
 
 from qcal.log import get_logger
@@ -30,15 +31,19 @@ from qcal_lab.calib.base import (
     IdentityCalibrator,
     SerializableCalibrator,
     load_calibrator,
+    save_calibrator,
 )
 from qcal_lab.calib.thresholds import select_threshold
 from qcal_lab.data.coco import GroundTruth
 from qcal_lab.evaluation import EvalLoop, check_targets
+from qcal_lab.formats import envelope, json_bytes, open_envelope, read_json, write_bytes_atomic
 
 _log = get_logger("lab.calib.two_threshold")
 
 SCOPES: Final = ("per_class", "global")
 GLOBAL_KEY: Final = -1
+CALIBRATION_FORMAT: Final = "qcal_lab.calibration"
+CALIBRATION_VERSION: Final = 1
 
 
 @dataclass(frozen=True)
@@ -102,7 +107,9 @@ class ThresholdedCalibration:
             "scope": self.scope,
             "calibration_thresholds": table(self.calibration_thresholds),
             "operating_thresholds": table(self.operating_thresholds),
-            "calibrators": {str(k): c.to_dict() for k, c in sorted(self.calibrators.items())},
+            "calibrators": {
+                str(k): save_calibrator(c) for k, c in sorted(self.calibrators.items())
+            },
             "provenance": dict(self.provenance),
         }
 
@@ -125,6 +132,21 @@ class ThresholdedCalibration:
             calibrators={int(k): load_calibrator(v) for k, v in saved.items()},
             provenance=dict(provenance) if isinstance(provenance, Mapping) else {},
         )
+
+
+def write_calibration(path: Path, calibration: ThresholdedCalibration) -> str:
+    """Save ``calibration`` atomically, with its format and version; returns the sha256."""
+    document = envelope(CALIBRATION_FORMAT, CALIBRATION_VERSION, calibration.to_dict())
+    return write_bytes_atomic(path, json_bytes(document))
+
+
+def read_calibration(path: Path) -> ThresholdedCalibration:
+    """Restore a :func:`write_calibration` file; one without its envelope is refused."""
+    data = read_json(path, error=CalibrationError)
+    body = open_envelope(
+        data, CALIBRATION_FORMAT, CALIBRATION_VERSION, str(path), error=CalibrationError
+    )
+    return ThresholdedCalibration.from_dict(body)
 
 
 def keep_class(
@@ -248,12 +270,16 @@ def train_calibration(
 
 
 __all__ = [
+    "CALIBRATION_FORMAT",
+    "CALIBRATION_VERSION",
     "GLOBAL_KEY",
     "SCOPES",
     "SplitData",
     "ThresholdedCalibration",
     "apply_thresholds",
     "keep_class",
+    "read_calibration",
     "select_class_thresholds",
     "train_calibration",
+    "write_calibration",
 ]

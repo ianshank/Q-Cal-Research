@@ -44,9 +44,34 @@ KIND_TARGETS: Final[Mapping[str, frozenset[str]]] = {
 }
 
 
+#: What a detection's score is, per detector kind; every predictions header records it.
+KIND_SCORE_DEFINITIONS: Final[Mapping[str, str]] = {
+    "fixture": "fixture: synthetic box quality inflated by overconfidence (no model)",
+    "mmdet": "mmdet: pred_instances.scores from inference_detector, after the model's test_cfg",
+}
+#: Detector settings that override the model's test-time configuration (mmdet test_cfg).
+TEST_CFG_SETTINGS: Final = ("score_threshold", "max_per_image")
+#: The detector setting naming the model weights, whose sha256 a predictions header records.
+CHECKPOINT_SETTING: Final = "checkpoint"
+
+
 def detector_targets(lab: LabConfig, name: str) -> frozenset[str]:
     """The targets the configured detector ``name`` can produce."""
     return KIND_TARGETS.get(str(detector_settings(lab, name)["kind"]), frozenset())
+
+
+def score_definition(lab: LabConfig, name: str) -> str:
+    """What the configured detector's scores are; refused for a kind that does not say."""
+    kind = str(detector_settings(lab, name)["kind"])
+    if kind not in KIND_SCORE_DEFINITIONS:
+        raise ConfigError(f"detector kind {kind!r} does not define what its scores are")
+    return KIND_SCORE_DEFINITIONS[kind]
+
+
+def detector_test_cfg(lab: LabConfig, name: str) -> dict[str, Any]:
+    """The test-time overrides configured for detector ``name`` (absent ones are omitted)."""
+    settings = detector_settings(lab, name)
+    return {key: settings[key] for key in TEST_CFG_SETTINGS if key in settings}
 
 
 def detector_settings(lab: LabConfig, name: str) -> Mapping[str, Any]:
@@ -134,8 +159,11 @@ def setting_int(settings: Mapping[str, Any], key: str) -> int:
 
 
 __all__ = [
+    "CHECKPOINT_SETTING",
     "DETECTORS",
+    "KIND_SCORE_DEFINITIONS",
     "KIND_TARGETS",
+    "TEST_CFG_SETTINGS",
     "DetectorContext",
     "DetectorError",
     "DetectorFactory",
@@ -144,6 +172,8 @@ __all__ = [
     "detector_settings",
     "detector_spec",
     "detector_targets",
+    "detector_test_cfg",
+    "score_definition",
     "setting_int",
     "setting_number",
 ]

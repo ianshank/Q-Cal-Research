@@ -2,8 +2,12 @@
 
 The bytes are deterministic: images sorted by id, keys sorted, floats written with
 ``repr``. So the same detections always hash the same, and the registry's artifact hash
-identifies them. A detection is ``[x1, y1, x2, y2, score, label, logit]``, with ``logit``
-null when the detector does not expose one.
+identifies them. A detection is a list in the order of :data:`DETECTION_FIELDS`, which the
+header repeats; ``logit`` is null when the detector does not expose one.
+
+Version 2 headers also say what produced the predictions (:class:`PredictionSource`):
+precision, deployment target, quantisation path, dataset, what the score means, the model's
+sha256 and the test-time overrides. A cached file is reused only when all of it matches.
 
 :class:`PredictionCache` stores raw predictions under a key derived from everything that
 determines them. Calibrator and metric cells then re-read cached predictions instead of
@@ -15,21 +19,47 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import os
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final
 
 from qcal.log import get_logger
 from qcal.protocols import Detection, ImageDetections
+from qcal_lab.formats import (
+    ENVELOPE_KEYS,
+    envelope,
+    json_bytes,
+    open_envelope,
+    write_bytes_atomic,
+)
 
 _log = get_logger("lab.predictions")
 
 FORMAT: Final = "qcal_lab.predictions"
-VERSION: Final = 1
-_FIELDS: Final = 7
+VERSION: Final = 2
+#: A detection row, in order. The last three are reserved for Phase 2 (the index of an FP32
+#: detection a quantised one matches, and the logits behind a score). They are written as
+#: null, and a reader refuses a value there rather than drop it.
+DETECTION_FIELDS: Final = (
+    "x1",
+    "y1",
+    "x2",
+    "y2",
+    "score",
+    "label",
+    "logit",
+    "source_index",
+    "class_logit",
+    "aux_logit",
+)
+RESERVED_FIELDS: Final = DETECTION_FIELDS[7:]
+STAGES: Final = ("raw", "calibrated")
+CACHE_ENTRY_FORMAT: Final = "qcal_lab.prediction_cache_entry"
+CACHE_ENTRY_VERSION: Final = 1
+_FIELDS: Final = len(DETECTION_FIELDS)
+_REQUIRED_SOURCE: Final = ("precision", "target", "quant_path", "shift", "score_definition")
 
 
 class PredictionsError(ValueError):
@@ -37,18 +67,69 @@ class PredictionsError(ValueError):
 
 
 @dataclass(frozen=True)
+class PredictionSource:
+    """What produced a set of predictions; every field but the last two must be non-empty."""
+
+    precision: str
+    target: str
+    quant_path: str
+    shift: str  # the dataset entry (datasets.<shift>)
+    score_definition: str  # what a detection's score is, per detector kind
+    model_sha256: str = ""  # of the checkpoint; empty when the detector has none (the fixture)
+    test_cfg: Mapping[str, Any] = field(default_factory=dict)  # test-time overrides applied
+
+    def __post_init__(self) -> None:
+        empty = [name for name in _REQUIRED_SOURCE if not _text(getattr(self, name))]
+        if empty:
+            raise PredictionsError(f"a predictions source needs a non-empty {', '.join(empty)}")
+        if not isinstance(self.model_sha256, str) or not isinstance(self.test_cfg, Mapping):
+            raise PredictionsError(
+                "a predictions source's model_sha256 must be a string and its test_cfg a mapping"
+            )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {**asdict(self), "test_cfg": dict(self.test_cfg)}
+
+    @classmethod
+    def from_dict(cls, data: Any, where: str) -> PredictionSource:
+        if not isinstance(data, Mapping):
+            raise PredictionsError(f"{where}: the header needs a 'source' object")
+        try:
+            return cls(**{name: data[name] for name in cls.__dataclass_fields__})
+        except KeyError as exc:
+            raise PredictionsError(f"{where}: the header's source has no {exc}") from exc
+
+
+def _text(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+@dataclass(frozen=True)
 class PredictionsHeader:
     detector: str
     split: str
-    stage: str  # "raw" | "calibrated"
+    stage: str  # one of STAGES
     dataset_sha256: str
     split_sha256: str
     category_ids: tuple[int, ...]
+    source: PredictionSource
+
+    def __post_init__(self) -> None:
+        if self.stage not in STAGES:
+            raise PredictionsError(f"stage must be one of {STAGES}, got {self.stage!r}")
 
     def to_dict(self) -> dict[str, Any]:
-        data = asdict(self)
-        data["category_ids"] = list(self.category_ids)
-        return {"format": FORMAT, "version": VERSION, **data}
+        data = {
+            "detector": self.detector,
+            "split": self.split,
+            "stage": self.stage,
+            "dataset_sha256": self.dataset_sha256,
+            "split_sha256": self.split_sha256,
+            "category_ids": list(self.category_ids),
+            "source": self.source.to_dict(),
+            "fields": list(DETECTION_FIELDS),
+        }
+        return envelope(FORMAT, VERSION, data)
 
 
 def validate(images: Sequence[ImageDetections], num_classes: int) -> None:
@@ -73,7 +154,8 @@ def validate(images: Sequence[ImageDetections], num_classes: int) -> None:
 
 
 def _encode(det: Detection) -> list[Any]:
-    return [*map(float, det.box_xyxy), float(det.score), int(det.label), det.logit]
+    reserved = [None] * len(RESERVED_FIELDS)
+    return [*map(float, det.box_xyxy), float(det.score), int(det.label), det.logit, *reserved]
 
 
 def dumps(header: PredictionsHeader, images: Sequence[ImageDetections]) -> bytes:
@@ -89,18 +171,17 @@ def write_predictions(
     path: Path, header: PredictionsHeader, images: Sequence[ImageDetections]
 ) -> str:
     """Write atomically and return the sha256 of the bytes written."""
-    data = dumps(header, images)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    tmp.write_bytes(data)
-    tmp.replace(path)
-    return hashlib.sha256(data).hexdigest()
+    return write_bytes_atomic(path, dumps(header, images))
 
 
 def _decode(raw: Any, where: str) -> Detection:
     if not isinstance(raw, list) or len(raw) != _FIELDS:
         raise PredictionsError(f"{where}: a detection is a list of {_FIELDS} values")
-    *box, score, label, logit = raw
+    known = _FIELDS - len(RESERVED_FIELDS)
+    *box, score, label, logit = raw[:known]
+    used = [n for n, v in zip(RESERVED_FIELDS, raw[known:], strict=True) if v is not None]
+    if used:
+        raise PredictionsError(f"{where}: reserved field(s) {used} are set; this reader drops them")
     if isinstance(label, bool) or not isinstance(label, int):
         raise PredictionsError(f"{where}: label must be an integer")
     numbers = [*box, score] + ([] if logit is None else [logit])
@@ -119,19 +200,23 @@ def _parse_header(line: str, path: Path) -> PredictionsHeader:
         data = json.loads(line)
     except json.JSONDecodeError as exc:
         raise PredictionsError(f"{path}: header is not JSON: {exc}") from exc
-    if not isinstance(data, Mapping) or data.get("format") != FORMAT:
-        raise PredictionsError(f"{path} is not a {FORMAT} file")
-    if data.get("version") != VERSION:
-        raise PredictionsError(f"{path}: unsupported version {data.get('version')!r}")
+    body = open_envelope(data, FORMAT, VERSION, str(path), error=PredictionsError)
+    if body.get("fields") != list(DETECTION_FIELDS):
+        raise PredictionsError(
+            f"{path}: detection fields {body.get('fields')!r} are not {list(DETECTION_FIELDS)}"
+        )
     try:
         return PredictionsHeader(
-            detector=str(data["detector"]),
-            split=str(data["split"]),
-            stage=str(data["stage"]),
-            dataset_sha256=str(data["dataset_sha256"]),
-            split_sha256=str(data["split_sha256"]),
-            category_ids=tuple(int(c) for c in data["category_ids"]),
+            detector=str(body["detector"]),
+            split=str(body["split"]),
+            stage=str(body["stage"]),
+            dataset_sha256=str(body["dataset_sha256"]),
+            split_sha256=str(body["split_sha256"]),
+            category_ids=tuple(int(c) for c in body["category_ids"]),
+            source=PredictionSource.from_dict(body.get("source"), str(path)),
         )
+    except PredictionsError:
+        raise
     except (KeyError, TypeError, ValueError) as exc:
         raise PredictionsError(f"{path}: incomplete header: {exc}") from exc
 
@@ -162,7 +247,13 @@ def read_predictions(path: Path) -> tuple[PredictionsHeader, tuple[ImageDetectio
 
 
 def cache_key(**parts: Any) -> str:
-    """A content address for everything that determines a set of raw predictions."""
+    """A content address for everything that determines a set of raw predictions.
+
+    The predictions format and version are always part of it, so no part may use their names.
+    """
+    clash = sorted(ENVELOPE_KEYS & set(parts))
+    if clash:
+        raise PredictionsError(f"cache key parts may not be named {clash}; the key sets them")
     blob = json.dumps({"format": FORMAT, "version": VERSION, **parts}, sort_keys=True)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
@@ -199,9 +290,12 @@ class PredictionCache:
         if path is None or not path.is_file():
             return None
         try:
-            meta = json.loads(self._sidecar(path).read_text("utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-            _log.warning("ignoring cached predictions %s: unreadable metadata", path.name)
+            document = json.loads(self._sidecar(path).read_text("utf-8"))
+            meta = open_envelope(
+                document, CACHE_ENTRY_FORMAT, CACHE_ENTRY_VERSION, path.name, error=PredictionsError
+            )
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, PredictionsError) as exc:
+            _log.warning("ignoring cached predictions %s: unreadable metadata (%s)", path.name, exc)
             return None
         actual = hashlib.sha256(path.read_bytes()).hexdigest()
         if not isinstance(meta, Mapping) or meta.get("sha256") != actual or meta.get("key") != key:
@@ -223,18 +317,22 @@ class PredictionCache:
         digest = write_predictions(path, header, images)
         created = datetime.now(UTC).isoformat()
         meta = {"sha256": digest, "key": key, "produced_by": produced_by, "created_at": created}
-        sidecar = self._sidecar(path)
-        tmp = sidecar.with_name(f".{sidecar.name}.{os.getpid()}.tmp")
-        tmp.write_text(json.dumps(meta, sort_keys=True) + "\n", encoding="utf-8")
-        tmp.replace(sidecar)
+        document = envelope(CACHE_ENTRY_FORMAT, CACHE_ENTRY_VERSION, meta)
+        write_bytes_atomic(self._sidecar(path), json_bytes(document))
         return CacheEntry(path, produced_by, created)
 
 
 __all__ = [
+    "CACHE_ENTRY_FORMAT",
+    "CACHE_ENTRY_VERSION",
+    "DETECTION_FIELDS",
     "FORMAT",
+    "RESERVED_FIELDS",
+    "STAGES",
     "VERSION",
     "CacheEntry",
     "PredictionCache",
+    "PredictionSource",
     "PredictionsError",
     "PredictionsHeader",
     "cache_key",

@@ -48,17 +48,26 @@ from qcal_lab.calib.two_threshold import (
     SplitData,
     ThresholdedCalibration,
     train_calibration,
+    write_calibration,
 )
 from qcal_lab.config import LabConfig, defaults_path, load_lab_config, require_hashed
 from qcal_lab.data.coco import GroundTruth, load_coco
 from qcal_lab.data.splits import draw, read_split, split_digest
 from qcal_lab.evaluation import EvalLoop, check_metrics, load_eval_loop
-from qcal_lab.models import build_detector, detector_fingerprint, detector_targets
+from qcal_lab.models import (
+    CHECKPOINT_SETTING,
+    build_detector,
+    detector_fingerprint,
+    detector_targets,
+    detector_test_cfg,
+    score_definition,
+)
 from qcal_lab.predictions import (
     CacheEntry,
     PredictionCache,
     PredictionsError,
     PredictionsHeader,
+    PredictionSource,
     cache_key,
     read_predictions,
     write_predictions,
@@ -265,6 +274,8 @@ class _Context:
     dataset: GroundTruth
     artifact_dir: Path
     images_dir: Path | None
+    fingerprint: Mapping[str, Any]
+    source: PredictionSource
     artifacts: list[dict[str, str]] = field(default_factory=list)
     cache_use: dict[str, dict[str, Any]] = field(default_factory=dict)
 
@@ -274,6 +285,17 @@ class _Context:
 
     def add_artifact(self, path: Path, kind: str) -> None:
         self.artifacts.append({"path": self.relative(path), "kind": kind})
+
+    def header(self, split: str, ids: Sequence[str], stage: str) -> PredictionsHeader:
+        return PredictionsHeader(
+            detector=self.plan.detector,
+            split=split,
+            stage=stage,
+            dataset_sha256=self.dataset.sha256,
+            split_sha256=split_digest(ids),
+            category_ids=self.dataset.category_ids,
+            source=self.source,
+        )
 
 
 def _artifact_dir(lab: LabConfig, qcal_config: Config, run_id: str) -> Path:
@@ -292,6 +314,21 @@ def _fingerprint(lab: LabConfig, plan: RunPlan) -> dict[str, Any]:
         plan.precision,
         file_settings=lab.config.str_list("predictions.fingerprint_file_settings"),
         packages=lab.config.str_list("predictions.fingerprint_packages"),
+    )
+
+
+def prediction_source(
+    lab: LabConfig, plan: RunPlan, fingerprint: Mapping[str, Any]
+) -> PredictionSource:
+    """What produces this run's predictions, from configuration alone (no detector built)."""
+    return PredictionSource(
+        precision=plan.precision,
+        target=plan.target,
+        quant_path=plan.quant_path,
+        shift=plan.shift,
+        score_definition=score_definition(lab, plan.detector),
+        model_sha256=str(fingerprint.get("files", {}).get(CHECKPOINT_SETTING, "")),
+        test_cfg=detector_test_cfg(lab, plan.detector),
     )
 
 
@@ -347,16 +384,10 @@ def _cached_images(
 def _raw_predictions(
     ctx: _Context, detector: Detector, split: str, ids: Sequence[str], cache: PredictionCache
 ) -> tuple[ImageDetections, ...]:
-    header = PredictionsHeader(
-        detector=ctx.plan.detector,
-        split=split,
-        stage="raw",
-        dataset_sha256=ctx.dataset.sha256,
-        split_sha256=split_digest(ids),
-        category_ids=ctx.dataset.category_ids,
-    )
+    header = ctx.header(split, ids, "raw")
     key = cache_key(
-        detector=_fingerprint(ctx.lab, ctx.plan),
+        detector=ctx.fingerprint,
+        source=ctx.source.to_dict(),
         dataset_sha256=ctx.dataset.sha256,
         split_sha256=header.split_sha256,
         images_dir=str(ctx.images_dir.resolve()) if ctx.images_dir else "",
@@ -443,6 +474,7 @@ def run_experiment(
     fit_ids = draw(ids["fit"], plan.fit_size, request.seed) if plan.fit_size else ids["fit"]
     images_setting = lab.config.str_value(f"datasets.{plan.shift}.images_dir")
     images_dir = lab.file(f"datasets.{plan.shift}.images_dir") if images_setting else None
+    fingerprint = _fingerprint(lab, plan)  # hashes the checkpoint: once per run
     ctx = _Context(
         request,
         qcal_config,
@@ -451,6 +483,8 @@ def run_experiment(
         dataset,
         _artifact_dir(lab, qcal_config, request.run_id),
         images_dir,
+        fingerprint,
+        prediction_source(lab, plan, fingerprint),
         artifacts=progress if progress is not None else [],
     )
     detector = build_detector(
@@ -500,7 +534,8 @@ def run_experiment(
             "seed": request.seed,
             "sha256": split_digest(fit_ids),
         },
-        "detector": _fingerprint(lab, plan),
+        "detector": fingerprint,
+        "predictions_source": ctx.source.to_dict(),
         "detector_runtime": dict(getattr(detector, "runtime", {})),
         "roles": {role: dataclasses.asdict(spec) for role, spec in plan.roles().items()},
         "prediction_cache": ctx.cache_use,
@@ -547,22 +582,11 @@ def _write_outputs(
     calibration: ThresholdedCalibration,
     evaluated: Sequence[ImageDetections],
 ) -> None:
-    ctx.artifact_dir.mkdir(parents=True, exist_ok=True)
     calibration_path = ctx.artifact_dir / CALIBRATION_FILE
-    calibration_path.write_text(
-        json.dumps(calibration.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    write_calibration(calibration_path, calibration)
     ctx.add_artifact(calibration_path, CALIBRATION_KIND)
-    header = PredictionsHeader(
-        detector=ctx.plan.detector,
-        split=split,
-        stage="calibrated",
-        dataset_sha256=ctx.dataset.sha256,
-        split_sha256=split_digest(ids),
-        category_ids=ctx.dataset.category_ids,
-    )
     path = ctx.artifact_dir / CALIBRATED_PREDICTIONS_FILE.format(split=split)
-    write_predictions(path, header, evaluated)
+    write_predictions(path, ctx.header(split, ids, "calibrated"), evaluated)
     ctx.add_artifact(path, CALIBRATED_PREDICTIONS_KIND.format(split=split))
 
 
@@ -597,7 +621,14 @@ def write_failure(
 
 
 __all__ = [
+    "CALIBRATED_PREDICTIONS_FILE",
+    "CALIBRATED_PREDICTIONS_KIND",
+    "CALIBRATION_FILE",
+    "CALIBRATION_KIND",
     "HANDWRITTEN_DIR",
+    "LIVE_SOURCE",
+    "RAW_PREDICTIONS_FILE",
+    "RAW_PREDICTIONS_KIND",
     "ROLES",
     "ExperimentResult",
     "PlanError",
@@ -605,6 +636,7 @@ __all__ = [
     "RunPlan",
     "RunRequest",
     "check_disjoint",
+    "prediction_source",
     "resolve_plan",
     "run_experiment",
     "source_digest",

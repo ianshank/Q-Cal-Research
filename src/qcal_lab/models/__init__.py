@@ -7,8 +7,11 @@ from __future__ import annotations
 
 from qcal_lab.models import fixture, mmdet
 from qcal_lab.models.base import (
+    CHECKPOINT_SETTING,
     DETECTORS,
+    KIND_SCORE_DEFINITIONS,
     KIND_TARGETS,
+    TEST_CFG_SETTINGS,
     DetectorContext,
     DetectorError,
     build_detector,
@@ -16,11 +19,16 @@ from qcal_lab.models.base import (
     detector_settings,
     detector_spec,
     detector_targets,
+    detector_test_cfg,
+    score_definition,
 )
 
 __all__ = [
+    "CHECKPOINT_SETTING",
     "DETECTORS",
+    "KIND_SCORE_DEFINITIONS",
     "KIND_TARGETS",
+    "TEST_CFG_SETTINGS",
     "DetectorContext",
     "DetectorError",
     "build_detector",
@@ -28,6 +36,8 @@ __all__ = [
     "detector_settings",
     "detector_spec",
     "detector_targets",
+    "detector_test_cfg",
     "fixture",
     "mmdet",
+    "score_definition",
 ]

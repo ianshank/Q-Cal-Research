@@ -9,6 +9,7 @@ name the proposal next to it.
 from __future__ import annotations
 
 import hashlib
+import json
 import textwrap
 from pathlib import Path
 
@@ -26,7 +27,7 @@ from qcal_lab.data.fixture import build_fixture, fixture_bytes, write_fixture
 from qcal_lab.data.splits import draw, rank_key, split_digest
 from qcal_lab.experiment import _effective_digest
 from qcal_lab.models import build_detector
-from qcal_lab.predictions import PredictionsHeader, cache_key, dumps
+from qcal_lab.predictions import PredictionsHeader, PredictionSource, cache_key, dumps
 from tests.conftest import FakeExecutor
 
 pytestmark = pytest.mark.rule("C7")
@@ -96,6 +97,8 @@ def test_fixture_bytes() -> None:
 
 
 def test_predictions_header_and_rows() -> None:
+    # Re-pinned by docs/changes/run-identity-and-formats.md step 3: predictions version 2
+    # (the header's source and fields list, three reserved row fields).
     header = PredictionsHeader(
         detector="golden",
         split="val",
@@ -103,6 +106,15 @@ def test_predictions_header_and_rows() -> None:
         dataset_sha256="d" * 64,
         split_sha256="e" * 64,
         category_ids=(1, 2, 3),
+        source=PredictionSource(
+            precision="fp32",
+            target="torch_fp32",
+            quant_path="none",
+            shift="id",
+            score_definition="golden",
+            model_sha256="c" * 64,
+            test_cfg={"max_per_image": 100},
+        ),
     )
     images = [
         ImageDetections("2", (Detection((1.0, 2.0, 3.5, 4.25), 0.75, 1, None),)),
@@ -116,11 +128,13 @@ def test_predictions_header_and_rows() -> None:
         ImageDetections("3", ()),
     ]
     assert sha(dumps(header, images)) == (
-        "59086c04a9cc71a2a92fda31abad82aebfec6a2832bee5c5be74461a484d345f"
+        "9415b7fcd06e7e75711cf966c39da36a895ab3ea8c611401d989f6ac128ad4db"
     )
 
 
 def test_cache_key() -> None:
+    # Re-pinned by docs/changes/run-identity-and-formats.md step 3: the key includes the
+    # predictions format version, now 2.
     key = cache_key(
         detector={"name": "golden", "precision": "fp32"},
         dataset_sha256="d" * 64,
@@ -129,7 +143,7 @@ def test_cache_key() -> None:
         images_sha256="",
         source_sha256="f" * 64,
     )
-    assert key == "6c009b641570586760fdb74a30d0bf01a0877a6a8926fe52e8d2532c79811b8c"
+    assert key == ("9c8290cb68890e42a8bf0541aa1b9954a9006936176268556dafdd7302d7d8f5")
 
 
 def test_lab_config_effective_digest() -> None:
@@ -142,20 +156,23 @@ def test_lab_config_effective_digest() -> None:
 
 
 def test_fixture_detector_predictions(tmp_path: Path) -> None:
+    """The fixture detector's output, independent of the predictions file format.
+
+    Pinned over the detections themselves since docs/changes/run-identity-and-formats.md
+    step 3, so a format change no longer moves it; the format has its own golden above.
+    Re-encoded in the version 1 layout, these detections still hash to the earlier golden
+    (f4184d55...301b), so the detector's output did not change.
+    """
     path = tmp_path / "fixture.json"
     write_fixture(path, build_fixture(**FIXTURE))
     ground_truth = load_coco(path)
     lab = load_lab_config(REPO_ROOT)
     detector = build_detector(lab, "fixture", ground_truth, precision="fp32")
-    predictions = tuple(detector.predict(sorted(ground_truth.images)))
-    header = PredictionsHeader(
-        "fixture",
-        "val",
-        "raw",
-        ground_truth.sha256,
-        split_digest(ground_truth.images),
-        tuple(ground_truth.category_ids),
-    )
-    assert sha(dumps(header, predictions)) == (
-        "f4184d55f40bb462dcac430effa4ca6903f8b0d262eae02c6d9a18f930af301b"
+    predictions = detector.predict(sorted(ground_truth.images))
+    canonical = [
+        [image.image_id, [[*d.box_xyxy, d.score, d.label, d.logit] for d in image.detections]]
+        for image in predictions
+    ]
+    assert sha(json.dumps(canonical).encode()) == (
+        "941fc214a764c78b472d2c10e8a514e0c9bad5c075d1186d77428d9ffae57e96"
     )

@@ -12,6 +12,7 @@ from qcal.protocols import Detection, ImageDetections
 from qcal_lab.config import LabConfig, load_lab_config, parse_lab_config
 from qcal_lab.data.coco import GroundTruth, parse_coco
 from qcal_lab.data.fixture import build_fixture, fixture_bytes
+from qcal_lab.predictions import PredictionsHeader, PredictionSource
 from qcal_lab.smoke import write_project
 
 
@@ -72,6 +73,31 @@ def det(score: float, label: int = 0, box: tuple[float, ...] = (0, 0, 10, 10)) -
 
 def image(image_id: str, *detections: Detection) -> ImageDetections:
     return ImageDetections(image_id, tuple(detections))
+
+
+#: A predictions source for tests that do not care what produced the predictions.
+SOURCE = PredictionSource(
+    precision="fp32",
+    target="torch_fp32",
+    quant_path="none",
+    shift="id",
+    score_definition="test: hand-written detections",
+)
+
+
+def predictions_header(
+    detector: str = "fixture",
+    split: str = "val",
+    stage: str = "raw",
+    category_ids: Sequence[int] = (1, 3),
+    *,
+    dataset_sha256: str = "d" * 64,
+    split_sha256: str = "s" * 64,
+    source: PredictionSource = SOURCE,
+) -> PredictionsHeader:
+    return PredictionsHeader(
+        detector, split, stage, dataset_sha256, split_sha256, tuple(category_ids), source
+    )
 
 
 def lab_config(root: Path, text: str = "") -> LabConfig:

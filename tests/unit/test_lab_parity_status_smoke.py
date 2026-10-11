@@ -13,6 +13,8 @@ from qcal_lab.calib import build_calibrator
 from qcal_lab.config import load_lab_config
 from qcal_lab.fixture_eval import FixtureEvalLoop
 from qcal_lab.parity import (
+    CASE_FORMAT,
+    CASE_VERSION,
     ParityError,
     check_calibrator_case,
     check_metric_case,
@@ -20,18 +22,23 @@ from qcal_lab.parity import (
     load_case,
     load_cases,
 )
-from qcal_lab.predictions import PredictionsHeader, write_predictions
+from qcal_lab.predictions import write_predictions
 from qcal_lab.smoke import SmokeReport, expected_artifacts, run_smoke, smoke_settings
 from qcal_lab.status import build_status
-from tests.lab_support import det, image, lab_config
+from tests.lab_support import det, image, lab_config, predictions_header
 
-ORACLE = {"repository": "fiveai/detection_calibration", "commit": "abc123"}
+ORACLE = {
+    "repository": "fiveai/detection_calibration",
+    "commit": "abc123",
+    "environment": {"python": "3.8.18", "cuda": "11.8"},
+}
 
 
 def _case(directory: Path, name: str, data: dict[str, Any]) -> Path:
+    """A parity case file; ``data`` is its body, written inside the case envelope."""
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{name}.json"
-    path.write_text(json.dumps(data))
+    path.write_text(json.dumps({"format": CASE_FORMAT, "version": CASE_VERSION, **data}))
     return path
 
 
@@ -48,11 +55,29 @@ def test_compare() -> None:
         ({"kind": "table"}, "'kind' must be one of"),
         ({"kind": "metric"}, "'oracle' must record"),
         ({"kind": "metric", "oracle": {"repository": "x", "commit": ""}}, "'oracle' must record"),
+        (
+            {"kind": "metric", "oracle": {"repository": "x", "commit": "c"}},
+            "oracle.environment' must record",
+        ),
+        (
+            {"kind": "metric", "oracle": {"repository": "x", "commit": "c", "environment": {}}},
+            "oracle.environment' must record",
+        ),
     ],
 )
 def test_case_validation(tmp_path: Path, data: dict[str, Any], message: str) -> None:
     with pytest.raises(ParityError, match=message):
         load_case(_case(tmp_path, "c", data))
+
+
+def test_a_case_without_its_envelope_is_refused(tmp_path: Path) -> None:
+    path = tmp_path / "bare.json"
+    path.write_text(json.dumps({"kind": "metric", "oracle": ORACLE}))
+    with pytest.raises(ParityError, match=r"not a qcal_lab\.parity_case document"):
+        load_case(path)
+    path.write_text(json.dumps({"format": CASE_FORMAT, "version": 0, "kind": "metric"}))
+    with pytest.raises(ParityError, match="version 0 is not supported"):
+        load_case(path)
 
 
 def test_unreadable_case_and_missing_directory(tmp_path: Path) -> None:
@@ -97,7 +122,7 @@ def test_metric_cases(tmp_path: Path) -> None:
     first = next(a for a in doc["annotations"] if a["image_id"] == 1)
     x, y, w, h = first["bbox"]
     label = first["category_id"] - 1  # categories 1..n map to labels 0..n-1
-    header = PredictionsHeader("x", "test", "raw", "d", "s", (1, 2, 3))
+    header = predictions_header("x", "test", category_ids=(1, 2, 3))
     hit = det(0.5, label, (x, y, x + w, y + h))  # exactly the object: target 1, gap 0.5
     write_predictions(directory / "p.jsonl", header, [image("1", hit)])
     case = {"kind": "metric", "oracle": ORACLE, "predictions": "p.jsonl", "ground_truth": "gt.json"}
@@ -136,7 +161,7 @@ def test_metric_cases_through_the_repository_loop(repo: Path) -> None:
     directory = repo / "cases"
     write_fixture(directory / "gt.json", fixture_document())
     write_predictions(
-        directory / "p.jsonl", PredictionsHeader("x", "test", "raw", "d", "s", (1, 2, 3)), []
+        directory / "p.jsonl", predictions_header("x", "test", category_ids=(1, 2, 3)), []
     )
     case = load_case(
         _case(

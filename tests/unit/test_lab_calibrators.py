@@ -11,7 +11,14 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from qcal.components import UnknownComponentError
-from qcal_lab.calib import CALIBRATORS, build_calibrator, load_calibrator
+from qcal_lab.calib import (
+    CALIBRATOR_FORMAT,
+    CALIBRATOR_VERSION,
+    CALIBRATORS,
+    build_calibrator,
+    load_calibrator,
+    save_calibrator,
+)
 from qcal_lab.calib.base import CalibrationError, IdentityCalibrator, check_fit_inputs
 from qcal_lab.calib.isotonic import (
     IsotonicRegression,
@@ -61,8 +68,12 @@ def test_registry_and_saved_calibrators(lab) -> None:
     assert CALIBRATORS.names() == ["isotonic", "none", "platt"]
     with pytest.raises(UnknownComponentError):
         build_calibrator("temperature", lab)
+    with pytest.raises(CalibrationError, match=r"not a qcal_lab\.calibrator document"):
+        load_calibrator({"name": "none"})  # a calibrator saved without its envelope
+    with pytest.raises(CalibrationError, match="version 2 is not supported"):
+        load_calibrator({"format": CALIBRATOR_FORMAT, "version": 2, "name": "none"})
     with pytest.raises(CalibrationError, match="string 'name'"):
-        load_calibrator({})
+        load_calibrator({"format": CALIBRATOR_FORMAT, "version": CALIBRATOR_VERSION})
     with pytest.raises(CalibrationError, match="expected a saved 'none'"):
         CALIBRATORS.get("none").load({"name": "platt"})
 
@@ -71,7 +82,7 @@ def test_identity(lab) -> None:
     calibrator = build_calibrator("none", lab)
     calibrator.fit([0.2], [0.9])
     assert calibrator.transform([0.2, 0.7]) == [0.2, 0.7]
-    assert isinstance(load_calibrator(calibrator.to_dict()), IdentityCalibrator)
+    assert isinstance(load_calibrator(save_calibrator(calibrator)), IdentityCalibrator)
 
 
 # --- Platt scaling -----------------------------------------------------------------------------
@@ -156,14 +167,39 @@ def test_platt_takes_the_full_newton_step_below_the_losss_resolution() -> None:
 def test_platt_save_and_load(lab) -> None:
     model = platt(lab)
     model.fit([0.2, 0.8], [0.1, 0.7])
-    loaded = load_calibrator(model.to_dict())
+    loaded = load_calibrator(save_calibrator(model))
     assert loaded.transform([0.3, 0.6]) == model.transform([0.3, 0.6])
+    assert loaded.to_dict() == model.to_dict()  # solver settings and fit diagnostics survive
     with pytest.raises(CalibrationError, match="a >= 0"):
         load_platt({**model.to_dict(), "a": -1.0})
     with pytest.raises(CalibrationError, match="finite number"):
         load_platt({**model.to_dict(), "b": None})
     with pytest.raises(CalibrationError, match="expected a saved 'platt'"):
         load_platt({"name": "isotonic"})
+    with pytest.raises(CalibrationError, match="solver settings"):
+        load_platt({k: v for k, v in model.to_dict().items() if k != "solver"})
+    solver = model.to_dict()["solver"]
+    with pytest.raises(CalibrationError, match="'max_iterations' must be an integer"):
+        load_platt({**model.to_dict(), "solver": {**solver, "max_iterations": 1.5}})
+    with pytest.raises(CalibrationError, match="'boundary' must be true or false"):
+        load_platt({**model.to_dict(), "boundary": "no"})
+
+
+def test_platt_records_its_solver_and_a_boundary_fit(lab) -> None:
+    model = platt(lab)
+    model.fit([0.2, 0.8], [0.1, 0.7])
+    saved = model.to_dict()
+    assert saved["boundary"] is False
+    assert saved["solver"] == {
+        "max_iterations": lab.config.int_value("calibrators.platt.max_iterations"),
+        "gradient_tolerance": lab.config.float_value("calibrators.platt.gradient_tolerance"),
+        "ridge": lab.config.float_value("calibrators.platt.ridge"),
+        "armijo": lab.config.float_value("calibrators.platt.armijo"),
+        "min_step": lab.config.float_value("calibrators.platt.min_step"),
+        "resolvable_ulps": 16,
+    }
+    model.fit([0.2, 0.8], [0.7, 0.1])  # anti-correlated: the optimum lies on a = 0
+    assert (model.a, model.to_dict()["boundary"]) == (0.0, True)
 
 
 def test_platt_misuse(lab) -> None:
@@ -241,7 +277,7 @@ def test_isotonic_save_load_and_misuse(lab) -> None:
     with pytest.raises(CalibrationError, match="before fit"):
         model.transform([0.5])
     model.fit([0.2, 0.8], [0.1, 0.9])
-    assert load_calibrator(model.to_dict()).transform([0.5]) == model.transform([0.5])
+    assert load_calibrator(save_calibrator(model)).transform([0.5]) == model.transform([0.5])
     saved = model.to_dict()
     for broken, message in [
         ({**saved, "x": []}, "non-empty"),
