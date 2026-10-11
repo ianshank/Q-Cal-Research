@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import itertools
 import logging
 import platform
@@ -17,7 +18,8 @@ import pytest
 from qcal.config import Config
 from qcal.registry.executor import ExecutionResult, RunSpec, SubprocessExecutor
 from qcal.registry.experiments import Experiments, ExperimentsError, load_experiments
-from qcal.registry.records import ArtifactRef, effective
+from qcal.registry.gates import config_inputs, digest_of
+from qcal.registry.records import SCHEMA_VERSION, ArtifactRef, effective
 from qcal.registry.runner import PlannedRun, Runner, RunRefusedError, merge_environment
 from qcal.registry.store import RegistryStore
 from tests.conftest import (
@@ -238,20 +240,32 @@ def test_run_rounds_duration_to_milliseconds(config: Config, fake_executor: Fake
 def test_run_records_provenance(config: Config, fake_executor: FakeExecutor) -> None:
     runner = make_runner(config, fake_executor)
     record = runner.run("C-a", 0)
+    policy = config.root / "qcal.toml"
     assert dict(record.provenance) == {
         "git_sha": None,
         "git_dirty": None,
         "config_hash": runner.config_hash(runner.experiments.cell("C-a"), 0),
+        "config_inputs_sha256": digest_of(config_inputs(config)),
+        "config_sources": list(config.sources),
+        "config_environment": {},
+        "policy_source": "worktree",
+        "policy_sha256": hashlib.sha256(policy.read_bytes()).hexdigest(),
         "experiments_sha256": runner.experiments.sha256,
         "executor": "FakeExecutor",
     }
 
 
-def test_run_uses_configured_schema_version(
+def test_records_carry_the_code_schema_version(config: Config, fake_executor: FakeExecutor) -> None:
+    assert make_runner(config, fake_executor).run("C-a", 0).schema_version == SCHEMA_VERSION
+
+
+def test_the_removed_schema_version_key_refuses_the_run(
     make_config: Callable[[str], Config], fake_executor: FakeExecutor
 ) -> None:
     config = make_config("[registry]\nschema_version = 7\n")
-    assert make_runner(config, fake_executor).run("C-a", 0).schema_version == 7
+    with pytest.raises(RunRefusedError, match=r"registry\.schema_version was removed"):
+        make_runner(config, fake_executor).run("C-a", 0)
+    assert fake_executor.specs == []
 
 
 def test_run_hands_the_executor_a_complete_spec(
@@ -474,6 +488,9 @@ def test_run_refuses_a_dirty_tree_when_a_clean_one_is_required(
 ) -> None:
     config = make_config("[registry]\nrequire_clean_tree = true\n")
     runner = make_runner(config, fake_executor)
+    run_git(git_repo, "add", "qcal.toml")
+    run_git(git_repo, "commit", "-q", "-m", "require a clean tree")
+    write(git_repo, "notes.txt", "uncommitted\n")
     with pytest.raises(RunRefusedError, match="working tree is dirty"):
         runner.run("C-a", 0)
     assert fake_executor.specs == []

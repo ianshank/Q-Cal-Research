@@ -72,7 +72,17 @@ Every tunable value lives in configuration, never in code. The layers are:
 3. environment overrides on top of both: `QCAL__SECTION__KEY=<toml value>`, for example
    `QCAL__REGISTRY__MAX_RUNS_PER_BATCH=10`.
 
-`qcal config` prints the merged result.
+`qcal config` prints the merged result, its sources and the environment variables that
+shaped it. The set of keys is closed: `qcal config --check` fails on an unknown, removed or
+mistyped key, so a misspelled policy key cannot fall back to its default unnoticed.
+
+Environment overrides are a debugging aid. A registered run (`qcal registry run|run-batch`)
+refuses them, except `QCAL__LOGGING__*`, and refuses a `QCAL_CONFIG` or `QCAL_ROOT` that
+points away from the repository, a `qcal.toml` that differs from `HEAD`, and an
+`--experiments` file other than the configured one. The experiment program never sees
+`QCAL__*` variables, and it reports the digest of every configuration file it read; the run
+fails if one changed while it ran. Git itself runs without redirecting `GIT_*` variables,
+with replacement objects ignored and `core.fsmonitor` off.
 
 ## Tests
 

@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Final, TextIO
 
@@ -69,20 +69,31 @@ def usage_errors() -> tuple[type[Exception], ...]:
     )
 
 
-def main(argv: Sequence[str] | None = None, *, out: TextIO | None = None) -> int:
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    out: TextIO | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> int:
+    """Run one command. ``environ`` replaces ``os.environ`` for configuration and logging
+    (the smoke test passes one without configuration variables)."""
     stream = out if out is not None else sys.stdout
+    env = os.environ if environ is None else environ
     args = build_parser().parse_args(argv)
     if args.command == "hook":
         from qcal.hooks.cli import main as hook_main
 
         return hook_main(args.hook_args)
     # The packaged debug variable is read first, so it also explains a config that fails to load.
-    debug = args.debug or is_truthy(os.environ.get(load_defaults()["logging"]["debug_env"]))
+    debug = args.debug or is_truthy(env.get(load_defaults()["logging"]["debug_env"]))
     try:
-        config = load_config(Path(args.root) if args.root else None)
-        debug = debug or is_truthy(os.environ.get(config.str_value("logging.debug_env")))
+        config = load_config(Path(args.root) if args.root else None, environ=env)
+        debug = debug or is_truthy(env.get(config.str_value("logging.debug_env")))
         configure_logging(
-            config, level="DEBUG" if args.debug else args.log_level, fmt=args.log_format
+            config,
+            level="DEBUG" if args.debug else args.log_level,
+            fmt=args.log_format,
+            environ=env,
         )
         _log.debug("command=%s sources=%s", args.command, ", ".join(config.sources))
         handler: Handler = args.handler

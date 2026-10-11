@@ -31,12 +31,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final
 
-from qcal.config import Config, ConfigError, load_config
+from qcal.config import REPO_CONFIG_NAME, Config, ConfigError, environment_problems, load_config
 from qcal.integrity.leakage import check_leakage
 from qcal.log import get_logger
 from qcal.protocols import Detector, ImageDetections
 from qcal.registry.executor import sha256_file
-from qcal.registry.experiments import load_experiments
+from qcal.registry.experiments import Experiments, load_experiments
+from qcal.registry.gates import INPUTS_READ_KEY
 from qcal_lab import __version__
 from qcal_lab.calib import CALIBRATORS, build_calibrator
 from qcal_lab.calib.thresholds import threshold_grid
@@ -46,7 +47,7 @@ from qcal_lab.calib.two_threshold import (
     ThresholdedCalibration,
     train_calibration,
 )
-from qcal_lab.config import LabConfig, load_lab_config, require_hashed
+from qcal_lab.config import LabConfig, defaults_path, load_lab_config, require_hashed
 from qcal_lab.data.coco import GroundTruth, load_coco
 from qcal_lab.data.splits import draw, read_split, split_digest
 from qcal_lab.evaluation import EvalLoop, check_metrics, load_eval_loop
@@ -355,6 +356,9 @@ def run_experiment(
 ) -> ExperimentResult:
     """Run one cell and seed. ``eval_loop`` injects a loop for tests (recorded as injected)."""
     qcal_config = qcal_config or load_config(request.root)
+    refused = environment_problems(qcal_config)
+    if refused:  # the registry strips these; a swapped executor might not
+        raise PlanError("configuration comes from the environment: " + "; ".join(refused))
     lab = lab or load_lab_config(qcal_config.root)
     require_hashed(lab, qcal_config)
     experiments = load_experiments(qcal_config)
@@ -440,8 +444,30 @@ def run_experiment(
         "evaluate_retained_detections": _retained(evaluated),
         "program_python": sys.executable,
         "program_python_version": platform.python_version(),
+        INPUTS_READ_KEY: inputs_read(qcal_config, lab, experiments),
     }
     return ExperimentResult(metrics, ctx.artifacts, environment)
+
+
+def inputs_read(qcal_config: Config, lab: LabConfig, experiments: Experiments) -> dict[str, str]:
+    """The sha256 of each configuration file this run read, by repository-relative path.
+
+    The registry compares these with the digests it took at launch and fails the run when a
+    file changed in between (``qcal.registry.gates.input_mismatches``).
+    """
+    root = qcal_config.root
+    files: dict[Path, str] = {experiments.path: experiments.sha256}
+    policy = root / REPO_CONFIG_NAME
+    if policy.is_file():
+        files[policy] = sha256_file(policy)
+    if lab.path is not None:
+        files[lab.path] = lab.sha256
+    files[defaults_path()] = sha256_file(defaults_path())
+    return {
+        path.resolve().relative_to(root).as_posix(): digest
+        for path, digest in files.items()
+        if digest and path.resolve().is_relative_to(root)
+    }
 
 
 def _write_outputs(

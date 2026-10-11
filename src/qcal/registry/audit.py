@@ -27,6 +27,7 @@ class AuditReport:
     placeholders: list[str] = field(default_factory=list)
     duplicates: list[str] = field(default_factory=list)
     bad_supersedes: list[str] = field(default_factory=list)
+    mixed_inputs: list[str] = field(default_factory=list)
     amendments: int = 0
 
     def ok(self, *, strict: bool = False) -> bool:
@@ -37,7 +38,9 @@ class AuditReport:
             or self.bad_supersedes
         )
         if strict:
-            problems = problems or bool(self.missing or self.failed_only or self.placeholders)
+            problems = problems or bool(
+                self.missing or self.failed_only or self.placeholders or self.mixed_inputs
+            )
         return not problems
 
     def to_dict(self) -> dict[str, Any]:
@@ -53,6 +56,7 @@ class AuditReport:
             "placeholders": self.placeholders,
             "duplicates": self.duplicates,
             "bad_supersedes": self.bad_supersedes,
+            "mixed_inputs": self.mixed_inputs,
             "amendments": self.amendments,
         }
 
@@ -68,6 +72,7 @@ class AuditReport:
             "placeholders",
             "duplicates",
             "bad_supersedes",
+            "mixed_inputs",
         ):
             values = data[key]
             lines.append(f"{key}: {len(values)}")
@@ -119,6 +124,27 @@ def bad_supersedes(records: Sequence[RunRecord]) -> list[str]:
     return problems
 
 
+def mixed_inputs(current: Sequence[RunRecord], ok_status: str) -> list[str]:
+    """Cells whose current ok runs used different configuration files.
+
+    Tables aggregate a cell's seeds; seeds that ran under different configurations would be
+    averaged as if they were draws of one experiment. Records without
+    ``provenance.config_inputs_sha256`` (written before it existed) are not compared.
+    """
+    by_cell: dict[str, dict[str, list[str]]] = {}
+    for record in current:
+        digest = record.provenance.get("config_inputs_sha256")
+        if record.status == ok_status and isinstance(digest, str):
+            by_cell.setdefault(record.cell_id, {}).setdefault(digest, []).append(record.run_id)
+    return [
+        f"{cell}: {len(digests)} configurations ("
+        + "; ".join(", ".join(sorted(ids)) for _, ids in sorted(digests.items()))
+        + ")"
+        for cell, digests in sorted(by_cell.items())
+        if len(digests) > 1
+    ]
+
+
 def _supersede_cycle(record: RunRecord, by_id: Mapping[str, RunRecord]) -> list[str]:
     """The run ids of a cycle that starts at ``record``, or ``[]``."""
     chain = [record.run_id]
@@ -154,6 +180,7 @@ def audit(config: Config, experiments: Experiments, records: Sequence[RunRecord]
                 report.missing.append((cell.id, seed))
     report.duplicates = duplicate_pairs(current, ok_status)
     report.bad_supersedes = bad_supersedes(records)
+    report.mixed_inputs = mixed_inputs(current, ok_status)
     for record in current:
         registered = known.get(record.cell_id)
         if registered is None:

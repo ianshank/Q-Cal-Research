@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Final, Protocol, runtime_checkable
 
 from qcal.components import ComponentRegistry
-from qcal.config import Config, ConfigError
+from qcal.config import Config, ConfigError, run_neutral_environment, without_config_environment
 from qcal.log import get_logger
 from qcal.registry.experiments import Cell
 from qcal.registry.records import METRIC_NAME_PATTERN, ArtifactRef
@@ -117,7 +117,13 @@ def sha256_file(path: Path) -> str:
 
 class SubprocessExecutor:
     def __init__(
-        self, command: Sequence[str], *, timeout_s: float | None, env_prefix: str, root: Path
+        self,
+        command: Sequence[str],
+        *,
+        timeout_s: float | None,
+        env_prefix: str,
+        root: Path,
+        pass_env: Mapping[str, str] | None = None,
     ) -> None:
         if not command:
             raise ExecutorNotConfiguredError(
@@ -129,6 +135,7 @@ class SubprocessExecutor:
         self.timeout_s = timeout_s
         self.env_prefix = env_prefix
         self.root = root
+        self.pass_env = dict(pass_env or {})
 
     @classmethod
     def from_config(cls, config: Config) -> SubprocessExecutor:
@@ -138,6 +145,7 @@ class SubprocessExecutor:
             timeout_s=timeout if timeout > 0 else None,
             env_prefix=config.str_value("executor.env_prefix"),
             root=config.root,
+            pass_env=run_neutral_environment(config),
         )
 
     def argv(self, spec: RunSpec) -> list[str]:
@@ -145,7 +153,13 @@ class SubprocessExecutor:
         return [part.format_map(values) for part in self.command]
 
     def environment(self, spec: RunSpec) -> dict[str, str]:
-        env = dict(os.environ)
+        """The child's environment: configuration variables removed, run-neutral ones re-added.
+
+        The experiment program loads configuration itself; a ``QCAL__*`` override or a
+        ``QCAL_CONFIG`` inherited from the launcher's shell would change what it reads.
+        """
+        env = without_config_environment(os.environ)
+        env.update(self.pass_env)
         env.update({f"{self.env_prefix}{k.upper()}": v for k, v in spec.values().items()})
         return env
 

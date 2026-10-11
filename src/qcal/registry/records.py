@@ -13,6 +13,10 @@ RUN_ID_PATTERN: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 #: macro arguments, so they are limited to letters, digits and ``_ . @ -``.
 METRIC_NAME_PATTERN: Final = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.@-]*$")
 _REQUIRED: Final = ("run_id", "cell_id", "seed", "status", "started_at", "finished_at")
+#: The record schema this code writes and the newest it reads. Schema 1 only ever gains
+#: optional fields; a change that old readers would misread bumps it, and old readers then
+#: refuse the new records instead of misreading them.
+SCHEMA_VERSION: Final = 1
 _REQUIRED_STRINGS: Final = ("run_id", "cell_id", "status", "started_at", "finished_at")
 
 
@@ -146,6 +150,11 @@ class RunRecord:
         version = data.get("schema_version", 1)
         if isinstance(version, bool) or not isinstance(version, int):
             raise RecordError("schema_version must be an integer")
+        if not 1 <= version <= SCHEMA_VERSION:
+            raise RecordError(
+                f"schema_version {version} is not readable by this qcal (it reads 1 to "
+                f"{SCHEMA_VERSION}); a newer record needs a newer qcal"
+            )
         known = set(cls.__dataclass_fields__) - {"extra"}
         duration = data.get("duration_s")
         return cls(

@@ -148,7 +148,6 @@ extra_bash_deny = [
 ]
 
 [registry]
-schema_version = 1
 run_id_template = "R{timestamp}-{cell_id}-s{seed}-{nonce}"
 timestamp_format = "%Y%m%dT%H%M%SZ"
 nonce_bytes = 3

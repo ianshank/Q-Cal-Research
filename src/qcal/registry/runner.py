@@ -12,13 +12,27 @@ from pathlib import Path
 from typing import Any
 
 from qcal import gitutil
-from qcal.config import Config
-from qcal.globs import iter_files
+from qcal.config import Config, run_neutral_environment
 from qcal.log import get_logger
 from qcal.registry.environment import collect_environment
 from qcal.registry.executor import ExecutionResult, Executor, RunSpec
 from qcal.registry.experiments import Cell, Experiments, ExperimentsError
-from qcal.registry.records import RecordError, RunRecord, effective, validate_run_id
+from qcal.registry.gates import (
+    INPUTS_READ_KEY,
+    config_inputs,
+    digest_of,
+    input_mismatches,
+    launch_digests,
+    policy_state,
+    run_input_problems,
+)
+from qcal.registry.records import (
+    SCHEMA_VERSION,
+    RecordError,
+    RunRecord,
+    effective,
+    validate_run_id,
+)
 from qcal.registry.store import RegistryStore
 
 _log = get_logger("registry.runner")
@@ -27,7 +41,8 @@ Clock = Callable[[], datetime]
 
 
 class RunRefusedError(RuntimeError):
-    """A run was refused before execution (unregistered seed, dirty tree, batch too large)."""
+    """A run was refused before execution (unregistered seed, dirty tree, batch too large,
+    configuration from the environment or from uncommitted files)."""
 
 
 @dataclass(frozen=True)
@@ -82,20 +97,23 @@ class Runner:
 
     def config_hash(self, cell: Cell, seed: int) -> str:
         """Hash of everything that defines the run: factors, seed, command, config files."""
-        root = self.config.root
-        inputs = {
-            str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
-            for p in iter_files(root, self.config.str_list("registry.config_hash_inputs"))
-        }
         payload = {
             "cell": cell.id,
             "factors": dict(cell.factors),
             "seed": seed,
             "command": self.config.get("executor.command"),
-            "inputs": inputs,
+            "inputs": config_inputs(self.config),
         }
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
         return hashlib.sha256(canonical.encode()).hexdigest()
+
+    def check_inputs(self) -> None:
+        """Refuse a run whose configuration does not come from committed files only."""
+        problems = run_input_problems(self.config, self.experiments)
+        if problems:
+            raise RunRefusedError(
+                "registered runs read committed configuration only:\n  - " + "\n  - ".join(problems)
+            )
 
     def _output_paths(self) -> list[str]:
         """Registry outputs, which a run itself creates, never count as a dirty tree."""
@@ -114,6 +132,7 @@ class Runner:
             raise RunRefusedError(
                 f"seed {seed} is not pre-registered for {cell_id} (allowed: {list(allowed)})"
             )
+        self.check_inputs()
         self._check_not_duplicate(cell.id, seed, supersedes)
         if (
             supersedes
@@ -150,10 +169,17 @@ class Runner:
             / self.config.str_value("executor.log_filename").format_map(names),
             root=root,
         )
+        policy = policy_state(self.config)
+        launch = launch_digests(self.config, self.experiments, policy)
         provenance = {
             "git_sha": gitutil.head_sha(root),
             "git_dirty": dirty,
             "config_hash": self.config_hash(cell, seed),
+            "config_inputs_sha256": digest_of(config_inputs(self.config)),
+            "config_sources": list(self.config.sources),
+            "config_environment": run_neutral_environment(self.config),
+            "policy_source": policy.source,
+            "policy_sha256": policy.sha256,
             "experiments_sha256": self.experiments.sha256,
             "executor": type(self.executor).__name__,
         }
@@ -165,6 +191,10 @@ class Runner:
         except Exception as exc:  # noqa: BLE001 - a crash is recorded as a failed run, never lost
             _log.exception("executor %s raised for %s", type(self.executor).__name__, run_id)
             result = ExecutionResult(-1, error=f"executor raised {type(exc).__name__}: {exc}")
+        changed = input_mismatches(launch, result.environment.get(INPUTS_READ_KEY))
+        if changed and result.ok:
+            result.error = "; ".join(changed)
+            _log.error("run %s: %s", run_id, result.error)
         finished = self.clock()
         environment = merge_environment(
             collect_environment(
@@ -195,7 +225,7 @@ class Runner:
             artifacts=tuple(result.artifacts) if result.ok else (),
             log_path=_relative(spec.log_path, root),
             error=result.error,
-            schema_version=self.config.int_value("registry.schema_version"),
+            schema_version=SCHEMA_VERSION,
         )
         self.store.write(record)
         if not result.ok:

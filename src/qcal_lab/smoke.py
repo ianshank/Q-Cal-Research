@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import sys
 import time
 from collections.abc import Callable, Mapping
@@ -24,7 +25,7 @@ from typing import Any
 import yaml
 
 from qcal import cli as qcal_cli
-from qcal.config import ConfigError, load_config
+from qcal.config import ConfigError, load_config, without_config_environment
 from qcal.log import get_logger
 from qcal.registry.executor import sha256_file
 from qcal.registry.store import RegistryStore
@@ -87,7 +88,10 @@ def _toml_list(values: list[str]) -> str:
 def _qcal(project: Path) -> QcalMain:
     def run(args: list[str]) -> tuple[int, str]:
         out = io.StringIO()
-        code = qcal_cli.main(["--root", str(project), *args], out=out)
+        # Registered runs refuse configuration from the environment; the smoke project's
+        # configuration is its own files, whatever the caller's shell exports.
+        environ = without_config_environment(os.environ)
+        code = qcal_cli.main(["--root", str(project), *args], out=out, environ=environ)
         return code, out.getvalue()
 
     return run
@@ -212,6 +216,7 @@ def _check_determinism(report: SmokeReport, project: Path, record: Any) -> None:
         RunRequest(
             project, rerun_id, record.cell_id, record.seed, project / "runs/smoke" / rerun_id
         ),
+        qcal_config=load_config(project, environ=without_config_environment(os.environ)),
         lab=LabConfig(uncached.config, lab_file, uncached.sha256),
     )
     recorded = {a.kind: a.sha256 for a in record.artifacts}

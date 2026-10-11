@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from qcal.registry.records import (
+    SCHEMA_VERSION,
     ArtifactRef,
     RecordError,
     RunRecord,
@@ -211,7 +212,7 @@ def test_record_round_trips_through_dict() -> None:
         artifacts=(ArtifactRef("x.engine", "h" * 64, "engine", 10),),
         log_path="runs/logs/R2.log",
         error=None,
-        schema_version=3,
+        schema_version=1,
         extra={"note": "kept"},
     )
     assert RunRecord.from_dict(record.to_dict()) == record
@@ -312,6 +313,19 @@ def test_from_dict_reports_mistyped_fields_as_record_errors(
 ) -> None:
     with pytest.raises(RecordError, match=re.escape(message)):
         RunRecord.from_dict(minimal_dict(**overrides))
+
+
+@pytest.mark.parametrize("version", [0, -1, SCHEMA_VERSION + 1, 99])
+def test_from_dict_refuses_schema_versions_this_code_cannot_read(version: int) -> None:
+    """A newer schema may mean what old code would misread, so old code refuses it."""
+    with pytest.raises(RecordError, match=f"schema_version {version} is not readable"):
+        RunRecord.from_dict(minimal_dict(schema_version=version))
+
+
+def test_from_dict_reads_records_without_a_schema_version_as_version_1() -> None:
+    data = minimal_dict()
+    data.pop("schema_version", None)
+    assert RunRecord.from_dict(data).schema_version == 1
 
 
 def test_from_dict_wraps_unexpected_type_errors() -> None:

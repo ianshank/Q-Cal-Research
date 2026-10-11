@@ -4,6 +4,14 @@ Only the bootstrap constants below are fixed in code: the name of the repository
 config file and the environment variables that locate it. Every other value the
 package uses comes from :func:`load_config`.
 
+The set of keys is closed: every key must exist in the packaged defaults (or sit in one of
+the :data:`OPEN_TABLES`) with a compatible type. :func:`config_key_problems` checks it and
+``qcal config --check`` reports it; registered runs refuse a configuration that fails it.
+
+Environment overrides (``QCAL__SECTION__KEY``) and the locator variables are recorded in
+:attr:`Config.environment_inputs`. They are a debugging aid: a registered run refuses them
+(:func:`environment_problems`), except in :data:`RUN_NEUTRAL_SECTIONS`.
+
 Stdlib-only: imported by Claude Code hooks.
 """
 
@@ -25,6 +33,28 @@ ENV_OVERRIDE_PREFIX: Final = "QCAL__"
 ENV_OVERRIDE_SEPARATOR: Final = "__"
 ROOT_MARKERS: Final = (REPO_CONFIG_NAME, ".git")
 _DEFAULTS_RESOURCE: Final = "defaults.toml"
+#: Sections whose environment overrides change nothing a run computes or records, so a
+#: registered run accepts them (and records them). Everything else is refused.
+RUN_NEUTRAL_SECTIONS: Final = frozenset({"logging"})
+#: Tables whose keys are chosen by the repository rather than fixed by the defaults. Their
+#: values must have the type of the packaged entries (when the defaults have any).
+OPEN_TABLES: Final = frozenset(
+    {"policy.categories", "policy.messages", "review.reviewer_by_branch_prefix"}
+)
+#: Element types of lists whose packaged default is empty (so the default cannot say).
+EMPTY_LIST_ELEMENTS: Final[dict[str, type]] = {
+    "executor.command": str,
+    "licenses.dataset_allowed": str,
+    "licenses.dataset_denied": str,
+    "agent_layer.required_pretooluse_hooks": str,
+}
+#: Keys that existed once. A file that still sets one is told what replaced it.
+REMOVED_KEYS: Final[dict[str, str]] = {
+    "registry.schema_version": (
+        "the run-record schema version is a property of the code that reads records "
+        "(qcal.registry.records.SCHEMA_VERSION), not a setting; delete the key"
+    ),
+}
 
 _MISSING: Final = object()
 
@@ -96,6 +126,9 @@ class Config:
     root: Path
     data: Mapping[str, Any]
     sources: tuple[str, ...] = field(default=())
+    #: Every environment variable that shaped this configuration, verbatim: the
+    #: ``QCAL__*`` overrides, plus ``QCAL_ROOT``/``QCAL_CONFIG`` when they were set.
+    environment_inputs: Mapping[str, str] = field(default_factory=dict)
 
     def get(self, dotted: str, default: Any = _MISSING) -> Any:
         node: Any = self.data
@@ -188,7 +221,132 @@ def load_config(
     if env_layer:
         data = deep_merge(data, env_layer)
         sources.append("environment")
-    return Config(root=resolved_root, data=data, sources=tuple(sources))
+    inputs = {
+        name: value
+        for name, value in env.items()
+        if name.startswith(ENV_OVERRIDE_PREFIX) or (name in _LOCATOR_ENVS and value)
+    }
+    return Config(
+        root=resolved_root,
+        data=data,
+        sources=tuple(sources),
+        environment_inputs=dict(sorted(inputs.items())),
+    )
+
+
+_LOCATOR_ENVS: Final = (ROOT_ENV, CONFIG_PATH_ENV)
+
+
+def _override_section(name: str) -> str:
+    return name[len(ENV_OVERRIDE_PREFIX) :].split(ENV_OVERRIDE_SEPARATOR, 1)[0].lower()
+
+
+def environment_problems(config: Config) -> list[str]:
+    """Why the environment makes ``config`` unfit for a registered run; empty when it is fit.
+
+    A registered run reads its configuration from committed files only. Overrides outside
+    :data:`RUN_NEUTRAL_SECTIONS` are refused, and so are locator variables that point
+    anywhere but the repository the run belongs to.
+    """
+    problems: list[str] = []
+    for name, value in config.environment_inputs.items():
+        if name == ROOT_ENV:
+            if Path(value).resolve() != config.root:
+                problems.append(f"{ROOT_ENV}={value} names another root than {config.root}")
+        elif name == CONFIG_PATH_ENV:
+            if Path(value).resolve() != (config.root / REPO_CONFIG_NAME).resolve():
+                problems.append(f"{CONFIG_PATH_ENV}={value} replaces {REPO_CONFIG_NAME}")
+        elif _override_section(name) not in RUN_NEUTRAL_SECTIONS:
+            problems.append(f"{name} overrides configuration")
+    return problems
+
+
+def run_neutral_environment(config: Config) -> dict[str, str]:
+    """The environment inputs a registered run accepts; they go into its record."""
+    return {
+        name: value
+        for name, value in config.environment_inputs.items()
+        if name.startswith(ENV_OVERRIDE_PREFIX) and _override_section(name) in RUN_NEUTRAL_SECTIONS
+    }
+
+
+def without_config_environment(environ: Mapping[str, str]) -> dict[str, str]:
+    """``environ`` minus every variable that locates or overrides configuration."""
+    return {
+        name: value
+        for name, value in environ.items()
+        if not name.startswith(ENV_OVERRIDE_PREFIX) and name not in _LOCATOR_ENVS
+    }
+
+
+def config_key_problems(
+    data: Mapping[str, Any], defaults: Mapping[str, Any] | None = None
+) -> list[str]:
+    """Unknown, removed and mistyped keys in ``data``, checked against the packaged defaults.
+
+    A misspelled key would otherwise be ignored silently and its default would apply; for
+    a policy key (``signing.signed_categories``) that quietly weakens the policy.
+    """
+    problems: list[str] = []
+    _check_table(data, load_defaults() if defaults is None else defaults, "", problems)
+    return problems
+
+
+def _check_table(
+    node: Mapping[str, Any], defaults: Mapping[str, Any], prefix: str, problems: list[str]
+) -> None:
+    open_table = prefix.rstrip(".") in OPEN_TABLES
+    template = next(iter(defaults.values()), None) if open_table else None
+    for key, value in node.items():
+        dotted = f"{prefix}{key}"
+        if dotted in REMOVED_KEYS:
+            problems.append(f"{dotted} was removed: {REMOVED_KEYS[dotted]}")
+        elif open_table:
+            if template is not None:
+                _check_value(value, template, dotted, problems)
+        elif key not in defaults:
+            problems.append(f"unknown configuration key {dotted!r}")
+        else:
+            _check_value(value, defaults[key], dotted, problems)
+
+
+def _check_value(value: Any, default: Any, dotted: str, problems: list[str]) -> None:
+    if not _same_kind(default, value):
+        problems.append(f"{dotted} must be {_kind(default)}, got {_kind(value)}")
+    elif isinstance(default, Mapping):
+        _check_table(value, default, f"{dotted}.", problems)
+    elif isinstance(default, list):
+        element: Any = default[0] if default else EMPTY_LIST_ELEMENTS.get(dotted)
+        if element is None:
+            return
+        bad = [v for v in value if not _same_kind(element, v)]
+        if bad:
+            problems.append(f"{dotted} must hold only {_kind(element)} items, got {bad[0]!r}")
+
+
+def _same_kind(expected: Any, value: Any) -> bool:
+    """Same TOML kind: integers and floats are interchangeable; booleans are not numbers."""
+    kind = expected if isinstance(expected, type) else type(expected)
+    if kind is bool or isinstance(value, bool):
+        return kind is bool and isinstance(value, bool)
+    if kind in (int, float):
+        return isinstance(value, int | float)
+    if issubclass(kind, Mapping):
+        return isinstance(value, Mapping)
+    return isinstance(value, kind)
+
+
+def _kind(value: Any) -> str:
+    kind = value if isinstance(value, type) else type(value)
+    if kind is bool:
+        return "a boolean"
+    if kind in (int, float):
+        return "a number"
+    if issubclass(kind, Mapping):
+        return "a table"
+    if kind is list:
+        return "a list"
+    return "a string" if kind is str else f"a {kind.__name__}"
 
 
 def _parse_toml(text: str, origin: str) -> dict[str, Any]:

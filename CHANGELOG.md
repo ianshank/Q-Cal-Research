@@ -6,6 +6,29 @@ All notable changes to the `qcal` tooling and the agent layer. The format follow
 
 ## [Unreleased]
 
+### Cycle 2026-10: G0 → G1 readiness
+
+Plan: `docs/changes/cycle-2026-10-g1-readiness.md` (reviewed by the adversarial reviewer and a
+four-lens expert panel).
+
+Registered-run gates (`docs/changes/registry-run-gates.md`, signed surface):
+- A registered run reads committed configuration only. `qcal registry run|run-batch` refuses
+  `QCAL__*` overrides (except `logging`), a `QCAL_CONFIG`/`QCAL_ROOT` that points away from
+  the repository, a `qcal.toml` that differs from `HEAD`, unknown or mistyped configuration
+  keys, and an `--experiments` file other than the configured one (`--dry-run` excepted).
+- The experiment program's environment no longer carries configuration variables; it reports
+  the digest of every configuration file it read, and a file that changed during the run
+  fails it.
+- Records gain `provenance.{config_inputs_sha256, config_sources, config_environment,
+  policy_source, policy_sha256}`; `qcal registry audit --strict` fails when a cell's seeds ran
+  under different configuration files.
+- Git runs without redirecting `GIT_*` variables, with replacement objects ignored and
+  `core.fsmonitor` off.
+- `qcal config --check` rejects unknown, removed and mistyped keys (run by `make integrity`
+  and CI); `qcal config` shows the environment inputs.
+- The record schema version is a code constant (`records.SCHEMA_VERSION`); records claiming a
+  newer schema are refused. `registry.schema_version` is removed from the defaults.
+
 ### Phase 1 scaffold
 
 Change proposal: `docs/changes/reproduce-kuzucu-eccv24-baselines.md`. Reference:
