@@ -20,8 +20,8 @@ Process (PR-0):
 - `docs/AGENT_LAYER.md` lists the scoped hooks each subagent carries, `allow-only` included.
 
 Proposed, for Ian to accept by Oct 17: `docs/changes/evalloop-v2.md`, a two-layer evaluation
-interface (matching once, then objectives and metrics), three detection sets, per-image
-integer weights for the bootstrap, and a replay detector.
+interface (matching once, then objectives and metrics), three detection sets, a bootstrap
+over resampled datasets (copies under fresh ids, no weights), and a replay detector.
 
 Registered-run gates (`docs/changes/registry-run-gates.md`, signed surface):
 - A registered run reads committed configuration only. `qcal registry run|run-batch` refuses
@@ -40,6 +40,9 @@ Registered-run gates (`docs/changes/registry-run-gates.md`, signed surface):
   and CI); `qcal config` shows the environment inputs.
 - The record schema version is a code constant (`records.SCHEMA_VERSION`); records claiming a
   newer schema are refused. `registry.schema_version` is removed from the defaults.
+- After Copilot's review: every `registry.config_hash_inputs` file must equal `HEAD`, read
+  once for the gate and the hash; a project outside git is never compared with `HEAD`; the
+  fields of list-of-table keys are type-checked.
 - After the adversarial review: the run root must be the repository's top level;
   `EXPERIMENTS.yaml` must equal `HEAD`; the parsed bytes, not a later read, are compared;
   the registry's git queries are isolated from user and system git configuration; a
@@ -99,7 +102,11 @@ Verification (PR-E):
 - Hypothesis invariants for isotonic regression, Platt scaling and Alg. A.1/A.2 against slow
   reference implementations; scikit-learn and SciPy oracles (`tests/oracle`, extra `oracle`)
   agree to 1e-12 and 1e-10 in loss (evidence for TD-13 and TD-16).
-- `tests/contract`: the EvalLoop contract on the fixture loop and, once it exists, Ian's.
+- `tests/contract`: the EvalLoop contract on the fixture loop and, once it exists, Ian's. The
+  file and socket audit starts before the loop is imported, so a loop cannot read data while
+  it is built and keep it.
+- CI job `oracle` installs the `oracle` extra and runs the properties, oracles and contract
+  with `ORACLE_REQUIRED=1`, so a missing library fails instead of skipping.
 - `tests/e2e/test_lab_registry_loop.py`: a lab number through the registry to a claim.
 - `scripts/traceability.py --check`: every integrity rule in CLAUDE.md and AGENTS.md maps to
   tests (`@pytest.mark.rule`); Hypothesis profiles `ci`, `dev`, `explore`.
