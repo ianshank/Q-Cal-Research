@@ -94,6 +94,8 @@ system git configuration and `GIT_*` redirection.
 | regression | `make test-regression` | one test per fixed review, red-team or peer-review finding |
 | security | `make test-security` | bypass attempts on the guards and the signed-commit control |
 | e2e | `make test-e2e` | the documented workflow, `scripts/nightly.sh` and `make smoke` through the real CLI |
+| contract | `pytest tests/contract` | the `EvalLoop` MUST checks on the fixture loop, and on Ian's loop once it exists (NOT ASSESSED until then) |
+| oracle | `pytest tests/oracle` | the calibrators against scikit-learn and SciPy, installed with the `oracle` extra; `ORACLE_REQUIRED=1` turns skips into failures |
 | parity | `make parity` | `qcal_lab` and Ian's metrics against `fiveai/detection_calibration` outputs; skips, saying why, until those exist |
 
 The branch-coverage gate is set in `pyproject.toml` (`fail_under`).

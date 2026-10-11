@@ -11,6 +11,18 @@ All notable changes to the `qcal` tooling and the agent layer. The format follow
 Plan: `docs/changes/cycle-2026-10-g1-readiness.md` (reviewed by the adversarial reviewer and a
 four-lens expert panel).
 
+Process (PR-0):
+- The cycle plan is committed as a change document; `docs/changes/README.md` indexes every
+  proposal; the template gains Status, Decisions, Compatibility, Ian decisions requested and
+  Ian hours.
+- `SECURITY.md` (private reporting; what counts as a bypass) and `CONTRIBUTING.md` (the
+  workflow, how Ian signs an agent branch, what the hooks tell agents, the test suites).
+- `docs/AGENT_LAYER.md` lists the scoped hooks each subagent carries, `allow-only` included.
+
+Proposed, for Ian to accept by Oct 17: `docs/changes/evalloop-v2.md`, a two-layer evaluation
+interface (matching once, then objectives and metrics), three detection sets, per-image
+integer weights for the bootstrap, and a replay detector.
+
 Registered-run gates (`docs/changes/registry-run-gates.md`, signed surface):
 - A registered run reads committed configuration only. `qcal registry run|run-batch` refuses
   `QCAL__*` overrides (except `logging`), a `QCAL_CONFIG`/`QCAL_ROOT` that points away from

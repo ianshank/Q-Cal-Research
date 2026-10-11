@@ -44,12 +44,16 @@ and so that every piece is validated deterministically by `qcal agent-layer`, no
 | Stop | (all) | `run_hook.sh --fail-open claims` | open: CI runs the same check as the gate |
 | SessionStart | `startup\|resume` | `session_start.sh` | never fails; prints the guard, signing and review modes |
 
-Implemented but not yet wired by default:
+Scoped hooks, attached in a subagent's frontmatter `hooks:` rather than in `settings.json`:
 
-- `scope-write <dirs...>`: allow writes only under the given directories;
-- `deny-read <globs or categories...>`: keep files private from a subagent.
+| Hook | What it does | Attached to |
+|---|---|---|
+| `scope-write <dirs...>` | allows writes only under the given directories | `paper-reproducer` (`src/qcal_lab`, `tests`, `configs`) |
+| `deny-read <globs or categories...>` | keeps files private from a subagent | `prior-art-scout` (`ian_only`) |
+| `allow-only <commands...>` | allows only the listed Bash commands, matched as exact tokens | `data-leakage-checker` (the leakage check), `paper-reproducer` (make targets, `git status`, `git diff`) |
 
-Attach them in a subagent's frontmatter `hooks:` when an agent needs that scope.
+`allow-only` narrows what a subagent runs; it is not a sandbox. The commands it allows still
+run with the session's permissions.
 
 ### Permissions
 
