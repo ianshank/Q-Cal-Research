@@ -73,6 +73,11 @@ Registered-run contract (`docs/changes/registry-run-contract.md`, signed surface
   seeds the program reports as `seed_effective = false`. Table specs are no longer run inputs.
 - `data.manifest_pattern` may name `{dataset}` through one shared `leakage.manifest_path`.
 - guard-bash no longer crashes on a segment that is only a redirection.
+- After the adversarial review: the program reports each artifact's sha256 and a file that
+  changed before the record fails the run; signals after the program's exit wait for the
+  record, and the in-flight marker goes only once it exists; SIGTERM and SIGHUP end a run
+  like Ctrl-C, so a killed launcher no longer orphans its program; envelopes must be
+  self-consistent; leftover workers are terminated before hashing.
 
 Run identity and formats (`docs/changes/run-identity-and-formats.md`, agent-owned, PR-D1):
 - Golden digests pin every run identity (`tests/regression/test_run_identity_goldens.py`);
@@ -94,6 +99,10 @@ Run identity and formats (`docs/changes/run-identity-and-formats.md`, agent-owne
   images' path. A hit needs the producer's record to list the file; the cache never replaces
   bytes; the detector is built on the first miss only.
 - Smoke runs the program with the registered command, `{python} -I`.
+- After the adversarial review: a cache hit hashes, vouches for and parses one read of the
+  file; supported values are checked per role, also under a renamed factor; the TF32 and
+  cuBLAS variables are in the cache key; `seed_effective` is true only for a proper-subset
+  draw into a calibrator that reads it.
 - A Platt property test bounds parameter recovery by the loss's curvature (found by the
   `explore` profile); Platt takes a full Newton step once the predicted decrease is below the
   loss's resolution.

@@ -1,5 +1,87 @@
 ---
 reviewer: claude-adversarial-reviewer
+reviewed_sha: f57816fc40a7e7db0cebf7649d05cda014c4e7f8
+verdict: block
+blocking:
+  - id: B1
+    file: src/qcal/registry/executor.py:404-422
+    finding: Artifacts were hashed only when the record was written, so bytes swapped into the cache while a run was in progress were recorded as the run's own, and the producer check then served them.
+    resolved_in: 81358bc
+  - id: B2
+    file: src/qcal_lab/experiment.py:216-223
+    finding: The supported-value check looked roles up by factor name, so under a renamed factor split_design, quant_path, fit_precision and threshold_regime accepted any value.
+    resolved_in: 81358bc
+  - id: B3
+    file: src/qcal_lab/experiment.py:505-520
+    finding: NVIDIA_TF32_OVERRIDE was recorded but not part of the prediction cache key, so a TF32-off run could reuse TF32 predictions.
+    resolved_in: 81358bc
+  - id: B4
+    file: src/qcal_lab/experiment.py:690
+    finding: seed_effective was true whenever a fit size was set, including a full-split draw and the identity calibrator, so tables printed std 0.00 instead of refusing.
+    resolved_in: 81358bc
+  - id: B5
+    file: src/qcal/registry/runner.py:237-243
+    finding: A Ctrl-C between the program's exit and the record write lost the record, and the finally clause deleted the in-flight marker.
+    resolved_in: 8dd2351
+  - id: B6
+    file: src/qcal/registry/executor.py:255
+    finding: With the program in its own session and no SIGTERM/SIGHUP handling, killing the launcher left the program running, unrecorded, holding the GPU and the pair lock released.
+    resolved_in: 8dd2351
+non_blocking: [N1, N2, N3, N4, N5, N6, N7, N8, N9, N10, N11, N12, N13, N14, N15, N16]
+---
+Advisory review by the project's read-only `adversarial-reviewer` subagent, saved by the
+caller as its definition requires. It is not the cross-model review that
+`qcal ci review-check` requires for `claude/*` branches; that is `review/gemini/`.
+
+## Wave 2: PR-A2 and PR-D1 (`8c76044..f57816f`)
+
+Verdict **block**: 6 blocking and 16 non-blocking findings. Each blocking finding was checked
+against the code before it was fixed, and each fix has a test that fails when the fix is
+reverted. The PR-A2 fixes are in `8dd2351` (signed surface), the PR-D1 fixes in `81358bc`. B1 needed
+both: the program reports each artifact's sha256, and the launcher compares it.
+
+| Finding | Outcome |
+|---|---|
+| B1 a record vouching for swapped cache bytes | fixed: program-reported sha256 per artifact, compared by the launcher; a cache hit hashes and parses one read |
+| B2 supported values skipped under a renamed factor | fixed: checked per role; a cell may use factor names only |
+| B3 `NVIDIA_TF32_OVERRIDE` not in the cache key | fixed: the recorded numerics variables are key parts |
+| B4 `seed_effective` true for seeds that change nothing | fixed: a proper-subset draw and a calibrator that reads fit data |
+| B5 Ctrl-C after the program's exit lost the record | fixed: signals held by handler swap until the record is written; marker removed after it |
+| B6 a killed launcher orphaned the program | fixed: SIGTERM/SIGHUP raise `LauncherSignal` during a run; SIGKILL remains a residual |
+| N1 interrupted runs drop the program's envelope | follow-up |
+| N2 unrecorded cache bytes block their key | follow-up (quarantine and replace) |
+| N3 no hard-link fallback; pid-only temporary names | fixed |
+| N4 tables compare fewer digests than the audit | follow-up (signed) |
+| N5 `{dataset}` never passed; empty `data.datasets` | empty list fixed; per-dataset reads are Phase 2 |
+| N6 inconsistent envelopes accepted | fixed |
+| N7 workers outlive a normal exit | fixed |
+| N8 the audit's lock probe can refuse a launcher | follow-up |
+| N9 smoke compares the package list byte for byte | fixed |
+| N10 switches snapshot before the model is built | fixed |
+| N11 cache hits need torch, mmengine, the same GPU; yapf | resolved config is canonical JSON; the rest is by design |
+| N12 `require_hashed` vs table-spec exclusion | follow-up |
+| N13 the golden does not pin the key's composition | fixed |
+| N14 fakes; a self-comparing assertion | assertion fixed; COCO-name substitution documented |
+| N15 stale comment | fixed |
+| N16 unvalidated kill settings; `_RESOLVABLE_ULPS`; unhashed hit IoU | kill settings fixed; the rest documented |
+
+One finding of the fix itself: the first B5 fix blocked the signals with
+`pthread_sigmask`. It passed alone and failed in the full suite, because a mask covers only
+the calling thread, and with another thread alive the kernel delivered SIGINT there. The fix
+now swaps the Python handlers, and the test runs with a background thread.
+
+The reviewer checked and found sound: artifact paths (`ctx.relative` and `_parse_artifacts`
+agree), the pair lock, exclusive create, the executor's signal handling, the envelope's
+failure paths, the label-map arithmetic, regime ordering, the producer check, rule 3 (split
+roles unchanged), and the run identities (cell id, split digest, rank key, draw, fixture
+bytes).
+
+## Wave 1: PR-0 documents and the EvalLoop v2 proposal (`76ab43d`)
+
+The front matter of that review, kept as it was saved:
+
+```yaml
+reviewer: claude-adversarial-reviewer
 reviewed_sha: 76ab43de763b2aaf24855cfd508cf035279c96da
 verdict: block
 blocking:
@@ -24,7 +106,8 @@ blocking:
     finding: '"Match once, then threshold" omits preconditions (no top-k cut inside match; a presence-independent tie-break), and the smoke fixture cannot catch a violation.'
     resolved_in: 8ac9d6a58788544b48b39613272b0cdee54add92
 non_blocking: [N1, N2, N3, N4, N5, N6, N7, N8, N9, N10, N11, N12, N13, N14, N15, N16, N17, N18, N19, N20, N21, N22, N23, N24]
----
+```
+
 Advisory review by the project's read-only `adversarial-reviewer` subagent, saved by the
 caller as its definition requires. It is not the cross-model review that
 `qcal ci review-check` requires for `claude/*` branches; that is `review/gemini/`.
