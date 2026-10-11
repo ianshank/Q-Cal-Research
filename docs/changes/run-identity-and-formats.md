@@ -120,7 +120,7 @@ In order, each step a separate commit:
      are kept and their sidecar names the new producer. On other bytes the run keeps its own
      predictions in its artifact directory and records the conflict.
 6. **Smoke isolation.** Smoke's experiment program runs as `{python} -I`, like registered
-   runs.
+   runs, and a test keeps smoke's command identical to the repository's `executor.command`.
 
 ## Decisions
 - **Goldens before changes.** Alternative: rely on the existing behavioural tests. Rejected:

@@ -15,7 +15,6 @@ from __future__ import annotations
 import io
 import json
 import os
-import sys
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -53,6 +52,13 @@ _log = get_logger("lab.smoke")
 
 FIXTURE_ANNOTATIONS = "data/fixture/annotations.json"
 CELL_PREFIX = "C-smoke-"
+#: The experiment program as registered runs launch it (``executor.command`` in qcal.toml):
+#: the launcher's own interpreter, isolated from the caller's environment and directory.
+PYTHON_PLACEHOLDER = "{python}"
+PROGRAM_COMMAND = (
+    "-I", "-m", "qcal_lab", "--root", "{root}", "run", "--run-id", "{run_id}",
+    "--cell-id", "{cell_id}", "--seed", "{seed}", "--result-path", "{result_path}",
+)  # fmt: skip
 QcalMain = Callable[[list[str]], tuple[int, str]]
 
 
@@ -123,22 +129,21 @@ def smoke_settings(overrides: Mapping[str, Any] | None = None) -> dict[str, Any]
 def write_project(
     project: Path,
     lab: LabConfig,  # noqa: ARG001 - kept for callers; smoke settings are tooling
-    python: str,
+    python: str | None = None,
     *,
     settings: Mapping[str, Any] | None = None,
 ) -> list[str]:
     """Create the throwaway project; returns the cell ids it pre-registers.
 
-    ``settings`` overrides individual smoke settings (tests use it).
+    The project runs the program exactly as registered runs do (:data:`PROGRAM_COMMAND`).
+    ``python`` replaces the launcher's interpreter there, and ``settings`` overrides
+    individual smoke settings; tests use both.
     """
     s = smoke_settings(settings)
     if project.exists() and any(project.iterdir()):
         raise ConfigError(f"{project} is not empty; the smoke test builds a fresh project")
     project.mkdir(parents=True, exist_ok=True)
-    command = [
-        python, "-m", "qcal_lab", "--root", "{root}", "run", "--run-id", "{run_id}",
-        "--cell-id", "{cell_id}", "--seed", "{seed}", "--result-path", "{result_path}",
-    ]  # fmt: skip
+    command = [python or PYTHON_PLACEHOLDER, *PROGRAM_COMMAND]
     (project / "qcal.toml").write_text(
         "[executor]\n"
         f"command = {_toml_list(command)}\n"
@@ -289,7 +294,7 @@ def run_smoke(
     lab: LabConfig,
     workdir: Path,
     *,
-    python: str = sys.executable,
+    python: str | None = None,
     settings: Mapping[str, Any] | None = None,
 ) -> SmokeReport:
     started = time.monotonic()
@@ -330,6 +335,8 @@ def run_smoke(
 __all__ = [
     "CELL_PREFIX",
     "FIXTURE_ANNOTATIONS",
+    "PROGRAM_COMMAND",
+    "PYTHON_PLACEHOLDER",
     "SmokeReport",
     "expected_artifacts",
     "run_smoke",

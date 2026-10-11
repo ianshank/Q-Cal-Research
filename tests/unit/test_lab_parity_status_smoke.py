@@ -294,3 +294,14 @@ def test_expected_artifacts_follow_the_split_roles() -> None:
         "predictions_calibrated_c",
         "packages",
     }
+
+
+def test_smoke_runs_the_program_as_registered_runs_do(tmp_path: Path) -> None:
+    """Smoke exercises the repository's own command: the launcher's interpreter, isolated."""
+    from qcal_lab.smoke import PROGRAM_COMMAND, PYTHON_PLACEHOLDER, write_project
+    from tests.conftest import REPO_ROOT
+
+    registered = load_config(REPO_ROOT, environ={}).str_list("executor.command")
+    assert [PYTHON_PLACEHOLDER, *PROGRAM_COMMAND] == registered
+    write_project(tmp_path / "p", lab_config(tmp_path), settings={"calibrators": ["none"]})
+    assert load_config(tmp_path / "p", environ={}).str_list("executor.command") == registered
