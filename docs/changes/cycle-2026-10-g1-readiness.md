@@ -14,7 +14,8 @@ Progress on the agent branch (draft PR #4, base `civ`):
 | PR-D2 | interface proposal `docs/changes/evalloop-v2.md`; code after Ian accepts it |
 | PR-A2 | implemented; `docs/changes/registry-run-contract.md`; waits on Ian's signature (session 1) |
 | PR-D1 | implemented (agent-owned); `docs/changes/run-identity-and-formats.md`; D5 and F10 are Ian's |
-| others | not started: they wait on session 1 and on D1–D10 |
+| PR-B, wave-2 follow-ups, PR-F-now | in progress on `claude/qcal-foundations-wip` (draft, CI only); `docs/changes/qcal-foundations.md`; minimal signed PR-B for session 2, the rest of PR-B moved to WP3b |
+| others | not started: PR-C waits on #3; PR-G, the rest of PR-F and PR-D2's code wait on session 1 and on D1–D10 |
 
 These six share draft PR #4 instead of one PR each, as the delivery plan below intends. They
 were built in one session before the branch names were settled. The signed-surface changes
@@ -234,7 +235,7 @@ is committed as `docs/changes/cycle-2026-10-g1-readiness.md` so `/weekly-review`
 | PR-E | `claude/calibrator-verification` | G1 | `tests/`, `pyproject` dev extras (signed, 1 line) | – | 0.5 | Oct 17 (extras line in Session 1) |
 | PR-D1 | `claude/run-identity-and-formats` | G1 | `src/qcal_lab`, `configs/` | A1 | 0.5 | Oct 24 |
 | PR-D2 | `claude/evalloop-v2-and-replay` | G1 | `src/qcal_lab`, `docs/`, `qcal.toml` (signed, 1 line) | D4 | 1.0 (interface review) | **Oct 17 proposal; code Oct 24** |
-| PR-B | `claude/qcal-foundations` | G1 | `src/qcal`, `.claude/` (signed) | A1 | 1.0 | **Session 2, Oct 24** |
+| PR-B | `claude/qcal-foundations` | G1 | `src/qcal`, `.claude/`, `pyproject.toml`, `qcal.toml` (signed); `src/qcal_lab`, tests (agent) | A1 | 1.8 (with the wave-2 follow-ups; see `qcal-foundations.md`) | **Session 2, Oct 24** |
 | PR-C | `claude/build-ci-alignment` | G1 | Makefile, workflows, pyproject, `uv.lock`, `envs/` (signed) | #3 merged | 0.5 | **Session 2, Oct 24** |
 | PR-G | `claude/artifact-store-and-cards` | G1 | `src/qcal` (signed), `docs/models/` | A2 | 0.5 | **Session 2, Oct 24** |
 | PR-F | `claude/g1-parity-and-bootstrap` | G1 | `src/qcal_lab`, `tests/parity`, `scripts/` | D2, E, D6, D8 | 0.5 | Oct 31 (freeze) |
@@ -593,7 +594,10 @@ Two commits in one PR, each reviewable alone.
 
 #### After G1 (deferred; not cut, just later)
 
-- **WP3b conventions**: `qcal_lab` logging through the Config (`--log-level`, `--log-format`,
+- **WP3b conventions** (amended Oct 14 by `qcal-foundations.md`: it also takes PR-B's `serialize`/`paths`/`errors`
+  sweep, `exit_code_for` with exit codes in a leaf module, the command-parser families and S19;
+  the lab's prediction-path formats stay where they are, since moving them re-keys every cached
+  prediction): `qcal_lab` logging through the Config (`--log-level`, `--log-format`,
   `--version`, DEBUG at decision points, smoke forwards the level), lab exceptions on
   `QcalError`, remaining hardcoded sites, duplicates onto `serialize`/`paths`, config-driven
   component module lists with the `qcal_lab.` prefix as a code constant, Platt/isotonic required
