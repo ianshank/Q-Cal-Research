@@ -118,3 +118,9 @@ def test_read_split(config: Config) -> None:
 
 def test_render_manifest_sorts_and_deduplicates() -> None:
     assert render_manifest(["b", "a", "b"], {}, "#") == "a\nb\n"
+
+
+def test_splits_hash_exactly_like_qcal_leakage() -> None:
+    from qcal.integrity import leakage
+
+    assert split_digest is leakage.split_digest

@@ -17,7 +17,10 @@ from pathlib import Path
 
 from qcal.config import Config
 from qcal.integrity.leakage import manifest_path as leakage_manifest_path
-from qcal.integrity.leakage import read_manifest
+from qcal.integrity.leakage import (
+    read_manifest,
+    split_digest,  # one definition, re-exported
+)
 from qcal.log import get_logger
 
 _log = get_logger("lab.data.splits")
@@ -25,11 +28,6 @@ _log = get_logger("lab.data.splits")
 
 class SplitError(ValueError):
     """A split request is impossible or would replace an existing split."""
-
-
-def split_digest(ids: Iterable[str]) -> str:
-    """The digest ``qcal leakage`` reports for a split: sha256 of the sorted unique ids."""
-    return hashlib.sha256("\n".join(sorted(set(ids))).encode()).hexdigest()
 
 
 def rank_key(seed: int | str, image_id: str) -> str:
