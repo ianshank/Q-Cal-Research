@@ -5,8 +5,8 @@ named tests to fail.
 Every entry of ``tests/mutation/defences.toml`` names one source edit (``old`` -> ``new``, which
 must match exactly once) and the tests that should catch it. For each entry the script:
 
-1. copies the tracked files of the working tree into a temporary directory (uncommitted
-   edits included; the repository itself is never written);
+1. copies the working tree's tracked and new unignored files into a temporary directory
+   (uncommitted edits included; the repository itself is never written);
 2. runs the named tests unmutated there, which must pass, else the entry is an ERROR;
 3. applies the edit and runs them again with that copy's ``src`` first on ``sys.path``
    (checked: ``qcal.__file__`` must lie inside the copy).
@@ -124,8 +124,12 @@ def applicability_problems(root: Path, mutants: Sequence[Mutant]) -> list[str]:
 
 
 def tracked_files(root: Path) -> list[str]:
+    """Tracked files plus new, unignored ones: the tree a commit of the work would hold."""
     out = subprocess.run(
-        ["git", "ls-files", "-z"], cwd=root, capture_output=True, check=True
+        ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+        cwd=root,
+        capture_output=True,
+        check=True,
     ).stdout
     return [p for p in out.decode("utf-8").split("\0") if p]
 
