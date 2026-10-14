@@ -192,6 +192,16 @@ class Runner:
         stamp = when.strftime(self.config.str_value("registry.timestamp_format"))
         return template.format(timestamp=stamp, cell_id=cell_id, seed=seed, nonce=self.nonce())
 
+    def definition_hash(self, cell: Cell, inputs: Mapping[str, str] | None = None) -> str:
+        """:meth:`config_hash` without the seed: equal for every seed of one experiment."""
+        payload = {
+            "cell_id": cell.id,
+            "factors": dict(cell.factors),
+            "command": self.config.get("executor.command"),
+            "inputs": dict(config_inputs(self.config) if inputs is None else inputs),
+        }
+        return digest_of(payload)
+
     def config_hash(self, cell: Cell, seed: int, inputs: Mapping[str, str] | None = None) -> str:
         """Hash of everything that defines the run: factors, seed, command, config files."""
         payload = {
@@ -313,6 +323,7 @@ class Runner:
             "git_sha": gitutil.head_sha(root),
             "git_dirty": dirty,
             "config_hash": self.config_hash(cell, seed, inputs),
+            "definition_sha256": self.definition_hash(cell, inputs),
             "config_inputs_sha256": digest_of(inputs),
             "config_sources": list(self.config.sources),
             "config_environment": run_neutral_environment(self.config),

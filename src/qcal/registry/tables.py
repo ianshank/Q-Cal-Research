@@ -18,7 +18,12 @@ from pathlib import Path
 from typing import Any
 
 from qcal.config import Config, ConfigError
-from qcal.integrity.aggregates import aggregate, format_value, unsound_aggregate
+from qcal.integrity.aggregates import (
+    aggregate,
+    format_value,
+    identity_columns,
+    unsound_aggregate,
+)
 from qcal.log import get_logger
 from qcal.registry.index import read_index, render_value, superseded_ids
 
@@ -180,6 +185,8 @@ def render_table(config: Config, spec: TableSpec, index: Sequence[Mapping[str, s
     macro = config.str_value("tables.macro")
     metric_prefix = str(config.get("registry.column_prefixes.metrics"))
     env_prefix = str(config.get("registry.column_prefixes.environment"))
+    identity = identity_columns(config)
+    core = config.str_list("registry.core_columns")
     missing = config.str_value("tables.missing_cell")
     superseded = superseded_ids(index)
     groups: dict[tuple[str, ...], list[Mapping[str, str]]] = {}
@@ -219,7 +226,9 @@ def render_table(config: Config, spec: TableSpec, index: Sequence[Mapping[str, s
             if not usable or (column.agg == "std" and len(usable) < 2):
                 cells.append(missing)
                 continue
-            problem = unsound_aggregate(column.agg, usable, environment_prefix=env_prefix)
+            problem = unsound_aggregate(
+                column.agg, usable, environment_prefix=env_prefix, identity=identity, core=core
+            )
             if problem:
                 raise TableDataError(f"table {spec.name!r} row {key}: {problem}")
             value = aggregate(column.agg, [float(r[column_key]) for r in usable])

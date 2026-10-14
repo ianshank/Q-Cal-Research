@@ -14,8 +14,16 @@ from pathlib import Path
 from typing import Any
 
 from qcal.config import Config
+from qcal.integrity.aggregates import identity_columns
 from qcal.registry.experiments import Experiments
-from qcal.registry.records import RunRecord, effective
+from qcal.registry.index import render_value
+from qcal.registry.records import (
+    CONFIG_INPUTS_COLUMN,
+    EXPERIMENTS_COLUMN,
+    POLICY_COLUMN,
+    RunRecord,
+    effective,
+)
 from qcal.registry.store import MARKER_SUFFIX, host_identity
 
 
@@ -141,20 +149,29 @@ def bad_supersedes(records: Sequence[RunRecord]) -> list[str]:
     return problems
 
 
-def mixed_inputs(current: Sequence[RunRecord], ok_status: str) -> list[str]:
-    """Cells whose current ok runs used different configuration files, policy or
+def mixed_inputs(
+    current: Sequence[RunRecord],
+    ok_status: str,
+    *,
+    identity: Sequence[str] = (CONFIG_INPUTS_COLUMN,),
+    prefixes: Mapping[str, str] | None = None,
+) -> list[str]:
+    """Cells whose current ok runs differ in an identity column, the policy or the
     pre-registration.
 
-    Tables aggregate a cell's seeds; seeds that ran under different configurations would be
-    averaged as if they were draws of one experiment. Records without
-    ``provenance.config_inputs_sha256`` (written before it existed) are not compared.
+    Tables refuse to aggregate seeds that differ in ``registry.identity_columns`` (the same
+    comparison, :func:`qcal.integrity.aggregates.identity_problem`). The audit also reports a
+    changed policy or pre-registration, which tables accept: they do not change a number.
+    Records without ``provenance.config_inputs_sha256`` (written before it existed) are not
+    compared.
     """
+    columns = [*identity, POLICY_COLUMN, EXPERIMENTS_COLUMN]
     by_cell: dict[str, dict[str, list[str]]] = {}
     for record in current:
-        p = record.provenance
-        digest = p.get("config_inputs_sha256")
+        digest = record.provenance.get(CONFIG_INPUTS_COLUMN)
         if record.status == ok_status and isinstance(digest, str):
-            key = f"{digest}|{p.get('policy_sha256')}|{p.get('experiments_sha256')}"
+            row = record.flat(prefixes or {})
+            key = "|".join(render_value(row.get(c)) for c in columns)
             by_cell.setdefault(record.cell_id, {}).setdefault(key, []).append(record.run_id)
     return [
         f"{cell}: {len(digests)} configurations ("
@@ -263,7 +280,12 @@ def audit(config: Config, experiments: Experiments, records: Sequence[RunRecord]
                 report.missing.append((cell.id, seed))
     report.duplicates = duplicate_pairs(current, ok_status)
     report.bad_supersedes = bad_supersedes(records)
-    report.mixed_inputs = mixed_inputs(current, ok_status)
+    report.mixed_inputs = mixed_inputs(
+        current,
+        ok_status,
+        identity=identity_columns(config),
+        prefixes={k: str(v) for k, v in config.section("registry.column_prefixes").items()},
+    )
     report.uncommitted_policy = uncommitted_policy(current, ok_status)
     report.stale_inflight, report.foreign_inflight = inflight_markers(config, records)
     for record in current:

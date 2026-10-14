@@ -266,6 +266,7 @@ def test_run_records_provenance(
         "git_sha": None,
         "git_dirty": None,
         "config_hash": runner.config_hash(runner.experiments.cell("C-a"), 0),
+        "definition_sha256": runner.definition_hash(runner.experiments.cell("C-a")),
         "config_inputs_sha256": digest_of(config_inputs(config)),
         "config_sources": list(config.sources),
         "config_environment": {},

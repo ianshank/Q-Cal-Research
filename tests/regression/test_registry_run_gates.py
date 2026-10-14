@@ -120,3 +120,163 @@ def test_a1_smoke_ignores_configuration_variables_in_the_callers_shell(tmp_path:
     )
     report = json.loads(out.stdout)
     assert out.returncode == 0, report
+
+
+# --- wave 3: which digests tables compare (N4), one "hashed" predicate (N12) ------------------
+# Proposal: docs/changes/qcal-foundations.md, step S5.
+
+
+def _identity_rows(**differ: str) -> list[dict[str, str]]:
+    base = {
+        "config_inputs_sha256": "c" * 64,
+        "definition_sha256": "d" * 64,
+        "policy_sha256": "p" * 64,
+        "experiments_sha256": "e" * 64,
+        "env.handwritten_sha256": "h" * 64,
+    }
+    second = {**base, **differ}
+    return [{"run_id": "R1", **base}, {"run_id": "R2", **second}]
+
+
+SCIENCE = ("definition_sha256", "env.handwritten_sha256")
+CORE = ("config_inputs_sha256", "definition_sha256", "policy_sha256", "experiments_sha256")
+
+
+@pytest.mark.parametrize(
+    ("differ", "identity", "refused"),
+    [
+        ({"policy_sha256": "q" * 64}, SCIENCE, False),  # a qcal.toml edit changes no number
+        ({"experiments_sha256": "f" * 64}, SCIENCE, False),  # nor does a new cell
+        ({"env.handwritten_sha256": "i" * 64}, SCIENCE, True),  # Ian's loop changed
+        ({"definition_sha256": "x" * 64}, SCIENCE, True),
+        ({"config_inputs_sha256": "x" * 64}, ("config_inputs_sha256",), True),  # the default
+        ({"config_inputs_sha256": "x" * 64}, SCIENCE, False),  # narrowed: key is wired
+    ],
+)
+def test_n4_tables_compare_the_configured_identity(
+    differ: dict[str, str], identity: tuple[str, ...], refused: bool
+) -> None:
+    from qcal.integrity.aggregates import unsound_aggregate
+
+    problem = unsound_aggregate(
+        "mean", _identity_rows(**differ), environment_prefix="env.", identity=identity, core=CORE
+    )
+    assert (problem is not None) is refused, problem
+
+
+def test_n4_a_stale_index_without_an_identity_column_is_refused() -> None:
+    from qcal.integrity.aggregates import identity_problem
+
+    rows = [{"run_id": "R1"}, {"run_id": "R2"}]
+    assert "regenerate it" in str(identity_problem(rows, ["definition_sha256"], core=CORE))
+    # a prefixed column no run reported is unknown alike for all of them
+    assert identity_problem(rows, ["env.raw_predictions_sha256"], core=CORE) is None
+    half = [{"run_id": "R1", "env.x": "a"}, {"run_id": "R2"}]  # one run did not report it
+    assert "different env.x values" in str(identity_problem(half, ["env.x"], core=CORE))
+
+
+def test_n4_identity_columns_must_exist_in_an_index(make_config) -> None:
+    from qcal.config import config_key_problems
+    from qcal.integrity.aggregates import identity_columns
+
+    config = make_config('[registry]\nidentity_columns = ["definiton_sha256"]\n')
+    with pytest.raises(ConfigError, match="definiton_sha256"):
+        identity_columns(config)
+    problems = config_key_problems({"registry": {"identity_columns": ["definiton_sha256"]}})
+    assert any("definiton_sha256" in p for p in problems)
+    assert config_key_problems({"registry": {"identity_columns": ["env.splits"]}}) == []
+
+
+def test_n4_the_definition_digest_is_the_same_for_every_seed(make_config) -> None:
+    from qcal.registry.experiments import load_experiments
+    from qcal.registry.runner import Runner
+    from qcal.registry.store import RegistryStore
+    from tests.conftest import FakeExecutor
+
+    config = make_config("")
+    write(
+        config.root,
+        "EXPERIMENTS.yaml",
+        experiments_yaml(
+            [{"id": "C-a", "detector": "atss"}, {"id": "C-b", "detector": "yolox"}], seeds=[0, 1]
+        ),
+    )
+    runner = Runner(
+        config,
+        load_experiments(config),
+        RegistryStore(config.path("registry_dir")),
+        FakeExecutor(),
+        collectors=[],
+    )
+    a0, a1, b0 = runner.run("C-a", 0), runner.run("C-a", 1), runner.run("C-b", 0)
+    assert a0.provenance["definition_sha256"] == a1.provenance["definition_sha256"]
+    assert a0.provenance["config_hash"] != a1.provenance["config_hash"]
+    assert a0.provenance["definition_sha256"] != b0.provenance["definition_sha256"]
+
+
+def test_n4_the_audit_reports_what_tables_refuse_and_what_they_accept(make_config) -> None:
+    from qcal.registry.audit import mixed_inputs
+    from tests.conftest import make_record
+
+    def record(run_id: str, **provenance: str) -> object:
+        base = {"config_inputs_sha256": "c" * 64, "policy_sha256": "p" * 64}
+        return make_record(run_id, provenance={**base, **provenance})
+
+    policy = [record("R1"), record("R2", policy_sha256="q" * 64)]
+    assert mixed_inputs(policy, "ok")  # reported by the audit, though tables accept it
+    loop = [record("R1"), record("R2")]
+    loop[1].environment["handwritten_sha256"] = "i" * 64  # type: ignore[attr-defined]
+    assert mixed_inputs(loop, "ok") == []
+    assert mixed_inputs(
+        loop, "ok", identity=["env.handwritten_sha256"], prefixes={"environment": "env."}
+    )
+
+
+# N12: require_hashed and config_inputs share one definition of "hashed"
+
+
+def _hash_tree(root: Path) -> None:
+    write(root, "configs/lab.toml", "a = 1\n")
+    write(root, "configs/LAB2.TOML", "a = 2\n")  # the glob is case-sensitive
+    write(root, "configs/nested/x.yml", "x: 1\n")
+    write(root, "configs/.hidden.toml", "h = 1\n")
+    write(root, "configs/tables/main.toml", 'name = "t"\n')  # a table spec: never hashed
+    write(root, "configs/notes.md", "not a config\n")
+    (root / "configs/link.toml").symlink_to(root / "configs/tables/main.toml")
+
+
+def test_n12_config_inputs_selects_exactly_these_files(make_config) -> None:
+    from qcal.registry.gates import config_inputs
+
+    config = make_config("")
+    _hash_tree(config.root)
+    # link.toml resolves into the table specs, so it is left out with them
+    assert sorted(config_inputs(config)) == [
+        "configs/.hidden.toml",
+        "configs/lab.toml",
+        "configs/nested/x.yml",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("path", "hashed"),
+    [
+        ("configs/lab.toml", True),
+        ("configs/LAB2.TOML", False),
+        ("configs/tables/main.toml", False),
+        ("configs/notes.md", False),
+        ("configs/absent.toml", False),
+        ("configs/link.toml", False),
+    ],
+)
+def test_n12_hashed_input_is_membership_in_config_inputs(
+    make_config, path: str, hashed: bool
+) -> None:
+    from qcal.registry.gates import config_inputs, hashed_input
+
+    config = make_config("")
+    _hash_tree(config.root)
+    assert hashed_input(config, path) is hashed
+    assert hashed_input(config, config.root / path) is hashed
+    assert (path in config_inputs(config)) is hashed
+    assert hashed_input(config, "/etc/passwd") is False

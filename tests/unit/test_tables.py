@@ -57,6 +57,7 @@ def row(
         "supersedes": supersedes,
         "factor.detector": detector,
         "factor.precision": precision,
+        "config_inputs_sha256": "c" * 64,  # every real index row carries one
     }
     data.update({f"metric.{name}": render_value(value) for name, value in metrics.items()})
     return data

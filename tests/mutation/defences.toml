@@ -237,3 +237,35 @@ finding = "the run's log is vouched for by its sha256"
 old = '''        provenance["log_sha256"] = sha256_file(spec.log_path) if spec.log_path.is_file() else None'''
 new = '''        provenance["log_sha256"] = None'''
 tests = ["tests/unit/test_runner.py"]
+
+[[mutant]]
+id = "S5-identity-skip"
+file = "src/qcal/integrity/aggregates.py"
+finding = "tables and claims refuse runs that differ in an identity column"
+old = '''    problem = identity_problem(rows, identity, core=core)'''
+new = '''    problem = None'''
+tests = ["tests/regression/test_registry_run_gates.py"]
+
+[[mutant]]
+id = "S5-missing-column"
+file = "src/qcal/integrity/aggregates.py"
+finding = "a core identity column missing from the index is refused, not treated as equal"
+old = '''        if column in core and rows and all(column not in row for row in rows):'''
+new = '''        if False:'''
+tests = ["tests/regression/test_registry_run_gates.py"]
+
+[[mutant]]
+id = "S5-config-check"
+file = "src/qcal/config.py"
+finding = "config --check rejects an identity column no index can hold"
+old = '''    problems.extend(_identity_problems(data, defaults))'''
+new = '''    problems.extend([])'''
+tests = ["tests/regression/test_registry_run_gates.py"]
+
+[[mutant]]
+id = "S5-hashed-input"
+file = "src/qcal/registry/gates.py"
+finding = "hashed_input is membership in config_inputs (case, symlinks, table specs)"
+old = '''    return absolute.relative_to(config.root).as_posix() in config_inputs(config)'''
+new = '''    return absolute.is_file()'''
+tests = ["tests/regression/test_registry_run_gates.py"]

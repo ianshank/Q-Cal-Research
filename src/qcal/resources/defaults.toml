@@ -191,8 +191,13 @@ write_parquet = "auto"                # auto | always | never
 core_columns = [
   "run_id", "cell_id", "seed", "seed_role", "status", "supersedes",
   "started_at", "finished_at", "duration_s", "git_sha", "git_dirty", "config_hash",
-  "config_inputs_sha256", "batch_id", "failure_kind",
+  "config_inputs_sha256", "definition_sha256", "policy_sha256", "experiments_sha256",
+  "batch_id", "failure_kind",
 ]
+# Index columns every run aggregated into one table value (or claim) must agree on: seeds
+# that differ here are not draws of one experiment. Each is a core column or a prefixed one
+# (env.<key>). The default keeps the configuration files; qcal.toml sets the repository's set.
+identity_columns = ["config_inputs_sha256"]
 
 [registry.column_prefixes]
 factors = "factor."

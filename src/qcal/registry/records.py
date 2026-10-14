@@ -58,6 +58,10 @@ class ArtifactRef:
 SEED_EFFECTIVE_KEY: Final = "seed_effective"
 #: Index column with the digest of the configuration files a run read.
 CONFIG_INPUTS_COLUMN: Final = "config_inputs_sha256"
+#: The run's definition (cell, factors, command, configuration files) without its seed.
+DEFINITION_COLUMN: Final = "definition_sha256"
+POLICY_COLUMN: Final = "policy_sha256"
+EXPERIMENTS_COLUMN: Final = "experiments_sha256"
 
 #: Why a run failed, as the executor result envelope and a failed record name it.
 FAILURE_KINDS: Final = (
@@ -225,6 +229,9 @@ class RunRecord:
             "git_dirty": self.provenance.get("git_dirty"),
             "config_hash": self.provenance.get("config_hash"),
             CONFIG_INPUTS_COLUMN: self.provenance.get(CONFIG_INPUTS_COLUMN),
+            DEFINITION_COLUMN: self.provenance.get(DEFINITION_COLUMN),
+            POLICY_COLUMN: self.provenance.get(POLICY_COLUMN),
+            EXPERIMENTS_COLUMN: self.provenance.get(EXPERIMENTS_COLUMN),
             "batch_id": self.provenance.get("batch_id"),
             "failure_kind": self.failure_kind,
         }
