@@ -345,6 +345,59 @@ def test_a_cache_entry_that_does_not_match_the_run_is_recomputed(
     assert second.metrics == first.metrics
 
 
+def test_vouched_cached_predictions_for_other_images_are_ignored(
+    project: tuple[Path, list[str]], caplog: pytest.LogCaptureFixture
+) -> None:
+    import hashlib
+    import json
+
+    root, cells = project
+    first = run_experiment(_request(root, cells[0], run_id="R-a"))
+    path = root / next(a["path"] for a in first.artifacts if a["kind"] == "predictions_raw_val")
+    lines = path.read_text().splitlines()
+    path.write_text(lines[0] + "\n" + lines[1].replace('"image_id":"', '"image_id":"x') + "\n")
+    forged = hashlib.sha256(path.read_bytes()).hexdigest()
+    meta_path = path.with_suffix(".meta.json")
+    meta = json.loads(meta_path.read_text())
+    meta_path.write_text(json.dumps({**meta, "sha256": forged}))
+    listed = [
+        {**a, "sha256": forged} if a["kind"] == "predictions_raw_val" else a
+        for a in first.artifacts
+    ]
+    register(root, "R-a", listed)  # R-a's record vouches for the forged bytes
+    second = run_experiment(_request(root, cells[0], run_id="R-b"))
+    assert second.environment["prediction_cache"]["val"]["hit"] is False
+    assert "header or images differ" in caplog.text
+    assert second.metrics == first.metrics
+
+
+def test_an_unreadable_cache_entry_is_a_miss(
+    project: tuple[Path, list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, cells = project
+    first = run_experiment(_request(root, cells[0], run_id="R-a"))
+    register(root, "R-a", first.artifacts)
+    cached = root / next(a["path"] for a in first.artifacts if a["kind"] == "predictions_raw_val")
+    real_read = Path.read_bytes
+    reads = [0]
+
+    def unreadable_after_the_cache_check(self: Path) -> bytes:
+        # The cache verifies the bytes, then the file disappears before the run reads them.
+        if self == cached:
+            reads[0] += 1
+            if reads[0] > 1:
+                raise OSError("unreadable")
+        return real_read(self)
+
+    monkeypatch.setattr(Path, "read_bytes", unreadable_after_the_cache_check)
+    second = run_experiment(_request(root, cells[0], run_id="R-b"))
+    use = second.environment["prediction_cache"]["val"]
+    assert (use["hit"], use["conflict"]["cached_sha256"]) == (False, "unreadable")
+    own = next(a["path"] for a in second.artifacts if a["kind"] == "predictions_raw_val")
+    assert own.startswith("runs/results/R-b/")  # the unreadable entry is never replaced
+    assert second.metrics == first.metrics
+
+
 def test_a_corrupt_cache_sidecar_is_ignored(project: tuple[Path, list[str]]) -> None:
     root, cells = project
     first = run_experiment(_request(root, cells[0], run_id="R-a"))

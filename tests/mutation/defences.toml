@@ -1,0 +1,29 @@
+# Each defence below is broken on purpose by scripts/mutation_check.py, in a copy of the
+# repository; the named tests must then fail (KILLED). Report-only: not part of `make check`.
+# `old` must occur exactly once in `file` (tests/unit/test_mutation_check.py keeps it so).
+#
+#   python3 scripts/mutation_check.py --only <id>
+
+[[mutant]]
+id = "lab-cache-unreadable-get"
+file = "src/qcal_lab/predictions.py"
+finding = "an unreadable cache entry is a miss, never a crash (wave-3 coverage baseline)"
+old = """        try:
+            actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError as exc:
+            _log.warning("ignoring cached predictions %s: unreadable (%s)", path.name, exc)
+            return None"""
+new = """        actual = hashlib.sha256(path.read_bytes()).hexdigest()"""
+tests = ["tests/unit/test_lab_predictions.py"]
+
+[[mutant]]
+id = "lab-cache-unreadable-put"
+file = "src/qcal_lab/predictions.py"
+finding = "unreadable bytes under a key are kept and reported as a conflict, never replaced"
+old = """            except OSError as exc:  # unreadable: never replaced, the caller keeps its own copy
+                _log.warning("cached predictions %s are unreadable (%s)", path.name, exc)
+                existing = UNREADABLE"""
+new = """            except OSError:
+                path.write_bytes(data)
+                existing = digest"""
+tests = ["tests/unit/test_lab_experiment.py"]

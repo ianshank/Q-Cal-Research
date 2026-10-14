@@ -67,6 +67,10 @@ class PredictionsError(ValueError):
     """A predictions file or a detector's output is malformed."""
 
 
+#: What a conflict reports as the cached digest when the cached bytes cannot be read.
+UNREADABLE: Final = "unreadable"
+
+
 class CacheConflictError(PredictionsError):
     """A cache key already holds other bytes; the cache never replaces them.
 
@@ -329,7 +333,11 @@ class PredictionCache:
         except (OSError, UnicodeDecodeError, json.JSONDecodeError, PredictionsError) as exc:
             _log.warning("ignoring cached predictions %s: unreadable metadata (%s)", path.name, exc)
             return None
-        actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        try:
+            actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError as exc:
+            _log.warning("ignoring cached predictions %s: unreadable (%s)", path.name, exc)
+            return None
         if not isinstance(meta, Mapping) or meta.get("sha256") != actual or meta.get("key") != key:
             _log.warning("ignoring cached predictions %s: metadata mismatch", path.name)
             return None
@@ -359,7 +367,11 @@ class PredictionCache:
         try:
             write_bytes_exclusive(path, data)
         except FileExistsError:
-            existing = hashlib.sha256(path.read_bytes()).hexdigest()
+            try:
+                existing = hashlib.sha256(path.read_bytes()).hexdigest()
+            except OSError as exc:  # unreadable: never replaced, the caller keeps its own copy
+                _log.warning("cached predictions %s are unreadable (%s)", path.name, exc)
+                existing = UNREADABLE
             if existing != digest:
                 raise CacheConflictError(key, existing, digest) from None
             _log.info("cached predictions %s already hold these bytes", path.name)
@@ -377,6 +389,7 @@ __all__ = [
     "FORMAT",
     "RESERVED_FIELDS",
     "STAGES",
+    "UNREADABLE",
     "VERSION",
     "CacheConflictError",
     "CacheEntry",

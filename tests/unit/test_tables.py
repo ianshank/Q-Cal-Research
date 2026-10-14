@@ -252,6 +252,12 @@ def test_row_and_filter_keys_get_the_factor_prefix_unless_already_prefixed(
     assert (loaded.rows, dict(loaded.filters)) == ((expected,), {expected: "x"})
 
 
+def test_a_spec_filter_must_be_a_table(config: Config) -> None:
+    text = 'name = "t"\nrows = ["d"]\nfilter = "x"\n[[columns]]\nmetric = "AP"\n'
+    with pytest.raises(ConfigError, match="'filter' must be a table"):
+        specs_from(config, text)
+
+
 def test_table_key_must_be_an_array_of_tables(config: Config) -> None:
     text = '[table]\nname = "t"\nrows = ["d"]\n[[table.columns]]\nmetric = "AP"\n'
     with pytest.raises(ConfigError, match="'table' must be an array of tables"):

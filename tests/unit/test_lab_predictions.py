@@ -112,6 +112,28 @@ def test_unreadable_file(tmp_path: Path) -> None:
         read_predictions(path)
 
 
+def test_a_missing_file_cannot_be_read(tmp_path: Path) -> None:
+    with pytest.raises(PredictionsError, match="cannot read"):
+        read_predictions(tmp_path / "absent.jsonl")
+
+
+def test_an_unreadable_cache_entry_is_a_miss(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache = PredictionCache(tmp_path / "cache")
+    key = cache_key(detector={"name": "x"}, split_sha256="s")
+    entry = cache.put(key, HEADER, IMAGES, produced_by="R-1")
+    real_read = Path.read_bytes
+
+    def unreadable(self: Path) -> bytes:
+        if self == entry.path:
+            raise OSError("unreadable")
+        return real_read(self)
+
+    monkeypatch.setattr(Path, "read_bytes", unreadable)
+    assert cache.get(key) is None
+
+
 def test_cache_round_trip_and_tamper_detection(tmp_path: Path) -> None:
     cache = PredictionCache(tmp_path / "cache")
     key = cache_key(detector={"name": "x"}, split_sha256="s")
