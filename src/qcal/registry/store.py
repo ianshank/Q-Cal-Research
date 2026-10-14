@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import socket
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path
@@ -22,6 +23,22 @@ _SUFFIX = ".json"
 LOCK_SUFFIX: Final = ".lock"
 MARKER_SUFFIX: Final = ".inflight.json"
 _UNSAFE_NAME = re.compile(r"[^A-Za-z0-9._-]")
+
+
+#: Where Linux names the current boot; markers from another boot cannot be judged by a lock.
+BOOT_ID_FILE: Final = Path("/proc/sys/kernel/random/boot_id")
+
+
+def host_identity() -> dict[str, str]:
+    """``host`` and ``boot_id`` of this machine, as an in-flight marker records them.
+
+    A marker's lock says whether its run is alive only on the host (and boot) that wrote it.
+    """
+    try:
+        boot_id = BOOT_ID_FILE.read_text("utf-8").strip()
+    except OSError:
+        boot_id = ""
+    return {"host": socket.gethostname(), "boot_id": boot_id}
 
 
 def pair_lock_name(cell_id: str, seed: int) -> str:

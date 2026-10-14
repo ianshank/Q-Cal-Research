@@ -255,6 +255,7 @@ def test_to_dict_formats_pairs_and_coverage(config: Config, experiments: Experim
         "mixed_inputs": [],
         "uncommitted_policy": [],
         "stale_inflight": [],
+        "foreign_inflight": [],
         "amendments": 0,
     }
 
@@ -290,6 +291,7 @@ def test_render_text_lists_every_section() -> None:
         "mixed_inputs: 0",
         "uncommitted_policy: 0",
         "stale_inflight: 0",
+        "foreign_inflight: 0",
         "amendments: 2",
     ]
 
@@ -315,13 +317,39 @@ def test_a_marker_of_a_recorded_run_is_not_stale(config: Config) -> None:
     assert stale_inflight(config, [make_record("R1")]) == []
 
 
-def test_a_marker_whose_pair_is_locked_belongs_to_a_live_run(config: Config) -> None:
-    _marker(config, "R-running", "C-a", 0)
-    lock = config.path("inflight_dir") / pair_lock_name("C-a", 0)
-    with lock.open("a") as handle:
+def test_a_marker_its_launcher_holds_belongs_to_a_live_run(config: Config) -> None:
+    marker = _marker(config, "R-running", "C-a", 0)
+    with marker.open("rb") as handle:  # the launcher's lock on its own marker
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
         assert stale_inflight(config, []) == []
     assert stale_inflight(config, []) == ["R-running"]
+
+
+def test_the_audit_never_touches_a_pair_lock(config: Config) -> None:
+    """A launcher holds (cell, seed) locks; an audit probing them could refuse a launcher."""
+    _marker(config, "R-crashed", "C-a", 0)
+    lock = config.path("inflight_dir") / pair_lock_name("C-a", 0)
+    with lock.open("a") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        assert stale_inflight(config, []) == ["R-crashed"]  # judged by its own lock only
+
+
+def test_a_marker_from_another_host_is_foreign_not_stale(config: Config) -> None:
+    from qcal.registry.audit import inflight_markers
+
+    marker = _marker(config, "R-elsewhere")
+    marker.write_text(json.dumps({"run_id": "R-elsewhere", "host": "gpu-box", "boot_id": "b" * 36}))
+    assert inflight_markers(config, []) == ([], ["R-elsewhere (host gpu-box, boot bbbbbbbb)"])
+
+
+def test_a_marker_removed_while_auditing_is_not_reported(
+    config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qcal.registry import audit as audit_module
+
+    _marker(config, "R-done")
+    monkeypatch.setattr(audit_module, "_locked", lambda _marker: None)  # unlinked meanwhile
+    assert stale_inflight(config, []) == []
 
 
 def test_an_unreadable_marker_is_stale(config: Config) -> None:

@@ -169,6 +169,11 @@ env_command_timeout_s = 10           # per external probe (nvidia-smi, nvpmodel)
 config_hash_inputs = ["configs/**/*.yaml", "configs/**/*.yml", "configs/**/*.toml"]
 max_runs_per_batch = 50
 require_clean_tree = false
+# A launcher waits this long for another launcher's lock on the same (cell, seed) before it
+# refuses the run, polling at lock_poll_s. paths.inflight_dir must be on a host-local
+# filesystem: flock over NFS without lockd, or sshfs, does not lock across hosts.
+lock_wait_s = 2.0
+lock_poll_s = 0.05
 # Refuse a registered run whose qcal is not imported from paths.source_dir, so the code
 # that writes the record is the repository's own. Off here (tests and throwaway projects
 # import an installed qcal); qcal.toml turns it on.

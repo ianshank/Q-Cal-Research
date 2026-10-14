@@ -689,11 +689,12 @@ def test_a_timed_out_run_keeps_what_the_program_reported(tmp_path: Path, config:
 @pytest.mark.integration
 @pytest.mark.skipif(not Path("/proc").is_dir(), reason="needs /proc (Linux)")
 @pytest.mark.parametrize("interrupts", [1, 2], ids=["ctrl-c", "ctrl-c-twice"])
-def test_an_interrupted_launcher_kills_the_program_and_re_raises(
+def test_an_interrupted_launcher_kills_the_program_and_returns_the_interrupt(
     tmp_path: Path, config: Config, monkeypatch: pytest.MonkeyPatch, interrupts: int
 ) -> None:
     """One interrupt: SIGTERM, then the group is reaped. A second one during that wait goes
-    straight to SIGKILL. Either way the program and its children are gone."""
+    straight to SIGKILL. Either way the program and its children are gone, and the
+    interrupt comes back with the result so the runner records the run, then re-raises."""
     program = script(tmp_path, SPAWNS_A_GRANDCHILD)
     pid_file = tmp_path / "grandchild.pid"
     executor = make_executor(config.root, [sys.executable, str(program), str(pid_file)])
@@ -707,10 +708,100 @@ def test_an_interrupted_launcher_kills_the_program_and_re_raises(
         real_sleep(seconds)
 
     monkeypatch.setattr(executor_module.time, "sleep", interrupt_once_the_grandchild_exists)
-    with pytest.raises(KeyboardInterrupt):
-        executor.execute(make_spec(config.root))
+    result = _execute_or_fail(executor, make_spec(config.root))
     assert remaining == [0]
+    assert isinstance(result.interrupted, KeyboardInterrupt)
+    assert (result.returncode, result.failure_kind, result.metrics) == (-1, "interrupted", {})
+    assert result.error is not None
+    assert result.error.startswith("interrupted by KeyboardInterrupt")
     assert _wait_until_dead(int(pid_file.read_text()))
+
+
+def _execute_or_fail(executor: SubprocessExecutor, spec: RunSpec) -> Any:
+    """``execute``, failing the test (not aborting the session) if an interrupt escapes."""
+    try:
+        return executor.execute(spec)
+    except KeyboardInterrupt:
+        pytest.fail("the interrupt escaped execute(); the runner could not record the run")
+
+
+#: Writes an artifact, then (once its SIGTERM handler is installed) a readiness file, and on
+#: SIGTERM an envelope; {status} is "ok" or "failed".
+REPORTS_ON_SIGTERM = """
+import hashlib, json, pathlib, signal, sys, time
+result, ready, status = sys.argv[1], sys.argv[2], sys.argv[3]
+artifact = pathlib.Path("runs/results/partial.txt")
+def stop(signum, frame):
+    json.dump({"format": "qcal.executor_result", "version": 1, "status": status,
+               "metrics": {"AP": 1.0}, "environment": {"torch": "2.9"},
+               "artifacts": [{"path": str(artifact), "kind": "partial"}]}, open(result, "w"))
+    sys.exit(0)
+signal.signal(signal.SIGTERM, stop)
+artifact.parent.mkdir(parents=True, exist_ok=True)
+artifact.write_text("half")
+open(ready, "w").write("ready")
+time.sleep(60)
+"""
+
+
+def _interrupted_once_ready(
+    tmp_path: Path, config: Config, monkeypatch: pytest.MonkeyPatch, status: str
+) -> tuple[SubprocessExecutor, RunSpec]:
+    program = script(tmp_path, REPORTS_ON_SIGTERM)
+    ready = tmp_path / "ready"
+    spec = make_spec(config.root)
+    executor = make_executor(
+        config.root, [sys.executable, str(program), "{result_path}", str(ready), status]
+    )
+    real_sleep = time.sleep
+    fired = [False]
+
+    def interrupt_once_ready(seconds: float) -> None:
+        if not fired[0] and ready.is_file():
+            fired[0] = True
+            raise KeyboardInterrupt
+        real_sleep(seconds)
+
+    monkeypatch.setattr(executor_module.time, "sleep", interrupt_once_ready)
+    return executor, spec
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("status", ["failed", "ok"])
+def test_an_interrupted_run_keeps_its_artifacts_and_environment_never_its_metrics(
+    tmp_path: Path, config: Config, monkeypatch: pytest.MonkeyPatch, status: str
+) -> None:
+    executor, spec = _interrupted_once_ready(tmp_path, config, monkeypatch, status)
+    result = _execute_or_fail(executor, spec)
+    assert isinstance(result.interrupted, KeyboardInterrupt)
+    assert (result.failure_kind, result.metrics) == ("interrupted", {})
+    assert result.environment == {"torch": "2.9"}
+    assert [a.path for a in result.artifacts] == ["runs/results/partial.txt"]
+    assert "wall_s" in result.resources
+
+
+@pytest.mark.integration
+def test_signals_while_the_program_shuts_down_cannot_lose_the_envelope(
+    tmp_path: Path, config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pressing Ctrl-C again while the launcher reads what the program left kills the group
+    at once and is absorbed: the envelope is still read."""
+    import os
+    import signal
+
+    executor, spec = _interrupted_once_ready(tmp_path, config, monkeypatch, "failed")
+    real_read = executor_module.read_result
+
+    def read_after_two_more_signals(*args: Any, **kwargs: Any) -> Any:
+        os.kill(os.getpid(), signal.SIGINT)  # Ctrl-C twice more (SIGINT, not SIGTERM, so a
+        os.kill(os.getpid(), signal.SIGINT)  # broken handler fails the test, not the session)
+        return real_read(*args, **kwargs)
+
+    monkeypatch.setattr(executor_module, "read_result", read_after_two_more_signals)
+    result = _execute_or_fail(executor, spec)
+    assert isinstance(result.interrupted, KeyboardInterrupt)
+    assert [a.path for a in result.artifacts] == ["runs/results/partial.txt"]
+    assert signal.getsignal(signal.SIGINT) is signal.default_int_handler  # restored
 
 
 @pytest.mark.integration

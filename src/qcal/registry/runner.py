@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import fcntl
 import hashlib
 import json
@@ -11,6 +12,7 @@ import secrets
 import signal
 import sys
 import threading
+import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -18,10 +20,10 @@ from pathlib import Path
 from typing import Any, Final
 
 from qcal import gitutil
-from qcal.config import Config, run_neutral_environment
+from qcal.config import Config, ConfigError, run_neutral_environment
 from qcal.log import get_logger
 from qcal.registry.environment import collect_environment, launcher_identity, recorded_variables
-from qcal.registry.executor import ExecutionResult, Executor, RunSpec
+from qcal.registry.executor import ExecutionResult, Executor, RunSpec, sha256_file
 from qcal.registry.experiments import Cell, Experiments, ExperimentsError
 from qcal.registry.gates import (
     INPUTS_READ_KEY,
@@ -41,7 +43,7 @@ from qcal.registry.records import (
     effective,
     validate_run_id,
 )
-from qcal.registry.store import MARKER_SUFFIX, RegistryStore, pair_lock_name
+from qcal.registry.store import MARKER_SUFFIX, RegistryStore, host_identity, pair_lock_name
 
 _log = get_logger("registry.runner")
 
@@ -55,6 +57,14 @@ REPORTED_PREFIX: Final = "reported."
 class RunRefusedError(RuntimeError):
     """A run was refused before execution (unregistered seed, dirty tree, batch too large,
     configuration from the environment or from uncommitted files)."""
+
+
+class PairBusyError(RunRefusedError):
+    """Another launcher holds the (cell, seed) lock; ``run-batch --keep-going`` skips it."""
+
+
+class PairDoneError(RunRefusedError):
+    """The (cell, seed) already has a current ok run; ``run-batch --keep-going`` skips it."""
 
 
 @dataclass(frozen=True)
@@ -153,8 +163,17 @@ class Runner:
         clock: Clock | None = None,
         nonce: Callable[[], str] | None = None,
         collectors: Sequence[str] | None = None,
+        sleep: Callable[[float], None] = time.sleep,
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self.config = config
+        self.sleep, self.monotonic = sleep, monotonic
+        self.lock_wait_s = config.float_value("registry.lock_wait_s")
+        self.lock_poll_s = config.float_value("registry.lock_poll_s")
+        if self.lock_wait_s < 0 or self.lock_poll_s <= 0:
+            raise ConfigError(
+                "registry.lock_wait_s must be >= 0 and registry.lock_poll_s > 0 seconds"
+            )
         self.experiments = experiments
         self.store = store
         self.executor = executor
@@ -310,8 +329,10 @@ class Runner:
         }
         if supersedes:
             provenance["supersede_reason"] = reason.strip()
-        marker = self._mark_inflight(run_id, cell.id, seed, started)
-        with _signals_interrupt():  # SIGTERM/SIGHUP end the run like Ctrl-C, and record it
+        with (
+            self._inflight(run_id, cell.id, seed, started) as marker,
+            _signals_interrupt(),  # SIGTERM/SIGHUP end the run like Ctrl-C, and record it
+        ):
             return self._execute_and_record(
                 spec, started, provenance, launch, marker, supersedes=supersedes
             )
@@ -328,17 +349,42 @@ class Runner:
     ) -> RunRecord:
         run_id = spec.run_id
         _log.info("starting %s (cell=%s seed=%s)", run_id, spec.cell.id, spec.seed)
-        result, interrupted = self._execute(spec)
+        result: ExecutionResult | None = None
+        interrupted: BaseException | None = None
+        try:
+            result, interrupted = self._execute(spec)
+        except BaseException as late:  # noqa: BLE001 - landed after the program ended
+            interrupted = late
+        written: list[RunRecord] = []
         # From here to the record write, an interrupt waits: losing the record of a run that
-        # finished (or the marker the audit would report) is worse than a short delay.
-        with _signals_held():
-            record = self._record(
-                spec, started, provenance, launch=launch, result=result, supersedes=supersedes
-            )
-            self.store.write(record)
-            marker.unlink(missing_ok=True)  # only once the record exists
-        if not result.ok:
-            _log.error("run %s failed (%s): %s", run_id, record.failure_kind, result.error)
+        # finished (or the marker the audit would report) is worse than a short delay. A
+        # signal that lands before the hold begins is kept and the write is tried again.
+        for _attempt in range(_RECORD_ATTEMPTS):
+            try:
+                with _signals_held():
+                    if not written:
+                        outcome = result or _interrupted_result(interrupted)
+                        written.append(
+                            self._record(
+                                spec,
+                                started,
+                                provenance,
+                                launch=launch,
+                                result=outcome,
+                                supersedes=supersedes,
+                            )
+                        )
+                        self.store.write(written[0])
+                        marker.unlink(missing_ok=True)  # only once the record exists
+                break
+            except BaseException as late:  # noqa: BLE001 - re-raised below, after the record
+                if interrupted is None:
+                    interrupted = late
+                if written:
+                    break
+        record = written[0]
+        if record.status != self.config.str_value("registry.ok_status"):
+            _log.error("run %s failed (%s): %s", run_id, record.failure_kind, record.error)
         if interrupted is not None:
             raise interrupted
         return record
@@ -360,7 +406,12 @@ class Runner:
             result.error = "; ".join(changed)
             result.failure_kind = "config"
             _log.error("run %s: %s", run_id, result.error)
+        if changed:  # also for a run that failed otherwise: the record says what moved
+            provenance["inputs_changed"] = changed
         provenance["inputs_unverified"] = unverified_inputs(launch, reported)
+        # The log is not an artifact (the program does not report it), so its bytes are
+        # vouched for here, after the program's whole process group has ended.
+        provenance["log_sha256"] = sha256_file(spec.log_path) if spec.log_path.is_file() else None
         finished = self.clock()
         environment = merge_environment(
             collect_environment(
@@ -405,19 +456,42 @@ class Runner:
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / pair_lock_name(cell_id, seed)
         with path.open("a", encoding="utf-8") as handle:
-            try:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                raise RunRefusedError(
-                    f"{cell_id}@{seed} is being run by another launcher (lock {path})"
-                ) from None
+            self._acquire(handle.fileno(), f"{cell_id}@{seed}", path)
             try:
                 yield
             finally:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
-    def _mark_inflight(self, run_id: str, cell_id: str, seed: int, started: datetime) -> Path:
-        """A marker naming the running run; the audit reports markers a crash left behind."""
+    def _acquire(self, fd: int, pair: str, path: Path) -> None:
+        """Take the pair lock, waiting up to ``registry.lock_wait_s`` for another holder."""
+        deadline = self.monotonic() + self.lock_wait_s
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return
+            except BlockingIOError:
+                if self.monotonic() >= deadline:
+                    raise PairBusyError(
+                        f"{pair} is being run by another launcher (lock {path})"
+                    ) from None
+                _log.debug("%s is locked; retrying in %ss", pair, self.lock_poll_s)
+                self.sleep(self.lock_poll_s)
+            except OSError as exc:
+                if exc.errno != errno.ENOLCK:
+                    raise
+                raise RunRefusedError(
+                    f"cannot lock {path}: the filesystem has no locks (NFS without lockd?); "
+                    "paths.inflight_dir must be host-local"
+                ) from exc
+
+    @contextlib.contextmanager
+    def _inflight(self, run_id: str, cell_id: str, seed: int, started: datetime) -> Iterator[Path]:
+        """A marker naming the running run, locked for as long as this launcher lives.
+
+        The audit reports a marker whose lock nobody holds and whose run wrote no record: a
+        launcher died mid-run. It probes the marker's own lock, never the (cell, seed) lock a
+        launcher needs, so an audit can never refuse a launcher.
+        """
         marker = self.config.path("inflight_dir") / f"{run_id}{MARKER_SUFFIX}"
         payload = {
             "run_id": run_id,
@@ -425,16 +499,20 @@ class Runner:
             "seed": seed,
             "started_at": started.isoformat(),
             "pid": os.getpid(),
+            **host_identity(),
         }
         with marker.open("x", encoding="utf-8") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)  # before the content: never unlocked
             json.dump(payload, handle, sort_keys=True)
-        return marker
+            handle.flush()
+            yield marker
 
     def _execute(self, spec: RunSpec) -> tuple[ExecutionResult, BaseException | None]:
         """Run the program; a crash becomes a failed result, and an interrupt (Ctrl-C,
         ``SystemExit``) is returned so the caller records the run before re-raising it."""
         try:
-            return self.executor.execute(spec), None
+            result = self.executor.execute(spec)
+            return result, result.interrupted
         except Exception as exc:  # noqa: BLE001 - a crash is recorded as a failed run, never lost
             _log.exception("executor %s raised for %s", type(self.executor).__name__, spec.run_id)
             error = f"executor raised {type(exc).__name__}: {exc}"
@@ -465,7 +543,7 @@ class Runner:
             return None
         done = sorted(r.run_id for r in current.values() if r.status == ok_status)
         if done:
-            raise RunRefusedError(
+            raise PairDoneError(
                 f"{cell_id}@{seed} already completed as {done[0]}; "
                 "replace it with `qcal registry run --supersedes` or `run-batch --rerun`"
             )
@@ -532,13 +610,21 @@ class Runner:
             return batch
         batch.batch_id = self.new_batch_id(self.clock())
         for item in planned:
-            record = self.run(
-                item.cell.id,
-                item.seed,
-                supersedes=item.supersedes,
-                reason=reason,
-                batch_id=batch.batch_id,
-            )
+            try:
+                record = self.run(
+                    item.cell.id,
+                    item.seed,
+                    supersedes=item.supersedes,
+                    reason=reason,
+                    batch_id=batch.batch_id,
+                )
+            except (PairBusyError, PairDoneError) as exc:
+                if not keep_going:
+                    raise
+                # Another launcher is running or has just finished this pair: not a failure.
+                _log.warning("skipping %s@%s: %s", item.cell.id, item.seed, exc)
+                batch.skipped.append((item.cell.id, item.seed, str(exc)))
+                continue
             if record.status == self.config.str_value("registry.ok_status"):
                 batch.completed.append(record)
                 continue
@@ -547,6 +633,16 @@ class Runner:
                 _log.error("stopping batch after first failure (%s)", record.run_id)
                 break
         return batch
+
+
+#: Attempts at writing a run's record when a signal lands before the hold of the first one.
+_RECORD_ATTEMPTS: Final = 2
+
+
+def _interrupted_result(interrupt: BaseException | None) -> ExecutionResult:
+    """The result of a run whose executor never returned one."""
+    name = type(interrupt).__name__ if interrupt is not None else "an unknown error"
+    return ExecutionResult(-1, error=f"interrupted by {name}", failure_kind="interrupted")
 
 
 def merge_environment(collected: Mapping[str, Any], reported: Mapping[str, Any]) -> dict[str, Any]:

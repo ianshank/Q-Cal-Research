@@ -166,3 +166,74 @@ finding = "a network agent must deny-read the configured categories on every rea
 old = '''        if not guarded:'''
 new = '''        if False:'''
 tests = ["tests/unit/test_agent_layer.py"]
+
+[[mutant]]
+id = "S4-wait-reraises"
+file = "src/qcal/registry/executor.py"
+finding = "an interrupted run keeps the program's envelope (artifacts, environment)"
+old = '''        if interrupt is not None:
+            return self._after_interrupt(proc, spec, started, interrupt)'''
+new = '''        if interrupt is not None:
+            self._terminate(proc)
+            raise interrupt'''
+tests = ["tests/unit/test_executor.py"]
+
+[[mutant]]
+id = "S4-no-escalation"
+file = "src/qcal/registry/executor.py"
+finding = "further signals while the program shuts down are absorbed, not raised"
+old = '''    for number in ESCALATION_SIGNALS:
+        signal.signal(number, kill)'''
+new = '''    for number in ():
+        signal.signal(number, kill)'''
+tests = ["tests/unit/test_executor.py"]
+
+[[mutant]]
+id = "S4-audit-pair-lock"
+file = "src/qcal/registry/audit.py"
+finding = "the audit judges a marker by its own lock, never by the pair lock a launcher needs"
+old = '''        live = _locked(marker)'''
+new = '''        live = any(_locked(lock) for lock in directory.glob("*.lock"))'''
+tests = ["tests/unit/test_audit.py"]
+
+[[mutant]]
+id = "S4-marker-unlocked"
+file = "src/qcal/registry/runner.py"
+finding = "a launcher locks its own marker while it runs, so the audit sees it live"
+old = '''            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)  # before the content: never unlocked'''
+new = '''            pass'''
+tests = ["tests/unit/test_runner.py"]
+
+[[mutant]]
+id = "S4-no-retry"
+file = "src/qcal/registry/runner.py"
+finding = "a launcher waits briefly for a busy pair instead of refusing at once"
+old = '''                if self.monotonic() >= deadline:'''
+new = '''                if True:'''
+tests = ["tests/unit/test_runner.py"]
+
+[[mutant]]
+id = "S4-keep-going-busy"
+file = "src/qcal/registry/runner.py"
+finding = "run-batch --keep-going skips a pair another launcher holds"
+old = '''            except (PairBusyError, PairDoneError) as exc:
+                if not keep_going:'''
+new = '''            except (PairBusyError, PairDoneError) as exc:
+                if True:'''
+tests = ["tests/unit/test_runner.py"]
+
+[[mutant]]
+id = "S4-late-signal"
+file = "src/qcal/registry/runner.py"
+finding = "a signal landing before the record hold still leaves a record"
+old = '''        for _attempt in range(_RECORD_ATTEMPTS):'''
+new = '''        for _attempt in range(1):'''
+tests = ["tests/unit/test_runner.py"]
+
+[[mutant]]
+id = "S4-log-digest"
+file = "src/qcal/registry/runner.py"
+finding = "the run's log is vouched for by its sha256"
+old = '''        provenance["log_sha256"] = sha256_file(spec.log_path) if spec.log_path.is_file() else None'''
+new = '''        provenance["log_sha256"] = None'''
+tests = ["tests/unit/test_runner.py"]
