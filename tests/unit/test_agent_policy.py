@@ -29,6 +29,11 @@ def settings(root: Path, hooks: dict[str, list[dict[str, Any]]]) -> Path:
     return write(root, SETTINGS, json.dumps({"hooks": hooks}))
 
 
+def _tool_policy_errors(config: Config) -> list[str]:
+    """Errors other than the network-agent deny-read rule, which has its own tests."""
+    return [e for e in check_agent_layer(config).errors if "no deny-read hook" not in e]
+
+
 def group(matcher: Any) -> dict[str, Any]:
     return {"matcher": matcher, "hooks": [{"type": "prompt", "prompt": "x"}]}
 
@@ -63,7 +68,7 @@ def test_agent_combining_write_and_network_tools_fails(
 ) -> None:
     front(repo, AGENT, BASE_AGENT + f"tools: {tools}\n")
 
-    errors = check_agent_layer(config).errors
+    errors = _tool_policy_errors(config)
 
     assert len(errors) == 1
     assert "combines write-capable tools" in errors[0]
@@ -72,13 +77,14 @@ def test_agent_combining_write_and_network_tools_fails(
 def test_disallowed_tools_remove_the_conflict(config: Config, repo: Path) -> None:
     front(repo, AGENT, BASE_AGENT + "tools: Read, Bash, WebFetch\ndisallowedTools: Bash\n")
 
-    assert check_agent_layer(config).errors == []
+    assert _tool_policy_errors(config) == []
 
 
 def test_read_only_network_agent_passes(config: Config, repo: Path) -> None:
     front(repo, AGENT, BASE_AGENT + "tools: Read, Grep, WebFetch, WebSearch\n")
 
-    assert check_agent_layer(config).errors == []
+    # Network agents must also deny-read Ian's files (tests/unit/test_agent_layer.py).
+    assert _tool_policy_errors(config) == []
 
 
 def test_skill_allowed_tools_follow_the_same_policy(config: Config, repo: Path) -> None:

@@ -89,7 +89,15 @@ def test_valid_agent_passes(config: Config, repo: Path) -> None:
 
 def test_every_documented_agent_key_is_accepted(config: Config, repo: Path) -> None:
     keys = config.str_list("agent_layer.agent_allowed_keys")
-    typed = {"model": "sonnet", "background": "false", "skills": "[]", "hooks": "{}"}
+    typed = {
+        "model": "sonnet",
+        "background": "false",
+        "skills": "[]",
+        "hooks": "{}",
+        "isolation": "worktree",
+        "maxTurns": "10",
+        "mcpServers": "[]",
+    }
     extra = "".join(f"{k}: {typed.get(k, 'x')}\n" for k in keys if k not in {"name", "description"})
     frontmatter_file(repo, AGENT, VALID_AGENT.replace("tools: Read, Grep\n", "") + extra)
 
@@ -542,3 +550,116 @@ def test_literal_bearer_token_is_detected_whatever_its_case(
     )
 
     assert check_agent_layer(config).errors == [f"{MCP}: server 'gh' embeds a literal credential"]
+
+
+# --- isolation, maxTurns, mcpServers and network agents (qcal-foundations, S3) -------------
+
+WRAPPER_CMD = '"$CLAUDE_PROJECT_DIR"/.claude/hooks/run_hook.sh'
+
+
+def _network_agent(repo: Path, *, hook_line: str | None, matcher: str = "Read|Grep|Glob") -> None:
+    script(repo, ".claude/hooks/run_hook.sh")
+    front = "name: reviewer\ndescription: Scouts.\ntools: Read, Grep, Glob, WebSearch\n"
+    if hook_line is not None:
+        front += (
+            "hooks:\n  PreToolUse:\n"
+            f"    - matcher: {matcher}\n      hooks:\n"
+            f"        - type: command\n          command: '{WRAPPER_CMD} {hook_line}'\n"
+        )
+    frontmatter_file(repo, AGENT, front)
+
+
+@pytest.mark.parametrize(
+    ("line", "error"),
+    [
+        ("isolation: worktree\n", None),
+        ("isolation: container\n", "isolation must be one of ['worktree']"),
+        ("maxTurns: 40\n", None),
+        ("maxTurns: true\n", "maxTurns must be an integer from 1 to 100, got True"),
+        ("maxTurns: 0\n", "maxTurns must be an integer from 1 to 100"),
+        ("maxTurns: 101\n", "maxTurns must be an integer from 1 to 100"),
+        ("maxTurns: '40'\n", "maxTurns must be an integer"),
+    ],
+)
+def test_isolation_and_max_turns_are_validated(
+    config: Config, repo: Path, line: str, error: str | None
+) -> None:
+    frontmatter_file(repo, AGENT, VALID_AGENT + line)
+    errors = check_agent_layer(config).errors
+    if error is None:
+        assert errors == []
+    else:
+        assert len(errors) == 1
+        assert errors[0].startswith(f"{AGENT}: {error}")
+
+
+def test_max_turns_limit_is_configurable(make_config: Callable[[str], Config]) -> None:
+    config = make_config("[agent_layer]\nmax_turns_limit = 10\n")
+    frontmatter_file(config.root, AGENT, VALID_AGENT + "maxTurns: 40\n")
+    assert "from 1 to 10" in check_agent_layer(config).errors[0]
+
+
+def test_mcp_servers_must_be_named_in_the_project_file(config: Config, repo: Path) -> None:
+    mcp(repo, {"docs": {"type": "http", "url": "https://example.com/mcp"}})
+    frontmatter_file(repo, AGENT, VALID_AGENT + "mcpServers:\n  - docs\n  - other\n")
+    errors = check_agent_layer(config).errors
+    assert f"{AGENT}: mcpServers names unknown servers ['other']" in errors
+
+
+def test_inline_mcp_server_definitions_are_refused(config: Config, repo: Path) -> None:
+    frontmatter_file(repo, AGENT, VALID_AGENT + "mcpServers:\n  - docs:\n      url: x\n")
+    errors = check_agent_layer(config).errors
+    assert any("mcpServers must list server names" in e for e in errors)
+
+
+def test_an_mcp_server_counts_as_a_network_tool(config: Config, repo: Path) -> None:
+    mcp(repo, {"docs": {"type": "http", "url": "https://example.com/mcp"}})
+    front = "name: reviewer\ndescription: x\ntools: Read, Edit\nmcpServers:\n  - docs\n"
+    frontmatter_file(repo, AGENT, front)
+    errors = check_agent_layer(config).errors
+    assert any(
+        "combines write-capable tools ['Edit'] with network tools ['mcp__docs']" in e
+        for e in errors
+    )
+
+
+def test_a_network_agent_without_deny_read_is_refused(config: Config, repo: Path) -> None:
+    _network_agent(repo, hook_line=None)
+    errors = check_agent_layer(config).errors
+    assert [e for e in errors if "deny-read" in e] == [
+        f"{AGENT}: uses network tools but {tool} has no deny-read hook covering ['ian_only']"
+        for tool in ("Read", "Grep", "Glob")
+    ]
+
+
+@pytest.mark.parametrize(
+    ("hook_line", "matcher", "missing"),
+    [
+        ("deny-read ian_only", "Read|Grep|Glob", []),
+        ("deny-read ian_only", "Read", ["Grep", "Glob"]),
+        ("deny-read docs/private/**", "Read|Grep|Glob", ["Read", "Grep", "Glob"]),
+        ("guard-paths", "Read|Grep|Glob", ["Read", "Grep", "Glob"]),
+        ("deny-read ian_only", "*", []),
+    ],
+)
+def test_each_read_tool_needs_the_required_deny_read(
+    config: Config, repo: Path, hook_line: str, matcher: str, missing: list[str]
+) -> None:
+    _network_agent(repo, hook_line=hook_line, matcher=f"'{matcher}'")
+    errors = [e for e in check_agent_layer(config).errors if "deny-read hook" in e]
+    assert [e.split(" but ")[1].split()[0] for e in errors] == missing
+
+
+def test_the_required_categories_are_configurable(make_config: Callable[[str], Config]) -> None:
+    config = make_config(
+        '[policy.categories]\nian_data = ["data/**"]\n'
+        '[agent_layer]\nnetwork_agent_deny_read = ["ian_only", "ian_data"]\n'
+    )
+    _network_agent(config.root, hook_line="deny-read ian_only")
+    errors = check_agent_layer(config).errors
+    assert any("covering ['ian_data', 'ian_only']" in e for e in errors)
+
+
+def test_an_agent_without_network_tools_needs_no_deny_read(config: Config, repo: Path) -> None:
+    frontmatter_file(repo, AGENT, VALID_AGENT)
+    assert check_agent_layer(config).errors == []

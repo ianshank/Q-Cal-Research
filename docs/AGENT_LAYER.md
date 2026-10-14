@@ -113,7 +113,9 @@ It runs in `make check`, in CI (`ci.yml` integrity job), in pre-commit, and in
 | Check | Fails on |
 |---|---|
 | Frontmatter | unknown keys (Claude Code ignores them silently), missing required keys, name not matching the file or directory |
-| Tool policy | an agent without explicit `tools`; any agent or skill holding a write-capable tool (Edit, Write, MultiEdit, NotebookEdit, Bash) together with a network tool (WebFetch, WebSearch, `mcp__*`) |
+| Tool policy | an agent without explicit `tools`; any agent or skill holding a write-capable tool (Edit, Write, MultiEdit, NotebookEdit, Bash) together with a network tool (WebFetch, WebSearch, `mcp__*`, or a server in `mcpServers`) |
+| Network agents | an agent with a network tool whose Read, Grep or Glob is not wrapped in `deny-read` with every category in `network_agent_deny_read` (this repository: `ian_only`, `ian_data`) |
+| Agent limits | `isolation` outside `isolation_values`; `maxTurns` that is not an integer from 1 to `max_turns_limit`; `mcpServers` that are inline definitions or names missing from `.mcp.json` |
 | Models | a model outside `allowed_models` or `model_id_pattern` |
 | References | `context: fork` naming a missing agent; an agent listing a missing skill; `agent:` without `context: fork` |
 | Typed keys | `disable-model-invocation`, `user-invocable`, `background` must be booleans |

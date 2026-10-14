@@ -74,13 +74,28 @@ def _hook_names() -> set[str]:
 
 def wrapped_hook(config: Config, command: str) -> str | None:
     """The qcal hook a settings command runs through the wrapper, or ``None``."""
+    args = wrapped_hook_args(config, command)
+    if args is None:
+        return None
+    return args[0] if args else ""
+
+
+def wrapped_hook_args(config: Config, command: str) -> list[str] | None:
+    """The hook name and its arguments after the wrapper, or ``None`` without a wrapper."""
     wrapper = config.str_value("agent_layer.hook_wrapper")
-    words = command.replace('"', " ").split()
+    words = command.replace('"', " ").replace("'", " ").split()
     for i, word in enumerate(words):
         if word.endswith(wrapper):
-            rest = [w for w in words[i + 1 :] if w != "--fail-open"]
-            return rest[0] if rest else ""
+            return [w for w in words[i + 1 :] if w != "--fail-open"]
     return None
+
+
+def mcp_server_names(config: Config) -> set[str]:
+    """Server names defined in the project's MCP file (empty when it is missing or invalid)."""
+    shown = Path(config.str_value("agent_layer.mcp_file"))
+    data = _load_json(config.root / shown, shown, lambda _: None)
+    servers = data.get("mcpServers", {}) if data else {}
+    return set(servers) if isinstance(servers, dict) else set()
 
 
 def _check_command(
@@ -200,4 +215,11 @@ def check_mcp(config: Config, report: Report) -> int:
     return len(servers)
 
 
-__all__ = ["check_hooks", "check_mcp", "check_settings", "wrapped_hook"]
+__all__ = [
+    "check_hooks",
+    "check_mcp",
+    "check_settings",
+    "mcp_server_names",
+    "wrapped_hook",
+    "wrapped_hook_args",
+]

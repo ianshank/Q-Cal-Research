@@ -134,3 +134,35 @@ finding = "the prior-art scout cannot read ian_data"
 old = '''run_hook.sh deny-read ian_only ian_data'''
 new = '''run_hook.sh deny-read ian_only'''
 tests = ["tests/security/test_foundations_guards.py"]
+
+[[mutant]]
+id = "S3-max-turns-bool"
+file = "src/qcal/integrity/agent_layer.py"
+finding = "maxTurns: true is not a turn count (a bool is an int in Python)"
+old = '''if isinstance(turns, bool) or not isinstance(turns, int)'''
+new = '''if not isinstance(turns, int)'''
+tests = ["tests/unit/test_agent_layer.py"]
+
+[[mutant]]
+id = "S3-inline-mcp"
+file = "src/qcal/integrity/agent_layer.py"
+finding = "an inline mcpServers definition is refused (it escapes the project MCP checks)"
+old = '''    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):'''
+new = '''    if not isinstance(value, list):'''
+tests = ["tests/unit/test_agent_layer.py"]
+
+[[mutant]]
+id = "S3-mcp-network"
+file = "src/qcal/integrity/agent_layer.py"
+finding = "an agent's MCP servers count as network tools"
+old = '''        tools += [f"mcp__{name}" for name in _mcp_servers(shown, data, servers, report)]'''
+new = '''        _mcp_servers(shown, data, servers, report)'''
+tests = ["tests/unit/test_agent_layer.py"]
+
+[[mutant]]
+id = "S3-network-deny-read"
+file = "src/qcal/integrity/agent_layer.py"
+finding = "a network agent must deny-read the configured categories on every read tool"
+old = '''        if not guarded:'''
+new = '''        if False:'''
+tests = ["tests/unit/test_agent_layer.py"]

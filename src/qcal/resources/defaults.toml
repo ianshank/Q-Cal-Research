@@ -318,6 +318,12 @@ skill_allowed_keys = [
   "background", "hooks", "paths", "shell", "metadata", "license", "compatibility",
 ]
 forbidden_permission_modes = ["bypassPermissions"]
+isolation_values = ["worktree"]       # what an agent's isolation may say
+max_turns_limit = 100                 # an agent's maxTurns must be an integer from 1 to this
+# A network agent (network tools, mcp__ tools or mcpServers) must wrap deny-read around each
+# read tool with at least these categories; qcal.toml adds the repository's own.
+network_agent_deny_read = ["ian_only"]
+read_tools = ["Read", "Grep", "Glob"]
 hook_wrapper = "run_hook.sh"          # settings commands through it must name a real qcal hook
 required_pretooluse_hooks = []        # qcal.toml lists the guards this repository must wire
 skill_required_keys = ["description"]

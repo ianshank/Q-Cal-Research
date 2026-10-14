@@ -55,3 +55,5 @@ dataset_denied = ["BDD100K"]
 [agent_layer]
 # The guards must stay wired as PreToolUse hooks (checked by `qcal agent-layer`).
 required_pretooluse_hooks = ["guard-paths", "guard-bash"]
+# Network agents may read neither Ian's documents nor his data.
+network_agent_deny_read = ["ian_only", "ian_data"]

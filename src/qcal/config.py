@@ -56,6 +56,7 @@ CATEGORY_LISTS: Final = (
     "signing.signed_categories",
     "hooks.deny_categories",
     "claims.escape_hatch_categories",
+    "agent_layer.network_agent_deny_read",
 )
 REMOVED_KEYS: Final[dict[str, str]] = {
     "registry.schema_version": (
