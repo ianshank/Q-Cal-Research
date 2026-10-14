@@ -39,6 +39,11 @@ timeout_s = 60                        # every git subprocess
 
 [policy]
 case_insensitive = true
+# Clean-room matching folds text first: decompose (NFKD for "NFKC", NFD for "NFC"), drop these
+# Unicode categories (Cf: format characters such as zero-width spaces; Mn: combining marks),
+# map every dash to "-", casefold, recompose. Path categories never fold.
+unicode_normalization = "NFKC"        # NFKC | NFC | "" (off)
+strip_unicode_categories = ["Cf", "Mn"]
 clean_room_substrings = ["nbcu", "edge-dit", "edge_dit", "edgedit"]
 
 [policy.categories]
@@ -140,6 +145,9 @@ project_dir_env = "CLAUDE_PROJECT_DIR"
 edit_tools = ["Edit", "Write", "MultiEdit", "NotebookEdit"]
 path_fields = ["file_path", "path", "notebook_path"]
 deny_categories = ["ian_only", "registry_only", "enforcement_surface", "git_internals"]
+# Refuse edits and private reads of a file with more than one hard link: the other name may
+# be a protected file, and checking which would need a scan of the whole tree.
+deny_hard_links = true
 push_deny_flags = [
   "--force", "-f", "--force-with-lease", "--force-if-includes",
   "--mirror", "--all", "--delete", "-d", "--prune",

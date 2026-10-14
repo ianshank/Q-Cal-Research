@@ -75,3 +75,62 @@ finding = "registry-immutable logs each violation"
 old = '''        _log.warning("registry immutability: %s", violation)'''
 new = '''        pass'''
 tests = ["tests/integration/test_cli_ci.py"]
+
+[[mutant]]
+id = "S2-control"
+file = "src/qcal/hooks/guards.py"
+finding = "allow-only refuses control characters (a newline tokenises like a space)"
+old = '''    if _CONTROL.search(command):'''
+new = '''    if False:'''
+tests = ["tests/security/test_foundations_guards.py"]
+
+[[mutant]]
+id = "S2-hard-link"
+file = "src/qcal/hooks/guards.py"
+finding = "a file with more than one hard link cannot be edited"
+old = '''    if stat.S_ISREG(info.st_mode) and info.st_nlink > 1:'''
+new = '''    if stat.S_ISREG(info.st_mode) and info.st_nlink > 2:'''
+tests = ["tests/security/test_foundations_guards.py"]
+
+[[mutant]]
+id = "S2-hard-link-over-block"
+file = "src/qcal/hooks/guards.py"
+finding = "only hard-linked files are refused, not every existing file"
+old = '''    if stat.S_ISREG(info.st_mode) and info.st_nlink > 1:'''
+new = '''    if stat.S_ISREG(info.st_mode) and info.st_nlink >= 1:'''
+tests = ["tests/security/test_foundations_guards.py"]
+
+[[mutant]]
+id = "S2-hard-link-read"
+file = "src/qcal/hooks/guards.py"
+finding = "a hard link cannot be read privately either"
+old = '''    for path in paths:
+        linked = hard_link_denial(path, root, config=config)
+        if linked is not None:
+            return linked'''
+new = '''    for path in paths:'''
+tests = ["tests/security/test_foundations_guards.py"]
+
+[[mutant]]
+id = "S2-fold"
+file = "src/qcal/policy.py"
+finding = "clean-room matching folds the text it searches"
+old = '''        haystack = self.fold(text)'''
+new = '''        haystack = text.lower()'''
+tests = ["tests/security/test_foundations_guards.py", "tests/unit/test_policy.py"]
+
+[[mutant]]
+id = "S2-strip"
+file = "src/qcal/policy.py"
+finding = "format characters and combining marks are stripped before matching"
+old = '''        kept = (c for c in text if unicodedata.category(c) not in self._strip)'''
+new = '''        kept = (c for c in text)'''
+tests = ["tests/security/test_foundations_guards.py"]
+
+[[mutant]]
+id = "S2-scout-ian-data"
+file = ".claude/agents/prior-art-scout.md"
+finding = "the prior-art scout cannot read ian_data"
+old = '''run_hook.sh deny-read ian_only ian_data'''
+new = '''run_hook.sh deny-read ian_only'''
+tests = ["tests/security/test_foundations_guards.py"]

@@ -186,7 +186,7 @@ def test_handwritten_files_stay_ians_even_inside_the_reproducers_scope(repo_conf
 
 
 def test_prior_art_scout_cannot_read_ians_documents(repo_config: Config) -> None:
-    assert _agent_hook_args("prior-art-scout") == ["ian_only"]
+    assert _agent_hook_args("prior-art-scout") == ["ian_only", "ian_data"]
     policy = Policy.from_config(repo_config)
     for path in ("EXPERIMENTS.yaml", "DECISIONS.md", "src/qcal_lab/handwritten/laece.py"):
         payload = HookPayload.parse(
