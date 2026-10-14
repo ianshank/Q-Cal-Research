@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from qcal.ci import check_mode
 from qcal.config import REPO_CONFIG_NAME, Config, load_config
 from qcal.gitutil import GitError, git, merge_base, resolve_commit, show_file
 from qcal.log import get_logger
@@ -32,7 +33,6 @@ from qcal.policy import Policy
 from qcal.reports import verdict
 
 _log = get_logger("ci.signatures")
-_MODES = ("bootstrap", "enforce")
 
 
 @dataclass
@@ -194,9 +194,7 @@ def verify_signatures(
     head = require_commit(repo, head, "head")
     ref = policy_ref or base
     config = policy_config(repo, ref)
-    chosen = mode or config.str_value("signing.mode")
-    if chosen not in _MODES:
-        raise ValueError(f"signing.mode must be one of {_MODES}, got {chosen!r}")
+    chosen = check_mode(mode or config.str_value("signing.mode"), "signing.mode")
     policy = Policy.from_config(config)
     categories = config.str_list("signing.signed_categories")
     signers = show_file(ref, config.str_value("signing.allowed_signers"), repo)

@@ -241,7 +241,7 @@ def _refuse_repeated_seeds(
             raise TableDataError(
                 f"table {spec.name!r} row {key}: {seen[pair]} and {row['run_id']} are both "
                 f"current runs of {pair[0]}@{pair[1]}; supersede one with `qcal registry run "
-                "--rerun`"
+                "<cell> --seed <n> --supersedes <run_id> --reason <text>`"
             )
         seen[pair] = row["run_id"]
 

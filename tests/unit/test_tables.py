@@ -712,3 +712,22 @@ def test_a_spread_over_seeds_that_drew_nothing_is_refused(config: Config) -> Non
 def test_a_spread_over_seeds_that_drew_is_allowed(config: Config) -> None:
     index = _with([row("R1", AP=1.0), row("R2", AP=3.0)], **{"env.seed_effective": "true"})
     assert "{1.41}" in render_table(config, spec(ColumnSpec("AP", "std", 2, "AP")), index)
+
+
+def test_the_repeated_seed_message_names_a_command_that_parses() -> None:
+    """The fix it suggests must be a real command (it once named a flag `run` lacks)."""
+    import re
+    import shlex
+
+    from qcal.cli.app import build_parser
+    from qcal.registry.tables import _refuse_repeated_seeds
+
+    spec = TableSpec(name="t", rows=("factor.detector",), columns=())
+    rows = [{"cell_id": "C-a", "seed": "0", "run_id": r} for r in ("R1", "R2")]
+    with pytest.raises(TableDataError) as caught:
+        _refuse_repeated_seeds(spec, ("atss",), rows)
+    (command,) = re.findall(r"`(qcal [^`]+)`", str(caught.value))
+    filled = {"<n>": "0"}  # placeholders, filled with values of the right type
+    argv = [filled.get(w, w.strip("<>")) for w in shlex.split(command)[1:]]
+    args = build_parser().parse_args(argv)
+    assert (args.supersedes, args.reason) == ("run_id", "text")

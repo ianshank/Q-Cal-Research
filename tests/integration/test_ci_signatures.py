@@ -24,6 +24,7 @@ from qcal.ci.signatures import (
     policy_config,
     verify_signatures,
 )
+from qcal.config import ConfigError
 from tests.conftest import require_tool, run_git, write
 
 pytestmark = [pytest.mark.integration, pytest.mark.rule("C0")]
@@ -276,7 +277,7 @@ def test_mode_argument_overrides_the_base_policy(
 def test_unknown_mode_argument_is_rejected(git_repo: Path) -> None:
     run_git(git_repo, "branch", "feature")
 
-    with pytest.raises(ValueError, match=r"signing\.mode must be one of .*'strict'"):
+    with pytest.raises(ConfigError, match=r"signing\.mode must be one of .*'strict'"):
         verify(git_repo, mode="strict")
 
 
@@ -284,7 +285,7 @@ def test_unknown_mode_in_the_base_policy_is_rejected(git_repo: Path) -> None:
     commit(git_repo, "policy", {"qcal.toml": '[signing]\nmode = "audit"\n'})
     run_git(git_repo, "branch", "feature")
 
-    with pytest.raises(ValueError, match=r"signing\.mode must be one of .*'audit'"):
+    with pytest.raises(ConfigError, match=r"signing\.mode must be one of .*'audit'"):
         verify(git_repo)
 
 

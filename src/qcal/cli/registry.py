@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 from typing import Any, TextIO
 
 from qcal.cli.common import (
@@ -83,9 +84,16 @@ def cmd_index(args: argparse.Namespace, config: Config, out: TextIO) -> int:
         out,
         {"path": str(result.path), "rows": result.rows, "changed": result.changed},
         as_json=args.json,
-        text=f"{result.path.relative_to(config.root)}: {result.rows} rows, {state}",
+        text=f"{_shown(result.path, config)}: {result.rows} rows, {state}",
     )
     return EXIT_FAILED if args.check and result.changed else EXIT_OK
+
+
+def _shown(path: Path, config: Config) -> str:
+    """``path`` relative to the root when inside it; configured paths may point elsewhere."""
+    return (
+        path.relative_to(config.root).as_posix() if path.is_relative_to(config.root) else str(path)
+    )
 
 
 def cmd_audit(args: argparse.Namespace, config: Config, out: TextIO) -> int:
@@ -100,7 +108,7 @@ def cmd_tables(args: argparse.Namespace, config: Config, out: TextIO) -> int:
     from qcal.registry.tables import build_tables
 
     results = build_tables(config, check=args.check)
-    rows = [{"path": str(r.path.relative_to(config.root)), "changed": r.changed} for r in results]
+    rows = [{"path": _shown(r.path, config), "changed": r.changed} for r in results]
     text = "\n".join(
         f"{'stale' if r['changed'] and args.check else 'ok':>6}  {r['path']}" for r in rows
     )
@@ -134,9 +142,11 @@ def cmd_cells(args: argparse.Namespace, config: Config, out: TextIO) -> int:
         )
     if args.emit:
         entries = cells_to_yaml_entries(cells, config.str_value("experiments.cell_id_key"))
-        out.write(
-            yaml.safe_dump({config.str_value("experiments.cells_key"): entries}, sort_keys=False)
-        )
+        document = {config.str_value("experiments.cells_key"): entries}
+        if args.json:
+            emit(out, document, as_json=True, text="")
+        else:
+            out.write(yaml.safe_dump(document, sort_keys=False))
         return EXIT_OK
     factors = summarize(cells)
     text = f"{len(cells)} cells\n" + "\n".join(f"  {k}: {v}" for k, v in factors.items())

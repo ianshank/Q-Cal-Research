@@ -27,3 +27,51 @@ new = """            except OSError:
                 path.write_bytes(data)
                 existing = digest"""
 tests = ["tests/unit/test_lab_experiment.py"]
+
+[[mutant]]
+id = "S1-anchored-exclusion"
+file = "pyproject.toml"
+finding = "coverage exclusions are anchored, so no function body is hidden"
+old = ''''^\s*\.\.\.\s*$','''
+new = ''''\.\.\.','''
+tests = ["tests/integration/test_repository_layout.py"]
+
+[[mutant]]
+id = "S1-github-json"
+file = "src/qcal/cli/ci.py"
+finding = "--github and --json together are a usage error, not unparseable JSON"
+old = '''output.add_argument("--json", action="store_true", help="machine-readable output")'''
+new = '''parser.add_argument("--json", action="store_true", help="machine-readable output")'''
+tests = ["tests/integration/test_cli_ci.py"]
+
+[[mutant]]
+id = "S1-mode"
+file = "src/qcal/ci/__init__.py"
+finding = "a misspelt signing.mode or review.mode is a configuration error (exit 2)"
+old = '''        raise ConfigError(f"{key} must be one of {MODES}, got {value!r}")'''
+new = '''        return MODES[0]'''
+tests = ["tests/integration/test_cli_ci.py", "tests/integration/test_ci_signatures.py"]
+
+[[mutant]]
+id = "S1-split-digest-newline"
+file = "src/qcal/integrity/leakage.py"
+finding = "an id with a line break would hash like two ids; it is refused"
+old = '''    bad = sorted(i for i in unique if "\n" in i or "\r" in i)'''
+new = '''    bad: list[str] = []'''
+tests = ["tests/unit/test_leakage.py"]
+
+[[mutant]]
+id = "S1-tables-message"
+file = "src/qcal/registry/tables.py"
+finding = "the repeated-seed message names a command that exists"
+old = '''"<cell> --seed <n> --supersedes <run_id> --reason <text>`"'''
+new = '''"--rerun`"'''
+tests = ["tests/unit/test_tables.py"]
+
+[[mutant]]
+id = "S1-immutability-log"
+file = "src/qcal/ci/immutability.py"
+finding = "registry-immutable logs each violation"
+old = '''        _log.warning("registry immutability: %s", violation)'''
+new = '''        pass'''
+tests = ["tests/integration/test_cli_ci.py"]

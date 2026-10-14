@@ -19,7 +19,7 @@ from qcal.ci.review import (
     review_path,
 )
 from qcal.cli import main
-from qcal.config import Config, load_config
+from qcal.config import Config, ConfigError, load_config
 from qcal.gitutil import GitError
 from tests.conftest import run_git, write
 
@@ -155,7 +155,7 @@ def test_unreadable_review_files(pr, text: str) -> None:
 
 def test_review_mode_is_validated(pr) -> None:
     repo, base, code = pr
-    with pytest.raises(ValueError, match=r"review\.mode must be one of"):
+    with pytest.raises(ConfigError, match=r"review\.mode must be one of"):
         check_review(repo, base, code, BRANCH, mode="strict")
 
 

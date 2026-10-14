@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import itertools
 import string
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final
@@ -90,6 +91,18 @@ def manifest_path(config: Config, split: str, dataset: str | None = None) -> Pat
     return config.path("manifests_dir") / pattern.format(split=split, dataset=name)
 
 
+def split_digest(ids: Iterable[str]) -> str:
+    """sha256 of a split's sorted unique ids, one per line: what ``qcal leakage`` reports.
+
+    An id containing a newline would hash like two ids, so it is refused.
+    """
+    unique = set(ids)
+    bad = sorted(i for i in unique if "\n" in i or "\r" in i)
+    if bad:
+        raise ValueError(f"image ids may not contain line breaks: {bad[:3]}")
+    return hashlib.sha256("\n".join(sorted(unique)).encode()).hexdigest()
+
+
 def check_leakage(config: Config) -> LeakageReport:
     comment = config.str_value("data.comment_prefix")
     report = LeakageReport()
@@ -105,7 +118,7 @@ def check_leakage(config: Config) -> LeakageReport:
             report.duplicates[split] = len(entries) - len(unique)
         ids[split] = unique
         report.sizes[split] = len(unique)
-        report.present[split] = hashlib.sha256("\n".join(sorted(unique)).encode()).hexdigest()
+        report.present[split] = split_digest(unique)
     for left, right in itertools.combinations(sorted(ids), 2):
         common = sorted(ids[left] & ids[right])
         if common:

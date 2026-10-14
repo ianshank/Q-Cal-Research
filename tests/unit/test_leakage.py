@@ -7,9 +7,17 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
 from qcal.config import Config, ConfigError
-from qcal.integrity.leakage import LeakageReport, check_leakage, manifest_path, read_manifest
+from qcal.integrity.leakage import (
+    LeakageReport,
+    check_leakage,
+    manifest_path,
+    read_manifest,
+    split_digest,
+)
 
 SPLITS = ("trt_calib_images", "calibrator_fit_split", "val", "test")
 
@@ -276,3 +284,40 @@ def test_an_empty_dataset_list_is_a_configuration_error(
     config = make_config("[data]\ndatasets = []\n")
     with pytest.raises(ConfigError, match=r"data\.datasets is empty"):
         manifest_path(config, "val")
+
+
+# --- split_digest: one definition for qcal leakage and the lab ------------------------------
+
+
+def test_split_digest_is_what_the_leakage_report_shows(disjoint: Config) -> None:
+    report = check_leakage(disjoint)
+    assert report.present["val"] == split_digest(["val-2", "val-1"]) == digest(["val-1", "val-2"])
+
+
+@pytest.mark.parametrize(
+    "ids",
+    [[], ["a"], ["b", "a"], ["a", "a", "b"], ["10", "9", "1"]],
+    ids=["empty", "one", "unsorted", "duplicates", "lexicographic"],
+)
+def test_split_digest_hashes_the_sorted_unique_ids(ids: list[str]) -> None:
+    expected = hashlib.sha256("\n".join(sorted(set(ids))).encode()).hexdigest()
+    assert split_digest(ids) == expected
+
+
+@pytest.mark.parametrize("bad", ["a\nb", "a\r", "\n"])
+def test_an_id_with_a_line_break_would_hash_like_two_ids_and_is_refused(bad: str) -> None:
+    assert split_digest(["a", "b"]) == hashlib.sha256(b"a\nb").hexdigest()
+    with pytest.raises(ValueError, match="line breaks"):
+        split_digest([bad])
+
+
+@given(
+    st.lists(
+        st.text(
+            alphabet=st.characters(blacklist_characters="\n\r", blacklist_categories=("Cs",)),
+            max_size=6,
+        )
+    )
+)
+def test_split_digest_ignores_order_and_repetition(ids: list[str]) -> None:
+    assert split_digest(ids) == split_digest(sorted(ids, reverse=True) + ids)
