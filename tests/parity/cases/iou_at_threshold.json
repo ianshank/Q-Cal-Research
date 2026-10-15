@@ -57,9 +57,9 @@
     "images": [
       {
         "file_name": "iou_at_threshold.jpg",
-        "height": 200,
+        "height": 240,
         "id": 1,
-        "width": 200
+        "width": 240
       }
     ],
     "info": {
@@ -67,7 +67,7 @@
     }
   },
   "kind": "protocol",
-  "separates": "a match needs IoU >= t, or IoU > t",
+  "separates": "a match needs IoU >= t, or IoU > t (IoU of [x, y, w, h] boxes without a +1 on widths, as COCO computes it; with +1 the IoU here exceeds t and the case does not separate)",
   "settings": {
     "bin_count": 25,
     "iou_threshold": 0.5,

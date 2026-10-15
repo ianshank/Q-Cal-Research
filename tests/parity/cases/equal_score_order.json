@@ -4,27 +4,42 @@
       "predicts": {
         "outcomes": {
           "0": "TP:1",
-          "1": "FP"
+          "1": "FP",
+          "2": "TP:2",
+          "3": "FP"
         }
       },
-      "rule": "a stable sort by score: input order breaks ties"
+      "rule": "input order breaks ties (a stable sort)"
     },
     {
       "predicts": {
         "outcomes": {
           "0": "FP",
-          "1": "TP:1"
+          "1": "TP:1",
+          "2": "TP:2",
+          "3": "FP"
         }
       },
-      "rule": "ties go to the higher IoU"
+      "rule": "the higher IoU wins a tie"
+    },
+    {
+      "predicts": {
+        "outcomes": {
+          "0": "FP",
+          "1": "TP:1",
+          "2": "FP",
+          "3": "TP:2"
+        }
+      },
+      "rule": "reversed input order breaks ties"
     }
   ],
   "case": "equal_score_order",
   "detections": [
     {
       "bbox": [
-        10,
-        10,
+        0,
+        0,
         100,
         51
       ],
@@ -34,10 +49,32 @@
     },
     {
       "bbox": [
-        10,
-        10,
+        0,
+        0,
         100,
         100
+      ],
+      "category_id": 1,
+      "image_id": 1,
+      "score": 0.8
+    },
+    {
+      "bbox": [
+        110,
+        0,
+        100,
+        100
+      ],
+      "category_id": 1,
+      "image_id": 1,
+      "score": 0.8
+    },
+    {
+      "bbox": [
+        110,
+        0,
+        100,
+        51
       ],
       "category_id": 1,
       "image_id": 1,
@@ -50,13 +87,26 @@
       {
         "area": 10000,
         "bbox": [
-          10,
-          10,
+          0,
+          0,
           100,
           100
         ],
         "category_id": 1,
         "id": 1,
+        "image_id": 1,
+        "iscrowd": 0
+      },
+      {
+        "area": 10000,
+        "bbox": [
+          110,
+          0,
+          100,
+          100
+        ],
+        "category_id": 1,
+        "id": 2,
         "image_id": 1,
         "iscrowd": 0
       }
@@ -70,9 +120,9 @@
     "images": [
       {
         "file_name": "equal_score_order.jpg",
-        "height": 200,
+        "height": 240,
         "id": 1,
-        "width": 200
+        "width": 240
       }
     ],
     "info": {
@@ -80,7 +130,7 @@
     }
   },
   "kind": "protocol",
-  "separates": "greedy order among equal scores: input order, or best IoU",
+  "separates": "greedy matching among equal scores follows input order, the higher IoU, or reversed input order (e.g. a reversed ascending argsort)",
   "settings": {
     "bin_count": 25,
     "iou_threshold": 0.5,

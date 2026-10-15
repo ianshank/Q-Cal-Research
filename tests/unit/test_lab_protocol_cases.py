@@ -97,7 +97,8 @@ def test_bad_settings_are_a_configuration_error(monkeypatch: pytest.MonkeyPatch)
         ({"iou_threshold": 1.0}, "iou_threshold must be in (0, 1)"),
         ({"iou_threshold": 0.99}, "too close to 1"),
         ({"bin_count": 1}, "bin_count >= 2"),
-        ({"image_width": 50}, "too small"),
+        ({"image_width": 200}, "too small"),  # equal_score_order needs 210 px
+        ({"iou_threshold": 0.04}, "too small for crowd_only_overlap"),
     ]:
         with pytest.raises(ValueError, match=message.replace("(", r"\(").replace(")", r"\)")):
             CaseSettings.load(lab, override)
@@ -166,33 +167,75 @@ def test_the_iou_case_is_exact_for_other_thresholds(threshold: float) -> None:
         repr(threshold)
     )
     first = protocol_cases.equal_score_order(settings)
-    assert (
-        Fraction(threshold)
-        < iou_xywh(first.detections[0]["bbox"], first.annotations[0]["bbox"])
-        < 1
-    )
+    worse = iou_xywh(first.detections[0]["bbox"], first.annotations[0]["bbox"])
+    assert Fraction(repr(threshold)) < worse < 1
 
 
-def test_equal_scores_compete_and_the_worse_overlap_comes_first(
+def _greedy(case: dict[str, Any], order: list[int], t: float) -> dict[str, str]:
+    """COCO-style greedy matching in ``order``: each detection takes the unmatched object it
+    overlaps most, at IoU >= t; otherwise it is a false positive."""
+    boxes = {a["id"]: a["bbox"] for a in case["ground_truth"]["annotations"]}
+    taken: set[int] = set()
+    out: dict[str, str] = {}
+    for d in order:
+        box = _dets(case)[d]["bbox"]
+        best = max(
+            (g for g in boxes if g not in taken),
+            key=lambda g: iou_xywh(box, boxes[g]),
+            default=None,
+        )
+        if best is not None and iou_xywh(box, boxes[best]) >= Fraction(repr(t)):
+            taken.add(best)
+            out[str(d)] = f"TP:{best}"
+        else:
+            out[str(d)] = "FP"
+    return dict(sorted(out.items()))
+
+
+def test_each_tie_rule_gives_the_outcome_its_alternative_predicts(
     cases: dict[str, dict[str, Any]], settings: CaseSettings
 ) -> None:
+    """Each alternative is what its rule computes, and the rules all disagree (review B5)."""
     case = cases["equal_score_order"]
-    (box,), (first, second) = _boxes(case), _dets(case)
-    assert first["score"] == second["score"]
-    worse, better = iou_xywh(first["bbox"], box), iou_xywh(second["bbox"], box)
-    assert Fraction(settings.iou_threshold) < worse < better == 1
+    dets, t = _dets(case), settings.iou_threshold
+    assert len({d["score"] for d in dets}) == 1
+    boxes = [a["bbox"] for a in case["ground_truth"]["annotations"]]
+    best_iou = [max(iou_xywh(d["bbox"], b) for b in boxes) for d in dets]
+    assert all(Fraction(repr(t)) < v for v in best_iou)  # every detection could match
+    rules = [
+        sorted(range(len(dets)), key=lambda d: -dets[d]["score"]),  # stable: input order
+        sorted(range(len(dets)), key=lambda d: (-dets[d]["score"], -best_iou[d])),
+        sorted(range(len(dets)), key=lambda d: dets[d]["score"])[::-1],  # reversed argsort
+    ]
+    predicted = [a["predicts"]["outcomes"] for a in case["alternatives"]]
+    assert predicted == [_greedy(case, order, t) for order in rules]
+    assert len({json.dumps(p, sort_keys=True) for p in predicted}) == 3
 
 
-def test_the_detection_overlaps_only_a_crowd_region(cases: dict[str, dict[str, Any]]) -> None:
+def test_each_crowd_rule_gives_the_outcome_its_alternative_predicts(
+    cases: dict[str, dict[str, Any]], settings: CaseSettings
+) -> None:
     case = cases["crowd_only_overlap"]
-    (annotation,), (det,) = case["ground_truth"]["annotations"], _dets(case)
-    assert annotation["iscrowd"] == 1
-    x, y, w, h = det["bbox"]
-    ax, ay, aw, ah = annotation["bbox"]
-    assert ax <= x  # fully inside
-    assert ay <= y
-    assert x + w <= ax + aw
-    assert y + h <= ay + ah
+    (crowd,) = case["ground_truth"]["annotations"]
+    assert crowd["iscrowd"] == 1
+    t = Fraction(repr(settings.iou_threshold))
+
+    def iof(box: list[int]) -> Fraction:
+        x, y, w, h = crowd["bbox"]
+        iw = max(0, min(box[0] + box[2], x + w) - max(box[0], x))
+        ih = max(0, min(box[1] + box[3], y + h) - max(box[1], y))
+        return Fraction(iw * ih, box[2] * box[3])
+
+    def by(overlap: Any) -> dict[str, str]:
+        return {
+            str(i): "ignored" if overlap(d["bbox"]) >= t else "FP"
+            for i, d in enumerate(_dets(case))
+        }
+
+    rules = [by(iof), by(lambda b: iou_xywh(b, crowd["bbox"])), by(lambda b: Fraction(0))]
+    predicted = [a["predicts"]["outcomes"] for a in case["alternatives"]]
+    assert predicted == rules
+    assert len({json.dumps(p, sort_keys=True) for p in predicted}) == 3
 
 
 def test_scores_lie_exactly_on_bin_edges(

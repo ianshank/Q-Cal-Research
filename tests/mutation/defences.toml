@@ -534,3 +534,21 @@ finding = "re-putting identical bytes keeps the earlier producers (review B4)"
 old = '''            producers = [*earlier, produced_by]'''
 new = '''            producers = [produced_by]'''
 tests = ["tests/unit/test_lab_predictions.py"]
+
+[[mutant]]
+id = "PRF-equal-score-separates"
+file = "src/qcal_lab/protocol_cases.py"
+finding = "equal_score_order separates input order, higher IoU and reversed input order (review B5)"
+old = '''    b_better = case.det([side + _UNIT, 0, side, side], 0.8)
+    b_worse = case.det([side + _UNIT, 0, side, worse], 0.8)'''
+new = '''    b_worse = case.det([side + _UNIT, 0, side, worse], 0.8)
+    b_better = case.det([side + _UNIT, 0, side, side], 0.8)'''
+tests = ["tests/unit/test_lab_protocol_cases.py"]
+
+[[mutant]]
+id = "PRF-crowd-iof"
+file = "src/qcal_lab/protocol_cases.py"
+finding = "crowd_only_overlap separates IoF from IoU against crowd regions (review N7)"
+old = '''    inside = case.det([_UNIT, _UNIT, _UNIT, _UNIT], 0.7)'''
+new = '''    inside = case.det([0, 0, region, region], 0.7)'''
+tests = ["tests/unit/test_lab_protocol_cases.py"]

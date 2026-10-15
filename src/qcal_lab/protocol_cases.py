@@ -36,6 +36,8 @@ SUFFIX: Final = ".json"
 PREDICATES: Final = frozenset({"outcomes", "bins", "classes_in_mean", "threshold"})
 #: Every case's object side (pixels) is a multiple of this, so IoUs are exact fractions.
 _UNIT: Final = 10
+#: The IoU of crowd_only_overlap's inside box with its crowd region (a unit box in 5 x 5).
+_CROWD_INSIDE_IOU: Final = Fraction(1, 25)
 #: The object two equal-score detections compete for: large enough that the worse overlap
 #: stays below 1 for any threshold the settings allow.
 _COMPETE_SIDE: Final = 10 * _UNIT
@@ -84,9 +86,11 @@ class CaseSettings:
             problems.append("the threshold grid must stop below 1 (no score lies above it)")
         elif _worse_height(self.iou_threshold) >= _COMPETE_SIDE:
             problems.append("iou_threshold is too close to 1 for equal_score_order")
+        elif _exact(self.iou_threshold) <= _CROWD_INSIDE_IOU:
+            problems.append("iou_threshold is too small for crowd_only_overlap")
         side = _UNIT * _exact(self.iou_threshold).denominator if not problems else 0
         cells = math.ceil(math.sqrt(self.max_detections + 1))
-        needed = max(side, _COMPETE_SIDE) + _UNIT
+        needed = max(side + _UNIT, 2 * _COMPETE_SIDE + _UNIT)  # equal_score_order: two objects
         if min(self.image_width, self.image_height) < max(needed, 2 * cells):
             problems.append("the image is too small for the cases")
         return problems
@@ -174,7 +178,11 @@ def iou_xywh(a: list[int], b: list[int]) -> Fraction:
 
 def iou_at_threshold(settings: CaseSettings) -> Case:
     """A detection whose IoU with its object is exactly the threshold."""
-    case = Case("iou_at_threshold", "a match needs IoU >= t, or IoU > t")
+    case = Case(
+        "iou_at_threshold",
+        "a match needs IoU >= t, or IoU > t (IoU of [x, y, w, h] boxes without a +1 on widths, "
+        "as COCO computes it; with +1 the IoU here exceeds t and the case does not separate)",
+    )
     ratio = _exact(settings.iou_threshold)  # p/q: an object q units wide, a detection p wide
     side = _UNIT * ratio.denominator
     target = case.gt([_UNIT, _UNIT, side, _UNIT])
@@ -185,31 +193,58 @@ def iou_at_threshold(settings: CaseSettings) -> Case:
 
 
 def equal_score_order(settings: CaseSettings) -> Case:
-    """Two detections with one score compete for one object; the worse overlap comes first."""
-    case = Case("equal_score_order", "greedy order among equal scores: input order, or best IoU")
-    side = _COMPETE_SIDE
-    target = case.gt([_UNIT, _UNIT, side, side])
-    first = case.det([_UNIT, _UNIT, side, _worse_height(settings.iou_threshold)], 0.8)
-    second = case.det([_UNIT, _UNIT, side, side], 0.8)
-    case.alternative(
-        "a stable sort by score: input order breaks ties",
-        outcomes={str(first): f"TP:{target}", str(second): "FP"},
+    """Two objects, each wanted by two detections of one score. For the first object the
+    worse overlap comes first in input order; for the second, the better one does, so input
+    order, best IoU and reversed input order each give different matches."""
+    case = Case(
+        "equal_score_order",
+        "greedy matching among equal scores follows input order, the higher IoU, or reversed "
+        "input order (e.g. a reversed ascending argsort)",
     )
+    side, worse = _COMPETE_SIDE, _worse_height(settings.iou_threshold)
+    left = case.gt([0, 0, side, side])
+    right = case.gt([side + _UNIT, 0, side, side])
+    a_worse = case.det([0, 0, side, worse], 0.8)
+    a_better = case.det([0, 0, side, side], 0.8)
+    b_better = case.det([side + _UNIT, 0, side, side], 0.8)
+    b_worse = case.det([side + _UNIT, 0, side, worse], 0.8)
+
+    def outcomes(*winners: int) -> dict[str, str]:
+        target = {a_worse: left, a_better: left, b_better: right, b_worse: right}
+        return {str(d): f"TP:{target[d]}" if d in winners else "FP" for d in sorted(target)}
+
     case.alternative(
-        "ties go to the higher IoU", outcomes={str(first): "FP", str(second): f"TP:{target}"}
+        "input order breaks ties (a stable sort)", outcomes=outcomes(a_worse, b_better)
     )
+    case.alternative("the higher IoU wins a tie", outcomes=outcomes(a_better, b_better))
+    case.alternative("reversed input order breaks ties", outcomes=outcomes(a_better, b_worse))
     return case
 
 
-def crowd_only_overlap(settings: CaseSettings) -> Case:  # noqa: ARG001 - uniform builder signature
-    """A detection that overlaps only a crowd region."""
+def crowd_only_overlap(settings: CaseSettings) -> Case:  # noqa: ARG001 - uniform signature
+    """Detections that overlap only a crowd region: one inside it (IoF 1, IoU small), one
+    covering it (IoU 1)."""
     case = Case(
-        "crowd_only_overlap", "a detection on a crowd region is ignored, or a false positive"
+        "crowd_only_overlap",
+        "a detection on a crowd region is ignored when its intersection over its own area "
+        "(IoF) reaches t, ignored only when its IoU does, or a false positive",
     )
-    case.gt([0, 0, 5 * _UNIT, 5 * _UNIT], crowd=True)
+    region = 5 * _UNIT
+    case.gt([0, 0, region, region], crowd=True)
+    covering = case.det([0, 0, region, region], 0.8)
     inside = case.det([_UNIT, _UNIT, _UNIT, _UNIT], 0.7)
-    case.alternative("crowd regions absorb detections", outcomes={str(inside): "ignored"})
-    case.alternative("crowd regions are not ground truth", outcomes={str(inside): "FP"})
+    case.alternative(
+        "IoF against crowd regions; a match is ignored (pycocotools)",
+        outcomes={str(covering): "ignored", str(inside): "ignored"},
+    )
+    case.alternative(
+        "IoU against crowd regions; a match is ignored",
+        outcomes={str(covering): "ignored", str(inside): "FP"},
+    )
+    case.alternative(
+        "crowd regions are not ground truth",
+        outcomes={str(covering): "FP", str(inside): "FP"},
+    )
     return case
 
 
@@ -270,7 +305,11 @@ def ties_at_max_detections(settings: CaseSettings) -> Case:
 
 def threshold_selection_ties(settings: CaseSettings) -> Case:
     """Every score lies above the grid, so every threshold keeps the same detections."""
-    case = Case("threshold_selection_ties", "a tie between thresholds keeps the lowest, or highest")
+    case = Case(
+        "threshold_selection_ties",
+        "a grid search over thresholds (calibration or operating alike) that ties keeps the "
+        "lowest tied threshold, or the highest",
+    )
     score = (settings.grid[-1] + 1.0) / 2
     for column in range(2):
         x = column * 2 * _UNIT

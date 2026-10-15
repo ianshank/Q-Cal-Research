@@ -3,15 +3,26 @@
     {
       "predicts": {
         "outcomes": {
-          "0": "ignored"
+          "0": "ignored",
+          "1": "ignored"
         }
       },
-      "rule": "crowd regions absorb detections"
+      "rule": "IoF against crowd regions; a match is ignored (pycocotools)"
     },
     {
       "predicts": {
         "outcomes": {
-          "0": "FP"
+          "0": "ignored",
+          "1": "FP"
+        }
+      },
+      "rule": "IoU against crowd regions; a match is ignored"
+    },
+    {
+      "predicts": {
+        "outcomes": {
+          "0": "FP",
+          "1": "FP"
         }
       },
       "rule": "crowd regions are not ground truth"
@@ -19,6 +30,17 @@
   ],
   "case": "crowd_only_overlap",
   "detections": [
+    {
+      "bbox": [
+        0,
+        0,
+        50,
+        50
+      ],
+      "category_id": 1,
+      "image_id": 1,
+      "score": 0.8
+    },
     {
       "bbox": [
         10,
@@ -57,9 +79,9 @@
     "images": [
       {
         "file_name": "crowd_only_overlap.jpg",
-        "height": 200,
+        "height": 240,
         "id": 1,
-        "width": 200
+        "width": 240
       }
     ],
     "info": {
@@ -67,7 +89,7 @@
     }
   },
   "kind": "protocol",
-  "separates": "a detection on a crowd region is ignored, or a false positive",
+  "separates": "a detection on a crowd region is ignored when its intersection over its own area (IoF) reaches t, ignored only when its IoU does, or a false positive",
   "settings": {
     "bin_count": 25,
     "iou_threshold": 0.5,

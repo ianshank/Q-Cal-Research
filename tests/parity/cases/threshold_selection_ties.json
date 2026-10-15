@@ -77,9 +77,9 @@
     "images": [
       {
         "file_name": "threshold_selection_ties.jpg",
-        "height": 200,
+        "height": 240,
         "id": 1,
-        "width": 200
+        "width": 240
       }
     ],
     "info": {
@@ -87,7 +87,7 @@
     }
   },
   "kind": "protocol",
-  "separates": "a tie between thresholds keeps the lowest, or highest",
+  "separates": "a grid search over thresholds (calibration or operating alike) that ties keeps the lowest tied threshold, or the highest",
   "settings": {
     "bin_count": 25,
     "iou_threshold": 0.5,

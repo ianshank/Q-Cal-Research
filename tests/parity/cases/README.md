@@ -30,13 +30,13 @@ This directory is agent-owned. The oracle's answers are Ian's and go under
 
 | Case | Separates |
 |---|---|
-| `iou_at_threshold` | a match needs IoU ≥ t, or IoU > t (integer boxes, IoU exactly t) |
-| `equal_score_order` | greedy matching among equal scores follows input order, or the better IoU |
-| `crowd_only_overlap` | a detection on a crowd region is ignored, or a false positive |
+| `iou_at_threshold` | a match needs IoU ≥ t, or IoU > t (integer boxes, IoU exactly t, COCO's widths without +1) |
+| `equal_score_order` | greedy matching among equal scores follows input order, the better IoU, or reversed input order (two objects, so all three differ) |
+| `crowd_only_overlap` | a detection on a crowd region is ignored by IoF (pycocotools), ignored only by IoU, or a false positive |
 | `scores_on_bin_edges` | bins are left-closed (1.0 in the last bin), or right-closed |
 | `class_without_detections` | a class with objects but no detections is averaged in, or skipped |
 | `ties_at_max_detections` | the cut at `max_detections` keeps input order on a tie, or not |
-| `threshold_selection_ties` | a tie between grid thresholds keeps the lowest, or the highest |
+| `threshold_selection_ties` | a grid search whose thresholds all tie keeps the lowest, or the highest (calibration or operating threshold alike) |
 
 ## Before the oracle runs
 

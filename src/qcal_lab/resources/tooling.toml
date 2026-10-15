@@ -29,8 +29,8 @@ hit_iou = 0.5
 # iou_threshold, max_detections and bin_count to the oracle's before it runs; the threshold
 # grid comes from [calibration] in defaults.toml.
 directory = "tests/parity/cases"
-image_width = 200
-image_height = 200
+image_width = 240
+image_height = 240
 iou_threshold = 0.5
 max_detections = 100
 bin_count = 25
