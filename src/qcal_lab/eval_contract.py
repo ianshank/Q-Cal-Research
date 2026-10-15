@@ -144,8 +144,6 @@ def should_findings(
     for key, value in result["objectives"].items():
         if key.endswith(":all") and isinstance(value, float) and not math.isfinite(value):
             findings.append(f"objective {key} is {value!r} on a class with detections")
-    if not result["metrics"]:
-        findings.append("metrics() returned no metric")
     return findings
 
 

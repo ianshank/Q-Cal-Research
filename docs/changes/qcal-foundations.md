@@ -120,10 +120,17 @@ Verified against `50efe97`:
     checkpoints that carry none.
   - N15: `formats.py`, the header and `mmcv._ext` join the cache key.
 - **PR-F-now.**
-  - Synthetic protocol cases under `tests/parity/cases/`.
-  - `python -m qcal_lab check-eval-loop`, with PR-E's contract checks moved into
-    `src/qcal_lab/eval_contract.py`.
-  - A detector sanity-check scaffold whose values are Ian's.
+  - Synthetic protocol cases under `tests/parity/cases/`, written by
+    `python -m qcal_lab protocol-cases` (`--check` reports drift; the suite runs it). Seven
+    cases, each with the alternatives it separates and what each predicts (match outcomes,
+    bins, classes in the mean, the kept threshold). The README says how Ian records the
+    oracle's answer under `tests/parity/fixtures/protocol/`.
+  - `python -m qcal_lab check-eval-loop [--json] [--fixture] [--strict]`, with PR-E's contract
+    checks moved into `src/qcal_lab/eval_contract.py` (contract version 1). `status` gains an
+    "evaluation loop contract" item once Ian's loop loads.
+  - A detector sanity-check scaffold (`src/qcal_lab/sanity.py`): `[sanity.<detector>]`
+    `zoo_ap`, `tolerance` and `source` are empty until Ian sets them (D2); the AP measurement
+    stays off until D8. `status` reports "detector sanity check <name>", TODO until declared.
 
 ## Decisions
 1. **Branch flow.** Develop on a work-in-progress branch, then rebase onto `civ` under a new
@@ -176,6 +183,12 @@ Verified against `50efe97`:
 9. **PR-F-now.** Only pieces that need no D1-D8 decision and no EvalLoop v2 code. Expected
    outcomes are match predicates, not metric values. The bootstrap, the parity calibration
    kind and `gpu_check.sh` stay in PR-F.
+   - The case and sanity settings live in `tooling.toml`, not the hashed lab defaults: they
+     change no run, so `_effective_digest` and `config_hash` do not move for them. The commit
+     that sets the sanity values is their declaration. *Alternative:* `configs/lab.toml`,
+     which would change every run's `config_hash` for a value no run reads.
+   - The sanity check counts as ready once declared, even while NOT ASSESSED (D8): what must
+     precede a registered run is the declaration, so the value cannot be chosen afterwards.
 10. **Mutation evidence** comes from `scripts/mutation_check.py`, committed and reproducible.
     It replaces session-local scripts. A kill counts only when a named test fails.
 
@@ -195,11 +208,14 @@ Verified against `50efe97`:
   - `config_hash`, `cell_id`, `split_digest`, the predictions bytes and the record bytes do not
     move.
 - **Cache.** Cached predictions miss once (N15). No registered run exists yet.
+- **Lab commands.** `python -m qcal_lab` gains `check-eval-loop` and `protocol-cases`.
+  `status` gains the contract, sanity-check and prediction-cache items.
 - **Configuration.** New keys, each with a packaged default:
   - `policy.unicode_normalization`, `policy.strip_unicode_categories`;
   - `agent_layer.isolation_values`, `agent_layer.max_turns_limit`,
     `agent_layer.network_agent_deny_read`;
-  - `registry.lock_wait_s`, `registry.lock_poll_s`, `registry.identity_columns`.
+  - `registry.lock_wait_s`, `registry.lock_poll_s`, `registry.identity_columns`;
+  - in `tooling.toml`: `[protocol_cases]` and `[sanity.atss_r50]`.
 - **Agents.** The reproducer gains five exact commands. The scout loses read access to
   `ian_data`.
 - **Operations.**
@@ -223,7 +239,10 @@ Verified against `50efe97`:
 1. **By Oct 24:** the identity set in `qcal.toml` (`registry.identity_columns`). Keep the
    proposed science set, narrow it, or add `policy_sha256`.
 2. **By the environment spike (Oct 18-23):** whether the ATSS checkpoint carries class names.
-   If it does not, set `label_order_attested_sha256` (D2).
+   If it does not, set `label_order_attested_sha256` (D2). Also declare the sanity check:
+   `[sanity.atss_r50]` `zoo_ap`, `tolerance` and `source` in `tooling.toml`.
+   Before running the oracle on the protocol cases, confirm `[protocol_cases]`
+   `iou_threshold`, `max_detections` and `bin_count` match the oracle's.
 3. **Oct 17:** merge PR #4 with "Create a merge commit". GitHub's squash or rebase merge
    re-creates the commits with GitHub as committer, which drops the signatures. Disable those
    two buttons in the ruleset.
@@ -259,6 +278,9 @@ About 1.8: S1 0.2, S2 0.3, S3 0.2, S4 0.5, S5 0.2, agent-owned commits 0.25, sig
   - `test_run_identity_and_formats.py` for the lab follow-ups.
 - **`tests/integration/test_repository_layout.py`:** the anchored exclusion; the workflows'
   `qcal` commands parse.
+- **`tests/unit/test_lab_eval_contract.py`, `test_lab_protocol_cases.py`,
+  `test_lab_sanity.py`:** the PR-F pieces; each protocol case's geometry is checked with exact
+  fractions.
 - **`tests/mutation/defences.toml`:** one mutant per defence.
 
 ## Tasks

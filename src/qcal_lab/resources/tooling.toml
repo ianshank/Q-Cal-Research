@@ -22,3 +22,24 @@ env_collectors = ["python", "packages"]
 [fixture_eval]
 # The fixture loop's notion of "found": a fixture-only stand-in, not an evaluation threshold.
 hit_iou = 0.5
+
+[protocol_cases]
+# Synthetic, protocol-separating inputs (`python -m qcal_lab protocol-cases`): Ian runs the
+# oracle on them (tests/parity/cases/README.md). Tooling: they change no run. Set
+# iou_threshold, max_detections and bin_count to the oracle's before it runs; the threshold
+# grid comes from [calibration] in defaults.toml.
+directory = "tests/parity/cases"
+image_width = 200
+image_height = 200
+iou_threshold = 0.5
+max_detections = 100
+bin_count = 25
+
+[sanity.atss_r50]
+# Detector sanity check (D2; src/qcal_lab/sanity.py): the model zoo's box AP for the chosen
+# checkpoint in pycocotools units ([0, 1]: 39.4 AP is 0.394), how far the raw AP may be from
+# it, and where the value is published. Ian sets all three before the environment spike; the
+# commit that sets them is the declaration. Pass/fail only: it never chooses a checkpoint.
+zoo_ap = ""
+tolerance = ""
+source = ""

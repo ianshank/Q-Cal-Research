@@ -123,6 +123,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--strict", action="store_true", help="exit 1 unless PASS (NOT ASSESSED included)"
     )
 
+    cases = sub.add_parser(
+        "protocol-cases", help="write the synthetic protocol cases Ian runs the oracle on"
+    )
+    cases.add_argument("--out", type=Path, help="directory (default: protocol_cases.directory)")
+    cases.add_argument(
+        "--check", action="store_true", help="exit 1 if the committed cases have drifted"
+    )
+
     status = sub.add_parser("status", help="what still blocks a registered Phase 1 run")
     status.add_argument("--json", action="store_true")
     status.add_argument("--strict", action="store_true", help="exit 1 unless ready")
@@ -225,6 +233,25 @@ def _cmd_check_eval_loop(args: argparse.Namespace, root: Path, out: IO[str]) -> 
     return EXIT_FAILED if failed else EXIT_OK
 
 
+def _cmd_protocol_cases(args: argparse.Namespace, root: Path, out: IO[str]) -> int:
+    from qcal_lab.protocol_cases import CaseSettings, build_cases, drift, write_cases
+
+    try:
+        settings = CaseSettings.load(load_lab_config(root))
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
+    directory = args.out if args.out is not None else root / settings.directory
+    files = build_cases(settings)
+    if args.check:
+        problems = drift(directory, files)
+        out.write("".join(f"{p}\n" for p in problems))
+        out.write(f"protocol cases: {verdict(not problems)}\n")
+        return EXIT_FAILED if problems else EXIT_OK
+    written = write_cases(directory, files)
+    out.write(f"protocol cases: {len(written)} written, {len(files) - len(written)} unchanged\n")
+    return EXIT_OK
+
+
 def _cmd_splits(args: argparse.Namespace, root: Path, out: IO[str]) -> int:
     config = load_config(root)
     dataset = load_coco(args.annotations)
@@ -289,6 +316,7 @@ _COMMANDS = {
     "status": _cmd_status,
     "splits": _cmd_splits,
     "check-eval-loop": _cmd_check_eval_loop,
+    "protocol-cases": _cmd_protocol_cases,
 }
 
 

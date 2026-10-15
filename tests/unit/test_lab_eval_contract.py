@@ -87,6 +87,22 @@ def test_should_findings_are_reported_not_failed(monkeypatch: pytest.MonkeyPatch
     assert any("is nan on a class with detections" in f for f in report.should)
 
 
+def test_a_loop_without_metrics_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Silent(NaNObjective):
+        def threshold_objective(self, predictions, ground_truth, *, label, stage):  # type: ignore[no-untyped-def]
+            return 0.0
+
+        def metrics(self, predictions, ground_truth):  # type: ignore[no-untyped-def]
+            return {}
+
+    _with_loop(monkeypatch, Silent)
+    report = _check()
+    assert (report.verdict, report.must) == (
+        "FAIL",
+        ["metrics: the evaluation loop returned no metrics"],
+    )
+
+
 def test_a_factory_returning_something_else_is_caught() -> None:
     lab = load_lab_config(REPO_ROOT)
     ground_truth = eval_contract.contract_fixture(smoke_settings())

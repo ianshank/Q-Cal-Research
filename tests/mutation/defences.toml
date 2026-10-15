@@ -398,3 +398,59 @@ finding = "two loops from the same factory must agree"
 old = '''        problems.append("two loops from the same factory disagree")'''
 new = '''        pass'''
 tests = ["tests/unit/test_lab_eval_contract.py"]
+
+[[mutant]]
+id = "PRF-iou-exact"
+file = "src/qcal_lab/protocol_cases.py"
+finding = "the IoU case sits exactly on the threshold"
+old = '''    found = case.det([_UNIT, _UNIT, _UNIT * ratio.numerator, _UNIT], 0.9)'''
+new = '''    found = case.det([_UNIT, _UNIT, _UNIT * ratio.numerator + 1, _UNIT], 0.9)'''
+tests = ["tests/unit/test_lab_protocol_cases.py"]
+
+[[mutant]]
+id = "PRF-rank-tie"
+file = "src/qcal_lab/protocol_cases.py"
+finding = "the last kept and the first cut detection share a score"
+old = '''    scores[-1] = scores[-2]  # ranks max_detections and max_detections + 1 tie'''
+new = '''    pass'''
+tests = ["tests/unit/test_lab_protocol_cases.py"]
+
+[[mutant]]
+id = "PRF-drift-extra"
+file = "src/qcal_lab/protocol_cases.py"
+finding = "a case file the generator does not write is drift"
+old = '''    problems += [f"{name}: not generated" for name in sorted(present - set(files))]'''
+new = '''    problems += []'''
+tests = ["tests/unit/test_lab_protocol_cases.py"]
+
+[[mutant]]
+id = "PRF-drift-bytes"
+file = "src/qcal_lab/protocol_cases.py"
+finding = "a hand-edited case is drift"
+old = '''        if (directory / name).read_bytes() != files[name]'''
+new = '''        if not (directory / name).is_file()'''
+tests = ["tests/unit/test_lab_protocol_cases.py"]
+
+[[mutant]]
+id = "PRF-sanity-tolerance"
+file = "src/qcal_lab/sanity.py"
+finding = "the sanity tolerance is inclusive"
+old = '''    if abs(measured - zoo_ap) <= tolerance:'''
+new = '''    if abs(measured - zoo_ap) < tolerance:'''
+tests = ["tests/unit/test_lab_sanity.py"]
+
+[[mutant]]
+id = "PRF-sanity-d8"
+file = "src/qcal_lab/sanity.py"
+finding = "no AP is measured until D8"
+old = '''    if not AP_MEASUREMENT_ENABLED:'''
+new = '''    if False:'''
+tests = ["tests/unit/test_lab_sanity.py"]
+
+[[mutant]]
+id = "PRF-sanity-declared"
+file = "src/qcal_lab/status.py"
+finding = "a registered run waits for the sanity check's declaration"
+old = '''    ok = sanity.declared and sanity.verdict != FAIL'''
+new = '''    ok = sanity.verdict != FAIL'''
+tests = ["tests/unit/test_lab_sanity.py"]

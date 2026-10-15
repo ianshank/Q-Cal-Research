@@ -90,7 +90,9 @@ The science code has its own layers: `src/qcal_lab/resources/defaults.toml` unde
 `configs/lab.toml`, both hashed into every run's `config_hash`. Each precision names its torch
 switches under `[numerics.regimes.<precision>]`. Settings that never change what a run
 computes (the smoke test, the fixture stand-ins) live in `src/qcal_lab/resources/tooling.toml`,
-which is not hashed. `python -m qcal_lab status` lists what still blocks a registered run.
+which is not hashed. `python -m qcal_lab status` lists what still blocks a registered run;
+`python -m qcal_lab check-eval-loop` runs the evaluation-loop contract on Ian's loop, and
+`python -m qcal_lab protocol-cases` writes the synthetic cases Ian runs the oracle on.
 
 ## Tests
 

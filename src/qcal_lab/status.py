@@ -14,7 +14,7 @@ from typing import Any
 from qcal.config import Config, ConfigError
 from qcal.integrity.leakage import check_leakage
 from qcal.registry.executor import sha256_file
-from qcal.reports import verdict
+from qcal.reports import FAIL, verdict
 from qcal_lab.config import LabConfig
 from qcal_lab.evaluation import HandwrittenMissingError, load_eval_loop
 from qcal_lab.models import detector_problems
@@ -79,6 +79,7 @@ def _detectors(report: StatusReport, lab: LabConfig) -> None:
         except ConfigError as exc:
             problems.append(str(exc))
         report.add(f"detector {name}", ok=not problems, detail="; ".join(problems) or "configured")
+        _sanity(report, name)
 
 
 def _contract(report: StatusReport, lab: LabConfig, qcal_config: Config) -> None:
@@ -89,6 +90,20 @@ def _contract(report: StatusReport, lab: LabConfig, qcal_config: Config) -> None
     contract = check_eval_loop(lab, qcal_config, smoke_settings())
     detail = contract.verdict + (f": {contract.must[0]}" if contract.must else "")
     report.add("evaluation loop contract", ok=contract.passed, detail=detail)
+
+
+def _sanity(report: StatusReport, name: str) -> None:
+    """The detector sanity check (D2) must be declared before a registered run, so it cannot
+    be chosen after the fact; until D8 enables the measurement it stays NOT ASSESSED."""
+    from qcal_lab.sanity import SanityError, check_detector
+
+    try:
+        sanity = check_detector(name)
+    except SanityError as exc:
+        report.add(f"detector sanity check {name}", ok=False, detail=str(exc))
+        return
+    ok = sanity.declared and sanity.verdict != FAIL
+    report.add(f"detector sanity check {name}", ok=ok, detail=sanity.render_text())
 
 
 def _quarantine(report: StatusReport, lab: LabConfig) -> None:
