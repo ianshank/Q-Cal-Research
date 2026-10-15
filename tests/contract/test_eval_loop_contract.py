@@ -19,10 +19,10 @@ import pytest
 
 from qcal.config import load_config
 from qcal_lab.config import load_lab_config
+from qcal_lab.eval_contract import fixture_inputs, must_problems
 from qcal_lab.evaluation import EvalLoop, HandwrittenMissingError, load_eval_loop
 from qcal_lab.fixture_eval import build as build_fixture_loop
 from tests.conftest import REPO_ROOT
-from tests.contract.eval_loop_checks import fixture_inputs, must_problems
 from tests.lab_support import fixture_ground_truth
 
 pytestmark = pytest.mark.rule("C4")

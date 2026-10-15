@@ -112,6 +112,17 @@ def build_parser() -> argparse.ArgumentParser:
     smoke.add_argument("--workdir", type=Path, help="keep the smoke project here")
     smoke.add_argument("--json", action="store_true")
 
+    contract = sub.add_parser(
+        "check-eval-loop", help="run the EvalLoop contract on Ian's loop (or the fixture's)"
+    )
+    contract.add_argument("--json", action="store_true")
+    contract.add_argument(
+        "--fixture", action="store_true", help="check the fixture stand-in (validates the checks)"
+    )
+    contract.add_argument(
+        "--strict", action="store_true", help="exit 1 unless PASS (NOT ASSESSED included)"
+    )
+
     status = sub.add_parser("status", help="what still blocks a registered Phase 1 run")
     status.add_argument("--json", action="store_true")
     status.add_argument("--strict", action="store_true", help="exit 1 unless ready")
@@ -200,6 +211,20 @@ def _cmd_status(args: argparse.Namespace, root: Path, out: IO[str]) -> int:
     return EXIT_FAILED if args.strict and not report.passed else EXIT_OK
 
 
+def _cmd_check_eval_loop(args: argparse.Namespace, root: Path, out: IO[str]) -> int:
+    from qcal_lab.eval_contract import FAIL, check_eval_loop
+    from qcal_lab.smoke import smoke_settings
+
+    report = check_eval_loop(
+        load_lab_config(root), load_config(root), smoke_settings(), fixture=args.fixture
+    )
+    out.write(
+        (json.dumps(report.to_dict(), indent=2) if args.json else report.render_text()) + "\n"
+    )
+    failed = report.verdict == FAIL or (args.strict and not report.passed)
+    return EXIT_FAILED if failed else EXIT_OK
+
+
 def _cmd_splits(args: argparse.Namespace, root: Path, out: IO[str]) -> int:
     config = load_config(root)
     dataset = load_coco(args.annotations)
@@ -259,7 +284,12 @@ def main(argv: Sequence[str] | None = None, *, out: IO[str] | None = None) -> in
         return EXIT_FAILED
 
 
-_COMMANDS = {"smoke": _cmd_smoke, "status": _cmd_status, "splits": _cmd_splits}
+_COMMANDS = {
+    "smoke": _cmd_smoke,
+    "status": _cmd_status,
+    "splits": _cmd_splits,
+    "check-eval-loop": _cmd_check_eval_loop,
+}
 
 
 __all__ = [

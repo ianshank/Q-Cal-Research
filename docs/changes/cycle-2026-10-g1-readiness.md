@@ -392,9 +392,10 @@ the fiveai outputs exist. Highest value per Ian-hour in the plan.
   one per detection, finite in [0, 1]; objective is a float for every label × stage incl. an
   empty class; metrics pass `check_metrics`; two calls and two builds give bitwise-equal
   canonical JSON; inputs not mutated; identical bytes under `PYTHONHASHSEED` 0 and 1; no hidden
-  I/O (`sys.addaudithook` sees no manifest/annotation reads, no network). Checks live in
-  `tests/contract/eval_loop_checks.py` until PR-F moves them into `qcal_lab.evaluation` for the
-  `check-eval-loop` command (one implementation, two consumers).
+  I/O (`sys.addaudithook` sees no manifest/annotation reads, no network). The checks live in
+  `src/qcal_lab/eval_contract.py` (moved there in wave 3, docs/changes/qcal-foundations.md) and
+  back both the suite and `python -m qcal_lab check-eval-loop` (one implementation, two
+  consumers).
 - `tests/e2e/test_lab_registry_loop.py` (Q5): a git-initialised smoke project through
   subprocess `python -I -m qcal`: `run-batch` → `index` → `audit --strict` → `tables` →
   `CLAIMS.md` citing `value (run:<id>:<metric>)` → `claims` PASS → tamper table (FAIL) → edit a

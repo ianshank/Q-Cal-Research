@@ -81,6 +81,16 @@ def _detectors(report: StatusReport, lab: LabConfig) -> None:
         report.add(f"detector {name}", ok=not problems, detail="; ".join(problems) or "configured")
 
 
+def _contract(report: StatusReport, lab: LabConfig, qcal_config: Config) -> None:
+    """The EvalLoop contract on Ian's loop, as ``python -m qcal_lab check-eval-loop`` runs it."""
+    from qcal_lab.eval_contract import check_eval_loop
+    from qcal_lab.smoke import smoke_settings
+
+    contract = check_eval_loop(lab, qcal_config, smoke_settings())
+    detail = contract.verdict + (f": {contract.must[0]}" if contract.must else "")
+    report.add("evaluation loop contract", ok=contract.passed, detail=detail)
+
+
 def _quarantine(report: StatusReport, lab: LabConfig) -> None:
     """Quarantined predictions are a conflict nobody explained: a detector that is not
     deterministic, or a key that misses an input. Ian looks before registered runs."""
@@ -123,6 +133,7 @@ def build_status(qcal_config: Config, lab: LabConfig) -> StatusReport:
     try:
         load_eval_loop(lab, qcal_config)
         report.add("evaluation loop (Ian)", ok=True, detail=lab.text("eval_loop.module"))
+        _contract(report, lab, qcal_config)
     except HandwrittenMissingError:
         missing = f"{lab.text('eval_loop.module')} not written"
         report.add("evaluation loop (Ian)", ok=False, detail=missing)

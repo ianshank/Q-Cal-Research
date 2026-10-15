@@ -358,3 +358,43 @@ finding = "the cache key holds mmcv's compiled ops, not only its version string"
 old = '''        "mmcv_ext_sha256": mmcv_extension_digest(),'''
 new = '''        "mmcv_ext_sha256": "",'''
 tests = ["tests/unit/test_lab_models.py"]
+
+[[mutant]]
+id = "PRF-not-assessed"
+file = "src/qcal_lab/eval_contract.py"
+finding = "an absent loop is NOT ASSESSED, never PASS"
+old = '''            return ContractReport(name, NOT_ASSESSED)'''
+new = '''            return ContractReport(name, PASS)'''
+tests = ["tests/unit/test_lab_eval_contract.py"]
+
+[[mutant]]
+id = "PRF-strict-exit"
+file = "src/qcal_lab/cli.py"
+finding = "check-eval-loop --strict fails unless the contract passed"
+old = '''    failed = report.verdict == FAIL or (args.strict and not report.passed)'''
+new = '''    failed = report.verdict == FAIL'''
+tests = ["tests/unit/test_lab_eval_contract.py"]
+
+[[mutant]]
+id = "PRF-must-stability"
+file = "src/qcal_lab/eval_contract.py"
+finding = "two calls on the same loop must agree"
+old = '''        problems.append("two calls on the same loop disagree")'''
+new = '''        pass'''
+tests = ["tests/unit/test_lab_eval_contract.py", "tests/contract/test_eval_loop_contract.py"]
+
+[[mutant]]
+id = "PRF-must-mutation"
+file = "src/qcal_lab/eval_contract.py"
+finding = "a loop may not mutate its inputs"
+old = '''        problems.append("the loop mutated its inputs")'''
+new = '''        pass'''
+tests = ["tests/unit/test_lab_eval_contract.py"]
+
+[[mutant]]
+id = "PRF-second-build"
+file = "src/qcal_lab/eval_contract.py"
+finding = "two loops from the same factory must agree"
+old = '''        problems.append("two loops from the same factory disagree")'''
+new = '''        pass'''
+tests = ["tests/unit/test_lab_eval_contract.py"]

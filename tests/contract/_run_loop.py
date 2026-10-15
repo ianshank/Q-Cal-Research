@@ -14,9 +14,9 @@ import sys
 
 from qcal.config import load_config
 from qcal_lab.config import load_lab_config
+from qcal_lab.eval_contract import canonical, fixture_inputs, outputs
 from qcal_lab.evaluation import load_eval_loop
 from tests.conftest import REPO_ROOT
-from tests.contract.eval_loop_checks import canonical, fixture_inputs, outputs
 from tests.lab_support import fixture_ground_truth
 
 
