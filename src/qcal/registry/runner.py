@@ -388,11 +388,15 @@ class Runner:
                         self.store.write(written[0])
                         marker.unlink(missing_ok=True)  # only once the record exists
                 break
-            except BaseException as late:  # noqa: BLE001 - re-raised below, after the record
+            except KeyboardInterrupt as late:  # re-raised below, after the record
                 if interrupted is None:
                     interrupted = late
                 if written:
                     break
+            # Any other error (an unreadable log, a full disk) propagates as itself: retrying
+            # cannot help, and the marker it leaves is what the audit reports.
+        if not written:  # interrupted on every attempt before the record was built
+            raise interrupted or RuntimeError(f"run {run_id}: no record was written")
         record = written[0]
         if record.status != self.config.str_value("registry.ok_status"):
             _log.error("run %s failed (%s): %s", run_id, record.failure_kind, record.error)

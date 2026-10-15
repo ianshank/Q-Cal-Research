@@ -1014,3 +1014,80 @@ def test_workers_a_finished_program_left_behind_end_with_it(tmp_path: Path, conf
     )
     assert executor.execute(make_spec(config.root)).ok
     assert _wait_until_dead(int(pid_file.read_text()))
+
+
+#: Writes an ok envelope with an artifact, leaves a child in its group, and exits 0.
+EXITS_LEAVING_A_CHILD = """
+import json, pathlib, subprocess, sys
+result, pidfile = sys.argv[1], sys.argv[2]
+artifact = pathlib.Path("runs/results/out.txt")
+artifact.parent.mkdir(parents=True, exist_ok=True)
+artifact.write_text("done")
+child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+pathlib.Path(pidfile).write_text(str(child.pid))
+json.dump({"format": "qcal.executor_result", "version": 1, "status": "ok",
+           "metrics": {"AP": 1.0}, "environment": {"torch": "2.9"},
+           "artifacts": [{"path": str(artifact), "kind": "out"}]}, open(result, "w"))
+"""
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("where", ["ending-stragglers", "reading-the-result"])
+def test_an_interrupt_after_the_program_exited_still_reads_its_envelope(
+    tmp_path: Path, config: Config, monkeypatch: pytest.MonkeyPatch, where: str
+) -> None:
+    """Ctrl-C while the launcher ends the program's stragglers or reads its result is
+    recorded like any interrupt: the stragglers die, the envelope is read, no metrics."""
+    program = script(tmp_path, EXITS_LEAVING_A_CHILD)
+    pidfile = tmp_path / "child.pid"
+    spec = make_spec(config.root)
+    executor = make_executor(
+        config.root, [sys.executable, str(program), "{result_path}", str(pidfile)]
+    )
+    executor.kill_grace_s = 2.0
+    fired = [False]
+
+    def once(real: Any) -> Any:
+        def interrupted_first(*args: Any, **kwargs: Any) -> Any:
+            if not fired[0]:
+                fired[0] = True
+                raise KeyboardInterrupt
+            return real(*args, **kwargs)
+
+        return interrupted_first
+
+    if where == "ending-stragglers":
+        monkeypatch.setattr(executor, "_end_stragglers", once(executor._end_stragglers))
+    else:
+        monkeypatch.setattr(executor_module, "read_result", once(executor_module.read_result))
+    result = _execute_or_fail(executor, spec)
+    assert fired[0]
+    assert isinstance(result.interrupted, KeyboardInterrupt)
+    assert (result.returncode, result.failure_kind, result.metrics) == (-1, "interrupted", {})
+    assert result.environment == {"torch": "2.9"}
+    assert [a.path for a in result.artifacts] == ["runs/results/out.txt"]
+    assert _wait_until_dead(int(pidfile.read_text()))
+
+
+def test_an_interrupt_before_the_program_started_propagates(
+    tmp_path: Path, config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def interrupted(*args: Any, **kwargs: Any) -> Any:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(executor_module.subprocess, "Popen", interrupted)
+    executor = make_executor(config.root, [sys.executable, "-c", "pass"])
+    with pytest.raises(KeyboardInterrupt):
+        executor.execute(make_spec(config.root))
+
+
+def test_an_os_error_after_the_program_started_is_not_called_a_start_failure(
+    tmp_path: Path, config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def unreadable(*args: Any, **kwargs: Any) -> Any:
+        raise OSError("disk gone")
+
+    monkeypatch.setattr(executor_module, "read_result", unreadable)
+    executor = make_executor(config.root, [sys.executable, "-c", "pass"])
+    with pytest.raises(OSError, match="disk gone"):
+        executor.execute(make_spec(config.root))

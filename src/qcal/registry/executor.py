@@ -254,6 +254,7 @@ class SubprocessExecutor:
         spec.result_path.parent.mkdir(parents=True, exist_ok=True)
         _log.info("run %s: %s", spec.run_id, " ".join(argv))
         started = time.monotonic()
+        proc: subprocess.Popen[bytes] | None = None
         try:
             with spec.log_path.open("w", encoding="utf-8") as log:
                 proc = subprocess.Popen(
@@ -264,16 +265,24 @@ class SubprocessExecutor:
                     stderr=subprocess.STDOUT,
                     start_new_session=True,  # its own process group, killed as a whole
                 )
+            returncode, usage, timed_out, interrupt = self._wait(proc)
+            if interrupt is None:
+                self._end_stragglers(proc.pid)  # before any artifact is hashed
+                result = read_result(spec.result_path, self.root, returncode)
         except OSError as exc:
+            if proc is not None:
+                raise
             return ExecutionResult(
                 -1, error=f"cannot start {argv[0]}: {exc}", failure_kind=UNKNOWN_KIND
             )
-        returncode, usage, timed_out, interrupt = self._wait(proc)
+        except KeyboardInterrupt as exc:  # Ctrl-C or LauncherSignal outside _wait
+            if proc is None:
+                raise  # nothing started: nothing to end or read
+            returncode, timed_out, interrupt = -1, False, exc
+            usage = None
         if interrupt is not None:
-            return self._after_interrupt(proc, spec, started, interrupt)
-        self._end_stragglers(proc.pid)  # before any artifact is hashed
+            return self._after_interrupt(proc, spec, started, interrupt, usage=usage)
         measured = _resources(time.monotonic() - started, usage)
-        result = read_result(spec.result_path, self.root, returncode)
         result.resources = {**result.resources, **measured}  # measured values always win
         if timed_out:
             result.returncode, result.metrics = -1, {}
@@ -311,12 +320,16 @@ class SubprocessExecutor:
         spec: RunSpec,
         started: float,
         interrupt: BaseException,
+        *,
+        usage: Any = None,
     ) -> ExecutionResult:
         """End the program after the launcher was interrupted, then read what it left.
 
         The run is failed and keeps no metrics, but its partial artifacts and environment are
         kept, as after a timeout. While this runs, a further SIGINT, SIGTERM or SIGHUP kills
         the group at once and is absorbed, so pressing Ctrl-C again cannot lose the envelope.
+        The interrupt may also come after the program exited (while its stragglers are ended
+        or its result is read): the leader is then already reaped, and ``usage`` is its own.
         """
         _log.error(
             "launcher interrupted (%s); terminating the program's process group",
@@ -324,10 +337,11 @@ class SubprocessExecutor:
         )
         with _escalation(proc.pid) as hurry:
             try:
-                returncode, usage = self._terminate(proc)
+                returncode, reaped_usage = self._terminate(proc)
             except BaseException:  # noqa: BLE001 - interrupted again: already killed and reaped
                 returncode = proc.returncode if proc.returncode is not None else -signal.SIGKILL
-                usage = None
+                reaped_usage = None
+            usage = reaped_usage if reaped_usage is not None else usage
             self._end_stragglers(proc.pid, hurry=hurry.is_set())
             result = read_result(spec.result_path, self.root, returncode=-1)
         result.resources = {**result.resources, **_resources(time.monotonic() - started, usage)}

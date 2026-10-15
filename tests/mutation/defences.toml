@@ -454,3 +454,19 @@ finding = "a registered run waits for the sanity check's declaration"
 old = '''    ok = sanity.declared and sanity.verdict != FAIL'''
 new = '''    ok = sanity.verdict != FAIL'''
 tests = ["tests/unit/test_lab_sanity.py"]
+
+[[mutant]]
+id = "S4-post-exit-interrupt"
+file = "src/qcal/registry/executor.py"
+finding = "an interrupt after the program exited still ends its stragglers and reads its envelope (review B2)"
+old = '''        except KeyboardInterrupt as exc:  # Ctrl-C or LauncherSignal outside _wait'''
+new = '''        except ZeroDivisionError as exc:  # Ctrl-C or LauncherSignal outside _wait'''
+tests = ["tests/unit/test_executor.py"]
+
+[[mutant]]
+id = "S4-record-error-not-retried"
+file = "src/qcal/registry/runner.py"
+finding = "an error building the record propagates as itself, once (review N5)"
+old = '''            except KeyboardInterrupt as late:  # re-raised below, after the record'''
+new = '''            except BaseException as late:  # re-raised below, after the record'''
+tests = ["tests/unit/test_runner.py"]

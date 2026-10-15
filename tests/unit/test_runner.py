@@ -1261,6 +1261,44 @@ def test_a_signal_landing_before_the_record_hold_still_records_the_run(
     assert list(config.path("inflight_dir").glob(f"*{MARKER_SUFFIX}")) == []
 
 
+def test_an_error_building_the_record_propagates_as_itself(
+    config: Config, fake_executor: FakeExecutor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Not retried, and not hidden behind an IndexError (advisory review N5)."""
+    from qcal.registry import runner as runner_module
+
+    calls = [0]
+
+    def unreadable(*args: Any, **kwargs: Any) -> Any:
+        calls[0] += 1
+        raise OSError("log unreadable")
+
+    monkeypatch.setattr(runner_module.Runner, "_record", unreadable)
+    runner = make_runner(config, fake_executor)
+    with pytest.raises(OSError, match="log unreadable"):
+        runner.run("C-a", 0)
+    assert calls == [1]  # retrying is for interrupts only
+    assert runner.store.load_all() == []
+    assert len(list(config.path("inflight_dir").glob(f"*{MARKER_SUFFIX}"))) == 1  # for the audit
+
+
+def test_interrupted_on_every_attempt_raises_the_interrupt(
+    config: Config, fake_executor: FakeExecutor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import contextlib
+
+    from qcal.registry import runner as runner_module
+
+    @contextlib.contextmanager
+    def always_interrupted() -> Any:
+        raise LauncherSignal("signal SIGTERM")
+        yield  # pragma: no cover - never reached
+
+    monkeypatch.setattr(runner_module, "_signals_held", always_interrupted)
+    with pytest.raises(LauncherSignal):
+        make_runner(config, fake_executor).run("C-a", 0)
+
+
 def test_a_failed_run_still_records_which_inputs_changed(config: Config) -> None:
     from qcal.registry.gates import INPUTS_READ_KEY
 
