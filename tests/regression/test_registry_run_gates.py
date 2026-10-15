@@ -169,8 +169,11 @@ def test_n4_a_stale_index_without_an_identity_column_is_refused() -> None:
 
     rows = [{"run_id": "R1"}, {"run_id": "R2"}]
     assert "regenerate it" in str(identity_problem(rows, ["definition_sha256"], core=CORE))
-    # a prefixed column no run reported is unknown alike for all of them
-    assert identity_problem(rows, ["env.raw_predictions_sha256"], core=CORE) is None
+    # a prefixed column no run reported is refused too: a misspelt identity column, or a
+    # renamed environment key, would otherwise switch the comparison off (review B3)
+    typo = identity_problem(rows, ["env.raw_prediction_sha256"], core=CORE)
+    assert "no run in R1, R2 recorded env.raw_prediction_sha256" in str(typo)
+    assert identity_problem(rows[:1], ["env.raw_prediction_sha256"], core=CORE) is None
     half = [{"run_id": "R1", "env.x": "a"}, {"run_id": "R2"}]  # one run did not report it
     assert "different env.x values" in str(identity_problem(half, ["env.x"], core=CORE))
 

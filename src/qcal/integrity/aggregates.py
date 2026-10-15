@@ -69,16 +69,22 @@ def identity_problem(
 ) -> str | None:
     """Why ``rows`` are not runs of one experiment, or ``None``.
 
-    Fails closed: a core identity column missing from the rows (a stale index) is a problem,
-    not a match. A prefixed column absent from every row is unknown alike for all of them.
-    One run is trivially one experiment.
+    Fails closed: an identity column missing from every row is a problem, not a match. For a
+    core column the index is stale; for a prefixed one (``env.*``) no run recorded it, so it is
+    misspelt in ``registry.identity_columns`` or the program stopped writing it. One run is
+    trivially one experiment.
     """
     if len(rows) < 2:
         return None
     ids = ", ".join(sorted(r["run_id"] for r in rows))
     for column in columns:
-        if column in core and rows and all(column not in row for row in rows):
-            return f"the index has no {column} column; regenerate it (qcal registry index)"
+        if all(column not in row for row in rows):
+            if column in core:
+                return f"the index has no {column} column; regenerate it (qcal registry index)"
+            return (
+                f"no run in {ids} recorded {column}: check registry.identity_columns for a "
+                "misspelling, or whether the program still writes it"
+            )
         values = sorted({row.get(column, "") for row in rows})
         if len(values) > 1:
             shown = ", ".join(v[:12] or "(none)" for v in values)

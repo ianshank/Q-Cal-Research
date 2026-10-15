@@ -172,7 +172,7 @@ id = "S4-wait-reraises"
 file = "src/qcal/registry/executor.py"
 finding = "an interrupted run keeps the program's envelope (artifacts, environment)"
 old = '''        if interrupt is not None:
-            return self._after_interrupt(proc, spec, started, interrupt)'''
+            return self._after_interrupt(proc, spec, started, interrupt, usage=usage)'''
 new = '''        if interrupt is not None:
             self._terminate(proc)
             raise interrupt'''
@@ -250,7 +250,7 @@ tests = ["tests/regression/test_registry_run_gates.py"]
 id = "S5-missing-column"
 file = "src/qcal/integrity/aggregates.py"
 finding = "a core identity column missing from the index is refused, not treated as equal"
-old = '''        if column in core and rows and all(column not in row for row in rows):'''
+old = '''        if all(column not in row for row in rows):'''
 new = '''        if False:'''
 tests = ["tests/regression/test_registry_run_gates.py"]
 
@@ -470,3 +470,11 @@ finding = "an error building the record propagates as itself, once (review N5)"
 old = '''            except KeyboardInterrupt as late:  # re-raised below, after the record'''
 new = '''            except BaseException as late:  # re-raised below, after the record'''
 tests = ["tests/unit/test_runner.py"]
+
+[[mutant]]
+id = "S5-absent-prefixed-identity"
+file = "src/qcal/integrity/aggregates.py"
+finding = "an identity column no run recorded is refused, never matched (review B3)"
+old = '''        if all(column not in row for row in rows):'''
+new = '''        if column in core and all(column not in row for row in rows):'''
+tests = ["tests/regression/test_registry_run_gates.py"]
