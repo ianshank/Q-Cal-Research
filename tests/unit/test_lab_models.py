@@ -580,27 +580,70 @@ def test_the_checkpoints_class_names_are_read_before_the_model_is_built(
 
 
 def test_a_checkpoint_without_class_names_needs_an_attestation(mmdet_setup) -> None:
-    """MMDetection would label it with COCO's names, which a model check cannot see."""
+    """MMDetection would label it with COCO's names, which a model check cannot see. Ian's
+    attestation (his declarations file) names this checkpoint and this order (review B1)."""
     s = mmdet_setup
     s.loader.meta = {}
     s.api.classes = ("person", "car")  # what init_detector's COCO fallback would claim
+    lab = lab_config(s.tmp, s.body)
+    checkpoint_sha256 = hashlib.sha256(b"weights").hexdigest()
+    digest = mmdet_module.label_order_digest(checkpoint_sha256, s.gt.category_names)
+    reads: list[str] = []
+
+    def declared(value: str) -> Any:
+        def read() -> dict[str, str]:
+            reads.append(value)
+            return {mmdet_module.ATTESTATION_SETTING: value}
+
+        return read
+
+    def build(value: str) -> Any:
+        return build_detector(
+            lab, "atss_r50", s.gt, precision="fp32", images_dir=s.images, declared=declared(value)
+        )
+
     with pytest.raises(DetectorError, match="carries no class names") as refused:
-        build_detector(
-            lab_config(s.tmp, s.body), "atss_r50", s.gt, precision="fp32", images_dir=s.images
-        )
+        build("")
     assert s.api.init_args == {}  # refused before the model was built
-    digest = mmdet_module.label_order_digest(s.gt.category_names)
-    assert digest in str(refused.value)
-    attested = s.body + f'label_order_attested_sha256 = "{digest}"\n'
-    detector = build_detector(
-        lab_config(s.tmp, attested), "atss_r50", s.gt, precision="fp32", images_dir=s.images
-    )
-    assert detector.runtime["label_map"] == "attested"
-    wrong = s.body + 'label_order_attested_sha256 = "' + "0" * 64 + '"\n'
+    assert digest not in str(refused.value)  # the value to declare is never printed
+    assert build(digest).runtime["label_map"] == "attested"
+    other_checkpoint = mmdet_module.label_order_digest("0" * 64, s.gt.category_names)
     with pytest.raises(DetectorError, match="carries no class names"):
+        build(other_checkpoint)  # attested for another checkpoint: refused
+    reordered = mmdet_module.label_order_digest(checkpoint_sha256, s.gt.category_names[::-1])
+    with pytest.raises(DetectorError, match="carries no class names"):
+        build(reordered)
+
+
+def test_an_attestation_needs_the_checkpoint_digest(mmdet_setup) -> None:
+    s = mmdet_setup
+    s.loader.meta = {}
+    unpinned = s.body.replace(
+        f'checkpoint_sha256 = "{hashlib.sha256(b"weights").hexdigest()}"\n', ""
+    )
+    with pytest.raises(DetectorError, match=r"needs detectors\.atss_r50\.checkpoint_sha256"):
         build_detector(
-            lab_config(s.tmp, wrong), "atss_r50", s.gt, precision="fp32", images_dir=s.images
+            lab_config(s.tmp, unpinned), "atss_r50", s.gt, precision="fp32", images_dir=s.images
         )
+
+
+def test_class_names_in_the_checkpoint_never_read_the_declarations(mmdet_setup) -> None:
+    s = mmdet_setup
+    s.loader.meta = {"dataset_meta": {"classes": ["c1", "c3"]}}
+    s.api.classes = ("c1", "c3")
+
+    def unreadable() -> Any:
+        raise AssertionError("declarations read for a checkpoint that names its classes")
+
+    detector = build_detector(
+        lab_config(s.tmp, s.body),
+        "atss_r50",
+        s.gt,
+        precision="fp32",
+        images_dir=s.images,
+        declared=unreadable,
+    )
+    assert detector.runtime["label_map"] == "exact"
 
 
 def test_the_built_model_must_keep_the_checkpoints_classes(mmdet_setup) -> None:

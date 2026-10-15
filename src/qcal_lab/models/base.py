@@ -23,6 +23,10 @@ class DetectorError(RuntimeError):
     """A detector cannot be built or cannot produce predictions."""
 
 
+def _nothing_declared() -> Mapping[str, Any]:
+    return {}
+
+
 @dataclass(frozen=True)
 class DetectorContext:
     name: str
@@ -31,6 +35,8 @@ class DetectorContext:
     lab: LabConfig
     precision: str
     images_dir: Path | None = None
+    #: What Ian declared for this detector (qcal_lab.declarations), read only when needed.
+    declared: Callable[[], Mapping[str, Any]] = _nothing_declared
 
 
 DetectorFactory = Callable[[DetectorContext], Detector]
@@ -152,6 +158,7 @@ def build_detector(
     *,
     precision: str,
     images_dir: Path | None = None,
+    declared: Callable[[], Mapping[str, Any]] = _nothing_declared,
 ) -> Detector:
     settings = detector_settings(lab, name)
     problems = detector_problems(lab, name)
@@ -161,7 +168,7 @@ def build_detector(
     # A real detector never sees ground-truth boxes (test boxes included); only the synthetic
     # fixture's stand-in detector, which perturbs them, gets the boxes.
     visible = ground_truth if is_fixture(ground_truth) else ground_truth.without_boxes()
-    return factory(DetectorContext(name, settings, visible, lab, precision, images_dir))
+    return factory(DetectorContext(name, settings, visible, lab, precision, images_dir, declared))
 
 
 def setting_number(settings: Mapping[str, Any], key: str, *, low: float, high: float) -> float:

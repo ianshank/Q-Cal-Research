@@ -56,6 +56,7 @@ from qcal_lab.calib.two_threshold import (
 from qcal_lab.config import LabConfig, defaults_path, load_lab_config, require_hashed
 from qcal_lab.data.coco import GroundTruth, load_coco
 from qcal_lab.data.splits import draw, read_split, split_digest
+from qcal_lab.declarations import detector_declarations
 from qcal_lab.evaluation import EvalLoop, check_metrics, load_eval_loop
 from qcal_lab.formats import envelope, json_bytes, write_bytes_atomic
 from qcal_lab.models import (
@@ -791,6 +792,7 @@ def run_experiment(
             dataset,
             precision=plan.precision,
             images_dir=images_dir,
+            declared=functools.partial(detector_declarations, qcal_config, plan.detector),
         ),
         artifacts=progress if progress is not None else [],
         partial_environment=_partial_environment(

@@ -11,8 +11,8 @@ from typing import Any
 import pytest
 
 from qcal.config import load_config
-from qcal_lab import sanity, status
-from qcal_lab.config import load_lab_config, load_tooling
+from qcal_lab import declarations, sanity, status
+from qcal_lab.config import load_lab_config
 from qcal_lab.sanity import NOT_ASSESSED, Expectation, SanityError, expectation, judge
 from tests.conftest import REPO_ROOT
 
@@ -21,14 +21,9 @@ pytestmark = pytest.mark.rule("C1")
 DECLARED = Expectation("det", zoo_ap=0.5, tolerance=0.01, source="a model card")
 
 
-def _tooling(**values: Any) -> dict[str, Any]:
-    return {"sanity": {"det": values}}
-
-
-def test_the_packaged_values_are_left_for_ian() -> None:
-    declared = expectation("atss_r50")
+def test_nothing_is_declared_until_ian_declares_it() -> None:
+    declared = expectation("atss_r50", {})
     assert (declared.zoo_ap, declared.tolerance, declared.source) == (None, None, "")
-    assert load_tooling()["sanity"]["atss_r50"] == {"zoo_ap": "", "tolerance": "", "source": ""}
     assert sanity.AP_MEASUREMENT_ENABLED is False  # D8
 
 
@@ -36,14 +31,14 @@ def test_an_undeclared_check_is_not_assessed_and_names_what_is_missing() -> None
     report = judge(Expectation("det", zoo_ap=0.5), measured=0.5)
     assert report.verdict == NOT_ASSESSED
     assert report.reasons == [
-        "sanity.det.tolerance is not set (Ian, D2)",
-        "sanity.det.source is not set (Ian, D2)",
+        "detectors.det.tolerance is not set (Ian, D2)",
+        "detectors.det.source is not set (Ian, D2)",
     ]
     assert not report.declared
 
 
 def test_a_declared_check_is_not_assessed_until_d8() -> None:
-    report = sanity.check_detector("det", _tooling(zoo_ap=0.5, tolerance=0.01, source="card"))
+    report = sanity.check_detector("det", {"zoo_ap": 0.5, "tolerance": 0.01, "source": "card"})
     assert (report.verdict, report.reasons) == (
         NOT_ASSESSED,
         ["AP measurement is disabled until D8"],
@@ -74,7 +69,12 @@ def test_a_failure_names_the_source_but_no_number_it_measured() -> None:
     assert report.verdict == "FAIL"
     assert report.reasons == ["further than 0.01 from the declared zoo AP (a model card)"]
     assert "0.9" not in report.render_text()
-    assert report.to_dict() == {"detector": "det", "verdict": "FAIL", "reasons": report.reasons}
+    assert report.to_dict() == {
+        "detector": "det",
+        "verdict": "FAIL",
+        "declared": True,
+        "reasons": report.reasons,
+    }
 
 
 @pytest.mark.parametrize(
@@ -89,13 +89,7 @@ def test_a_failure_names_the_source_but_no_number_it_measured() -> None:
 )
 def test_bad_values_are_refused(values: dict[str, Any], message: str) -> None:
     with pytest.raises(SanityError, match=message):
-        expectation("det", _tooling(**values))
-
-
-def test_a_section_that_is_not_a_table_is_refused() -> None:
-    with pytest.raises(SanityError, match="must be a table"):
-        expectation("det", {"sanity": {"det": "0.5"}})
-    assert expectation("det", {}) == Expectation("det")
+        expectation("det", values)
 
 
 def test_the_measurement_stays_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -106,7 +100,11 @@ def test_the_measurement_stays_disabled(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def _sanity_item(report: status.StatusReport, name: str) -> dict[str, Any]:
-    (item,) = [i for i in report.to_dict()["items"] if i["name"] == f"detector sanity check {name}"]
+    (item,) = [
+        i
+        for i in report.to_dict()["items"]
+        if i["name"] == f"detector sanity check {name} declared"
+    ]
     return item
 
 
@@ -121,6 +119,21 @@ def _sanity_item(report: status.StatusReport, name: str) -> dict[str, Any]:
 def test_status_needs_the_declaration(
     monkeypatch: pytest.MonkeyPatch, values: dict[str, Any], ready: bool
 ) -> None:
-    monkeypatch.setattr(sanity, "load_tooling", lambda: {"sanity": {"atss_r50": values}})
+    monkeypatch.setattr(
+        declarations, "load_declarations", lambda *_: {"detectors": {"atss_r50": values}}
+    )
     report = status.build_status(load_config(REPO_ROOT, environ={}), load_lab_config(REPO_ROOT))
-    assert _sanity_item(report, "atss_r50")["ready"] is ready
+    item = _sanity_item(report, "atss_r50")
+    assert item["ready"] is ready
+    if ready:
+        assert item["detail"].startswith("NOT ASSESSED")  # declared, never "passed"
+
+
+def test_status_reports_an_unprotected_declarations_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    def unprotected(*_: Any) -> Any:
+        raise declarations.DeclarationsError("notes/d.toml is not a file agents are kept out of")
+
+    monkeypatch.setattr(declarations, "load_declarations", unprotected)
+    report = status.build_status(load_config(REPO_ROOT, environ={}), load_lab_config(REPO_ROOT))
+    item = _sanity_item(report, "atss_r50")
+    assert (item["ready"], "kept out of" in item["detail"]) == (False, True)

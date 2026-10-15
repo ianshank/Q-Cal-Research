@@ -25,7 +25,7 @@ import hashlib
 import importlib.util
 import json
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from importlib import import_module
 from pathlib import Path
 from typing import Any, Final
@@ -101,9 +101,10 @@ def check_label_map(name: str, classes: Sequence[str] | None, expected: Sequence
     )
 
 
-def label_order_digest(names: Sequence[str]) -> str:
-    """The digest an attestation names: the dataset's category names, one per line, in order."""
-    return hashlib.sha256("\n".join(names).encode("utf-8")).hexdigest()
+def label_order_digest(checkpoint_sha256: str, names: Sequence[str]) -> str:
+    """The digest an attestation names: the checkpoint's sha256, then the dataset's category
+    names, one per line, in order. It binds the attested order to that one checkpoint."""
+    return hashlib.sha256("\n".join([checkpoint_sha256, *names]).encode("utf-8")).hexdigest()
 
 
 def _folded(names: Sequence[str]) -> list[str]:
@@ -130,20 +131,32 @@ def checkpoint_classes(loader: Any, checkpoint: Path) -> list[str] | None:
 
 
 def checkpoint_label_map(
-    name: str, classes: Sequence[str] | None, expected: Sequence[str], attested: str
+    name: str,
+    classes: Sequence[str] | None,
+    expected: Sequence[str],
+    attested: Callable[[], str],
+    checkpoint_sha256: str,
 ) -> str:
     """How the checkpoint's labels match the dataset's: ``exact``, ``folded`` or ``attested``.
 
-    Refuses names that differ, and a checkpoint without names that nobody attested.
+    Refuses names that differ, and a checkpoint without names unless Ian attested its label
+    order for exactly this checkpoint (:func:`label_order_digest`, in his declarations file;
+    D2). ``attested`` is read only for such a checkpoint. The refusal never prints the value
+    to set: it is Ian's to compute once he has checked the order.
     """
     if classes is None:
-        digest = label_order_digest(expected)
-        if attested == digest:
+        if not checkpoint_sha256:
+            raise DetectorError(
+                f"{name}: the checkpoint carries no class names, and an attested label order "
+                f"needs detectors.{name}.checkpoint_sha256 to name the checkpoint it is for"
+            )
+        if attested() == label_order_digest(checkpoint_sha256, expected):
             return "attested"
         raise DetectorError(
             f"{name}: the checkpoint carries no class names, so MMDetection would label it "
-            f"with COCO's; check its label order, then set detectors.{name}.{ATTESTATION_SETTING}"
-            f' = "{digest}" (the dataset\'s category order; D2)'
+            f"with COCO's; Ian checks its label order and declares {ATTESTATION_SETTING} for "
+            f"it (qcal_lab.models.mmdet.label_order_digest of checkpoint_sha256 and the "
+            f"dataset's {len(expected)} category names; qcal_lab.declarations; D2)"
         )
     if list(classes) == list(expected):
         return "exact"
@@ -256,7 +269,8 @@ def _build(context: DetectorContext) -> MMDetDetector:
         context.name,
         names,
         context.ground_truth.category_names,
-        str(context.settings.get(ATTESTATION_SETTING, "")),
+        lambda: str(context.declared().get(ATTESTATION_SETTING, "")),
+        expected,
     )
     regime = load_regime(lab, context.precision)
     torch = _import(TORCH_MODULE, "the MMDetection detector cannot run")

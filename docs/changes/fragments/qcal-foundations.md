@@ -11,5 +11,7 @@ Phase 1 lab (PR-F pieces that need no decision):
   `qcal_lab.eval_contract`) on Ian's loop, or on the fixture stand-in with `--fixture`.
 - `python -m qcal_lab protocol-cases` writes seven synthetic, protocol-separating cases to
   `tests/parity/cases/` for Ian to run the oracle on; `--check` reports drift.
-- A detector sanity-check scaffold: `[sanity.<detector>]` in `tooling.toml` (Ian's values,
-  D2), reported by `status`; no AP is measured until D8.
+- A detector sanity-check scaffold reported by `status`; no AP is measured until D8.
+- Ian's declarations (sanity values, a checkpoint's attested label order) are read only from
+  `docs/reference/declarations.toml`, a file agents cannot write; an attestation names its
+  checkpoint.

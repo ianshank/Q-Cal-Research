@@ -56,7 +56,7 @@ def _setting_file(lab: LabConfig, dotted: str) -> tuple[bool, str]:
     return path.exists(), str(path) if path.exists() else f"{path} does not exist"
 
 
-def _detectors(report: StatusReport, lab: LabConfig) -> None:
+def _detectors(report: StatusReport, lab: LabConfig, qcal_config: Config) -> None:
     detectors = lab.config.get("detectors", {})
     for name, settings in sorted(detectors.items() if isinstance(detectors, Mapping) else []):
         if not isinstance(settings, Mapping) or settings.get("kind") == "fixture":
@@ -79,7 +79,7 @@ def _detectors(report: StatusReport, lab: LabConfig) -> None:
         except ConfigError as exc:
             problems.append(str(exc))
         report.add(f"detector {name}", ok=not problems, detail="; ".join(problems) or "configured")
-        _sanity(report, name)
+        _sanity(report, name, qcal_config)
 
 
 def _contract(report: StatusReport, lab: LabConfig, qcal_config: Config) -> None:
@@ -92,18 +92,21 @@ def _contract(report: StatusReport, lab: LabConfig, qcal_config: Config) -> None
     report.add("evaluation loop contract", ok=contract.passed, detail=detail)
 
 
-def _sanity(report: StatusReport, name: str) -> None:
-    """The detector sanity check (D2) must be declared before a registered run, so it cannot
-    be chosen after the fact; until D8 enables the measurement it stays NOT ASSESSED."""
+def _sanity(report: StatusReport, name: str, qcal_config: Config) -> None:
+    """Ian's sanity-check declaration (D2) must precede a registered run, so the value cannot
+    be chosen after the fact. The item says "declared", not "passed": until D8 enables the
+    measurement the check itself stays NOT ASSESSED, and the detail says so."""
+    from qcal_lab.declarations import DeclarationsError, detector_declarations
     from qcal_lab.sanity import SanityError, check_detector
 
+    item = f"detector sanity check {name} declared"
     try:
-        sanity = check_detector(name)
-    except SanityError as exc:
-        report.add(f"detector sanity check {name}", ok=False, detail=str(exc))
+        sanity = check_detector(name, detector_declarations(qcal_config, name))
+    except (DeclarationsError, SanityError) as exc:
+        report.add(item, ok=False, detail=str(exc))
         return
     ok = sanity.declared and sanity.verdict != FAIL
-    report.add(f"detector sanity check {name}", ok=ok, detail=sanity.render_text())
+    report.add(item, ok=ok, detail=sanity.render_text())
 
 
 def _quarantine(report: StatusReport, lab: LabConfig) -> None:
@@ -154,7 +157,7 @@ def build_status(qcal_config: Config, lab: LabConfig) -> StatusReport:
         report.add("evaluation loop (Ian)", ok=False, detail=missing)
     except (ConfigError, ImportError) as exc:
         report.add("evaluation loop (Ian)", ok=False, detail=f"cannot load: {exc}")
-    _detectors(report, lab)
+    _detectors(report, lab, qcal_config)
     _quarantine(report, lab)
     try:
         cases = load_cases(lab.config.root / lab.text("parity.fixtures_dir"))

@@ -85,8 +85,9 @@ Verified against `50efe97`:
   - `allow_only` refuses control characters.
   - The reproducer's exact `git diff`/`git log` forms.
   - `prior-art-scout` denies reads of `ian_data`.
-  - Clean-room matching folds Unicode: strip the configured categories (`Cf`, `Mn`), NFKC, map
-    dashes to `-`, casefold when `case_insensitive` is set, NFKC again.
+  - Clean-room matching folds compatibility forms: strip the configured categories (`Cf`,
+    `Mn`), NFKC, map dashes to `-`, casefold when `case_insensitive` is set, NFKC again.
+    Confusables are not folded (a Cyrillic `с` for a Latin `c` still passes; review N8).
   - `guard_paths` and `deny_read` refuse a file with more than one hard link.
 - **S3: agent layer.**
   - `mcpServers` must name `.mcp.json` servers, and they count as network.
@@ -128,9 +129,10 @@ Verified against `50efe97`:
   - `python -m qcal_lab check-eval-loop [--json] [--fixture] [--strict]`, with PR-E's contract
     checks moved into `src/qcal_lab/eval_contract.py` (contract version 1). `status` gains an
     "evaluation loop contract" item once Ian's loop loads.
-  - A detector sanity-check scaffold (`src/qcal_lab/sanity.py`): `[sanity.<detector>]`
-    `zoo_ap`, `tolerance` and `source` are empty until Ian sets them (D2); the AP measurement
-    stays off until D8. `status` reports "detector sanity check <name>", TODO until declared.
+  - A detector sanity-check scaffold (`src/qcal_lab/sanity.py`): `zoo_ap`, `tolerance` and
+    `source` come from Ian's declarations file (Decision 11; D2); the AP measurement stays off
+    until D8. `status` reports "detector sanity check <name> declared", TODO until declared
+    and NOT ASSESSED in its detail until D8.
 
 ## Decisions
 1. **Branch flow.** Develop on a work-in-progress branch, then rebase onto `civ` under a new
@@ -177,20 +179,36 @@ Verified against `50efe97`:
    no live in-flight marker, under a per-key lock. *Alternative:* "no record yet" counts as
    unvouched. That would quarantine a running producer's bytes, and the producer's own record
    would then fail when its artifacts are re-hashed.
-8. **Checkpoints without class names (N14)** are refused unless
-   `detectors.<name>.label_order_attested_sha256` names the dataset's category order. The key
-   is empty by default, and its value is Ian's (D2).
+8. **Checkpoints without class names (N14)** are refused unless Ian's declarations file
+   attests their label order: `label_order_attested_sha256` is
+   `qcal_lab.models.mmdet.label_order_digest(checkpoint_sha256, category names)`, so it holds
+   for one checkpoint and one order, and `checkpoint_sha256` must be set. The refusal names
+   the formula, never the value: Ian computes it after checking the order by hand (D2).
 9. **PR-F-now.** Only pieces that need no D1-D8 decision and no EvalLoop v2 code. Expected
    outcomes are match predicates, not metric values. The bootstrap, the parity calibration
    kind and `gpu_check.sh` stay in PR-F.
-   - The case and sanity settings live in `tooling.toml`, not the hashed lab defaults: they
-     change no run, so `_effective_digest` and `config_hash` do not move for them. The commit
-     that sets the sanity values is their declaration. *Alternative:* `configs/lab.toml`,
-     which would change every run's `config_hash` for a value no run reads.
-   - The sanity check counts as ready once declared, even while NOT ASSESSED (D8): what must
-     precede a registered run is the declaration, so the value cannot be chosen afterwards.
+   - The case settings live in `tooling.toml`, not the hashed lab defaults: they change no
+     run, so `_effective_digest` and `config_hash` do not move for them.
+   - The sanity status item reads "declared": what must precede a registered run is the
+     declaration, so the value cannot be chosen afterwards. The check itself stays NOT
+     ASSESSED until D8 and is never reported as passed.
 10. **Mutation evidence** comes from `scripts/mutation_check.py`, committed and reproducible.
     It replaces session-local scripts. A kill counts only when a named test fails.
+11. **Ian's declarations live where agents cannot write** (advisory review B1). The sanity
+    values and the label-order attestation are read from `[declarations] file`
+    (`docs/reference/declarations.toml`), which `qcal_lab.declarations` accepts only if
+    `qcal.toml` both denies it to edit tools and requires a signed commit for it (`ian_data`
+    today). *Alternative:* `tooling.toml` or `configs/lab.toml`, which agents maintain, so an
+    agent could paste the value a refusal printed and the check would pass unseen. Ian
+    creates the file:
+
+    ```toml
+    [detectors.atss_r50]
+    zoo_ap = 0.0          # pycocotools units: 39.4 AP is 0.394
+    tolerance = 0.0
+    source = ""           # where the zoo value is published
+    label_order_attested_sha256 = ""   # only for a checkpoint without class names
+    ```
 
 ## Compatibility
 - **Exit codes.**
@@ -215,7 +233,9 @@ Verified against `50efe97`:
   - `agent_layer.isolation_values`, `agent_layer.max_turns_limit`,
     `agent_layer.network_agent_deny_read`;
   - `registry.lock_wait_s`, `registry.lock_poll_s`, `registry.identity_columns`;
-  - in `tooling.toml`: `[protocol_cases]` and `[sanity.atss_r50]`.
+  - in `tooling.toml`: `[protocol_cases]` and `[declarations] file`.
+- **Prediction cache sidecar.** Gains `producers` (every run that put the bytes); old
+  sidecars read as their one `produced_by`.
 - **Agents.** The reproducer gains five exact commands. The scout loses read access to
   `ian_data`.
 - **Operations.**
@@ -235,12 +255,28 @@ Verified against `50efe97`:
   prediction-path formats stay where they are, because moving them would re-key every cached
   prediction.
 
+## Known limits (advisory review, not fixed here)
+- **N3.** A Grep over a directory that holds a hard link to an `ian_data` file returns its
+  content: the hard-link refusal judges the named path only. Hard links into the repository
+  are themselves refused for edits.
+- **N6.** A marker is created before it is locked, so an audit in that instant can report a
+  live run as stale. The audit only reports; creating the marker as temp, lock, then link
+  would close the window (WP3b).
+
 ## Ian decisions requested
 1. **By Oct 24:** the identity set in `qcal.toml` (`registry.identity_columns`). Keep the
-   proposed science set, narrow it, or add `policy_sha256`.
+   proposed science set, narrow it, or add `policy_sha256`. The advisory review raised two
+   points for this decision (N1, N2):
+   - it leaves out result-changing inputs: the third-party packages Ian's loop uses
+     (pycocotools, numpy, scipy), the Python version, and a loop configured outside
+     `src/qcal_lab/handwritten/`; `env.eval_loop` plus a packages digest would cover them;
+   - `env.qcal_lab_source_sha256` hashes every file of the package, tooling and status code
+     included, so declaring a sanity value or a docstring edit stops seeds from pooling, and
+     `definition_sha256` holds the cell id, so `tables.allow_pooled_cells` cannot pool under
+     this set.
 2. **By the environment spike (Oct 18-23):** whether the ATSS checkpoint carries class names.
-   If it does not, set `label_order_attested_sha256` (D2). Also declare the sanity check:
-   `[sanity.atss_r50]` `zoo_ap`, `tolerance` and `source` in `tooling.toml`.
+   If it does not, attest its label order in `docs/reference/declarations.toml` (Decision 11;
+   D2). Declare the sanity check there too: `zoo_ap`, `tolerance` and `source`.
    Before running the oracle on the protocol cases, confirm `[protocol_cases]`
    `iou_threshold`, `max_detections` and `bin_count` match the oracle's.
 3. **Oct 17:** merge PR #4 with "Create a merge commit". GitHub's squash or rebase merge

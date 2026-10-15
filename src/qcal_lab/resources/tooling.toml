@@ -35,11 +35,9 @@ iou_threshold = 0.5
 max_detections = 100
 bin_count = 25
 
-[sanity.atss_r50]
-# Detector sanity check (D2; src/qcal_lab/sanity.py): the model zoo's box AP for the chosen
-# checkpoint in pycocotools units ([0, 1]: 39.4 AP is 0.394), how far the raw AP may be from
-# it, and where the value is published. Ian sets all three before the environment spike; the
-# commit that sets them is the declaration. Pass/fail only: it never chooses a checkpoint.
-zoo_ap = ""
-tolerance = ""
-source = ""
+[declarations]
+# Ian's declarations (D2; src/qcal_lab/declarations.py): the detector sanity check's zoo AP,
+# tolerance and source, and the attested label order of a checkpoint without class names.
+# The file must be one qcal.toml keeps edit tools out of and requires signed commits for
+# (here ian_data), or it is refused. Ian creates it; until then nothing is declared.
+file = "docs/reference/declarations.toml"

@@ -341,7 +341,7 @@ tests = ["tests/regression/test_run_identity_and_formats.py"]
 id = "F3-attestation"
 file = "src/qcal_lab/models/mmdet.py"
 finding = "a checkpoint without class names needs Ian's attestation of the label order"
-old = '''        if attested == digest:'''
+old = '''        if attested() == label_order_digest(checkpoint_sha256, expected):'''
 new = '''        if True:'''
 tests = ["tests/unit/test_lab_models.py"]
 
@@ -552,3 +552,27 @@ finding = "crowd_only_overlap separates IoF from IoU against crowd regions (revi
 old = '''    inside = case.det([_UNIT, _UNIT, _UNIT, _UNIT], 0.7)'''
 new = '''    inside = case.det([0, 0, region, region], 0.7)'''
 tests = ["tests/unit/test_lab_protocol_cases.py"]
+
+[[mutant]]
+id = "F3-attestation-bound"
+file = "src/qcal_lab/models/mmdet.py"
+finding = "an attestation names the checkpoint it is for (review B1)"
+old = '''    return hashlib.sha256("\n".join([checkpoint_sha256, *names]).encode("utf-8")).hexdigest()'''
+new = '''    return hashlib.sha256("\n".join(names).encode("utf-8")).hexdigest()'''
+tests = ["tests/unit/test_lab_models.py"]
+
+[[mutant]]
+id = "F3-declarations-protected"
+file = "src/qcal_lab/declarations.py"
+finding = "Ian's declarations are read only from a file agents cannot write (review B1)"
+old = '''    if not (denied & signed):'''
+new = '''    if False:'''
+tests = ["tests/unit/test_lab_declarations.py"]
+
+[[mutant]]
+id = "PRF-sanity-declared-field"
+file = "src/qcal_lab/sanity.py"
+finding = "an undeclared sanity check is not declared (review B1)"
+old = '''        return SanityReport(expected.detector, NOT_ASSESSED, missing, declared=False)'''
+new = '''        return SanityReport(expected.detector, NOT_ASSESSED, missing)'''
+tests = ["tests/unit/test_lab_sanity.py"]

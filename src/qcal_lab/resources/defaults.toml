@@ -77,9 +77,8 @@ device = "cuda:0"
 # score_threshold = 0.0
 # max_per_image = 100
 # A checkpoint without class names (MMDetection would label it with COCO's) is refused unless
-# this names the dataset's category order (sha256 of the names, one per line); Ian sets it
-# after checking the label order by hand (D2). The refusal prints the value to check.
-# label_order_attested_sha256 = ""
+# Ian attests its label order in his declarations file, which agents cannot write
+# (qcal_lab.declarations; D2). checkpoint_sha256 must then be set: the attestation names it.
 
 [calibrators]
 probability_epsilon = 1e-7        # scores are clipped into [eps, 1 - eps] before the logit
