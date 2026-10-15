@@ -257,6 +257,25 @@ def test_n2_quarantine_moves_only_the_bytes_it_checked(tmp_path: Path) -> None:
     assert cache.quarantine(key, again.sha256) is None  # nothing left under the key
 
 
+def test_n2_a_short_quarantine_copy_never_replaces_the_cached_bytes(tmp_path: Path) -> None:
+    """An earlier quarantine interrupted mid-write (no hard links) left a short copy; the
+    retry must not delete the intact cached file on the strength of the copy's name."""
+    import hashlib
+
+    from qcal_lab.predictions import QUARANTINE_DIR, PredictionCache, cache_key
+    from tests.lab_support import image, predictions_header
+
+    cache = PredictionCache(tmp_path / "cache")
+    key = cache_key(detector={"name": "x"}, split_sha256="s")
+    entry = cache.put(key, predictions_header(), [image("a")], produced_by="R-1")
+    target = tmp_path / "cache" / QUARANTINE_DIR / key / f"{entry.sha256}.jsonl"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(entry.path.read_bytes()[:10])  # truncated
+    assert cache.quarantine(key, entry.sha256) is None
+    assert entry.path.is_file()
+    assert hashlib.sha256(entry.path.read_bytes()).hexdigest() == entry.sha256
+
+
 def test_n2_status_lists_quarantined_predictions(project: tuple[Path, list[str]]) -> None:
     from qcal_lab.status import build_status
 

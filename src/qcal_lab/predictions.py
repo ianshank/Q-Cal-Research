@@ -371,8 +371,9 @@ class PredictionCache:
 
         Call it under :meth:`lock`, and only for bytes no record vouches for whose producer is
         not running. Nothing is deleted: the bytes land at ``quarantine/<key>/<sha256>.jsonl``
-        (with their sidecar), created exclusively; an existing file there holds the same
-        bytes, since its name is their digest. ``None`` when the bytes changed meanwhile.
+        (with their sidecar), created exclusively. An existing file there is trusted only once
+        it hashes to its name: an interrupted in-place write (no hard links) can leave it
+        short, and then the cached bytes stay where they are. ``None`` when nothing moved.
         """
         path = self.path(key)
         if path is None or self.directory is None:
@@ -384,8 +385,21 @@ class PredictionCache:
         if hashlib.sha256(data).hexdigest() != sha256:
             return None
         target = self.directory / QUARANTINE_DIR / key / f"{sha256}.jsonl"
-        with contextlib.suppress(FileExistsError):
+        try:
             write_bytes_exclusive(target, data)
+        except FileExistsError:
+            try:
+                kept = hashlib.sha256(target.read_bytes()).hexdigest()
+            except OSError:
+                kept = UNREADABLE
+            if kept != sha256:  # a partial earlier copy: never trade the original for it
+                _log.error(
+                    "quarantine copy %s does not hold %s; cached predictions %s kept",
+                    target,
+                    sha256[:12],
+                    path.name,
+                )
+                return None
         sidecar = self._sidecar(path)
         with contextlib.suppress(OSError):
             meta = sidecar.read_bytes()

@@ -149,6 +149,55 @@ def test_two_loops_from_one_factory_must_agree() -> None:
     ]
 
 
+def test_a_loop_raising_on_a_later_call_is_a_finding() -> None:
+    """Every call is probed, not only the first (Copilot, PR #5)."""
+    lab = load_lab_config(REPO_ROOT)
+    ground_truth = eval_contract.contract_fixture(smoke_settings())
+    predictions = eval_contract.fixture_inputs(lab, ground_truth)
+
+    class SecondCallRaises(NaNObjective):
+        calls = 0
+
+        def metrics(self, predictions, ground_truth):  # type: ignore[no-untyped-def]
+            SecondCallRaises.calls += 1
+            if SecondCallRaises.calls > 1:
+                raise RuntimeError("late")
+            return self.inner.metrics(predictions, ground_truth)
+
+    assert eval_contract.must_problems(SecondCallRaises, predictions, ground_truth) == [
+        "the loop's second call raised RuntimeError: late"
+    ]
+    builds = [0]
+
+    def factory_fails_second_time() -> object:
+        builds[0] += 1
+        if builds[0] > 1:
+            raise OSError("gone")
+        return build_fixture_loop({})
+
+    assert eval_contract.must_problems(factory_fails_second_time, predictions, ground_truth) == [
+        "the factory's second call raised OSError: gone"
+    ]
+
+
+def test_a_loop_raising_while_its_should_part_runs_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = [0]
+
+    class ThirdBuildRaises(NaNObjective):
+        def __init__(self) -> None:
+            calls[0] += 1
+            if calls[0] > 3:  # the existence check and two MUST builds; the fourth is SHOULD's
+                raise RuntimeError("third")
+            super().__init__()
+
+    monkeypatch.setattr(
+        eval_contract, "load_eval_loop", lambda *_: SimpleNamespace(loop=ThirdBuildRaises())
+    )
+    report = _check()
+    assert report.verdict == "FAIL"
+    assert report.must == ["the loop raised RuntimeError: third (while its SHOULD part ran)"]
+
+
 def _lab(*args: str) -> tuple[int, str]:
     out = io.StringIO()
     return cli.main(["--root", str(REPO_ROOT), *args], out=out), out.getvalue()

@@ -97,21 +97,47 @@ def canonical(data: Any) -> str:
     return json.dumps(encode(data), sort_keys=True, separators=(",", ":"))
 
 
+class _Raised(Exception):
+    """A loop or factory raised during a probe; carried as a MUST finding."""
+
+
+def _probe(what: str, call: Callable[[], Any]) -> Any:
+    try:
+        return call()
+    except Exception as exc:
+        raise _Raised(f"{what} raised {type(exc).__name__}: {exc}") from exc
+
+
 def must_problems(
     build: Callable[[], object],  # a factory may return anything; checking that is the point
     predictions: Sequence[ImageDetections],
     ground_truth: GroundTruth,
 ) -> list[str]:
-    """Violations of the MUST part of the contract; empty when the loop honours it."""
+    """Violations of the MUST part of the contract; empty when the loop honours it.
+
+    Every call into the loop or its factory is probed: one that raises, on any call, is a
+    MUST finding, never an exception out of the checks.
+    """
     problems: list[str] = []
-    loop = build()
-    if not isinstance(loop, EvalLoop):
-        return ["the factory did not return an EvalLoop"]
-    before = copy.deepcopy((list(predictions), ground_truth))
     try:
-        first = outputs(loop, predictions, ground_truth)
-    except Exception as exc:  # noqa: BLE001 - a raising loop is a finding, not a crash
-        return [f"the loop raised {type(exc).__name__}: {exc}"]
+        _must(build, predictions, ground_truth, problems)
+    except _Raised as raised:
+        problems.append(str(raised))
+    return problems
+
+
+def _must(
+    build: Callable[[], object],
+    predictions: Sequence[ImageDetections],
+    ground_truth: GroundTruth,
+    problems: list[str],
+) -> None:
+    loop = _probe("the factory", build)
+    if not isinstance(loop, EvalLoop):
+        problems.append("the factory did not return an EvalLoop")
+        return
+    before = copy.deepcopy((list(predictions), ground_truth))
+    first = _probe("the loop", lambda: outputs(loop, predictions, ground_truth))
     if (list(predictions), ground_truth) != before:
         problems.append("the loop mutated its inputs")
     try:
@@ -125,14 +151,16 @@ def must_problems(
         check_metrics(first["metrics"])
     except ValueError as exc:
         problems.append(f"metrics: {exc}")
-    if canonical(outputs(loop, predictions, ground_truth)) != canonical(first):
+    again = _probe("the loop's second call", lambda: outputs(loop, predictions, ground_truth))
+    if canonical(again) != canonical(first):
         problems.append("two calls on the same loop disagree")
-    second = build()
+    second = _probe("the factory's second call", build)
     if not isinstance(second, EvalLoop):
-        return [*problems, "the factory's second call did not return an EvalLoop"]
-    if canonical(outputs(second, predictions, ground_truth)) != canonical(first):
+        problems.append("the factory's second call did not return an EvalLoop")
+        return
+    other = _probe("the second loop", lambda: outputs(second, predictions, ground_truth))
+    if canonical(other) != canonical(first):
         problems.append("two loops from the same factory disagree")
-    return problems
 
 
 def should_findings(
@@ -207,7 +235,12 @@ def check_eval_loop(
             return load_eval_loop(lab, qcal_config).loop
 
     must = must_problems(build, predictions, ground_truth)
-    should = should_findings(build(), predictions, ground_truth) if not must else []
+    should: list[str] = []
+    if not must:
+        try:
+            should = should_findings(build(), predictions, ground_truth)
+        except Exception as exc:  # noqa: BLE001 - a loop raising here breaks the MUST part
+            must = [f"the loop raised {type(exc).__name__}: {exc} (while its SHOULD part ran)"]
     report = ContractReport(name, FAIL if must else PASS, must=must, should=should)
     _log.info("evaluation loop contract: %s", report.verdict)
     return report

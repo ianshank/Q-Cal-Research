@@ -576,3 +576,27 @@ finding = "an undeclared sanity check is not declared (review B1)"
 old = '''        return SanityReport(expected.detector, NOT_ASSESSED, missing, declared=False)'''
 new = '''        return SanityReport(expected.detector, NOT_ASSESSED, missing)'''
 tests = ["tests/unit/test_lab_sanity.py"]
+
+[[mutant]]
+id = "S3-guard-standalone"
+file = "src/qcal/integrity/agent_settings.py"
+finding = "a wrapped guard is one simple command; `; true` would replace its exit status (Copilot, PR #5)"
+old = '''            return words[i + 1 :] if standalone(command) else [""]'''
+new = '''            return words[i + 1 :]'''
+tests = ["tests/unit/test_agent_layer.py"]
+
+[[mutant]]
+id = "F3-quarantine-copy-verified"
+file = "src/qcal_lab/predictions.py"
+finding = "an existing quarantine copy is trusted only once it hashes to its name (Copilot, PR #5)"
+old = '''            if kept != sha256:  # a partial earlier copy: never trade the original for it'''
+new = '''            if False:  # a partial earlier copy: never trade the original for it'''
+tests = ["tests/regression/test_run_identity_and_formats.py"]
+
+[[mutant]]
+id = "PRF-later-call-probed"
+file = "src/qcal_lab/eval_contract.py"
+finding = "a loop raising on a later call is a MUST finding, not an escaped exception (Copilot, PR #5)"
+old = '''    again = _probe("the loop's second call", lambda: outputs(loop, predictions, ground_truth))'''
+new = '''    again = outputs(loop, predictions, ground_truth)'''
+tests = ["tests/unit/test_lab_eval_contract.py"]
