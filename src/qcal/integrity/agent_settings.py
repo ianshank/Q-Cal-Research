@@ -83,13 +83,31 @@ def wrapped_hook(config: Config, command: str) -> str | None:
 
 #: The wrapper option that turns hook failures into "allow" (the Stop hook's, never a guard's).
 FAIL_OPEN: Final = "--fail-open"
+#: Characters of shell operators: around the wrapper they can skip it or replace its status.
+_OPERATOR_CHARS: Final = frozenset("();<>|&")
+
+
+def standalone(command: str) -> bool:
+    """Whether ``command`` is one simple command: no operator (``;``, ``&&``, ``|``, ``>``,
+    ...), command substitution or line break outside quotes, each of which could skip the
+    wrapper or change the exit status Claude Code reads (a guard blocks only with 2)."""
+    if "\n" in command or "\r" in command or "`" in command or "$(" in command:
+        return False
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return False
+    return not any(t and set(t) <= _OPERATOR_CHARS for t in tokens)
 
 
 def _after_wrapper(config: Config, command: str) -> list[str] | None:
     """The words after the wrapper, split as the shell splits them; ``None`` without one.
 
     Quoting is kept: ``deny-read "ian_only ian_data"`` passes one argument at run time, so it
-    is one argument here. A command the shell cannot split yields ``[""]``: an unknown hook.
+    is one argument here. A command the shell cannot split, or one that is not a single
+    simple command (:func:`standalone`), yields ``[""]``: an unknown hook, guarding nothing.
     """
     wrapper = config.str_value("agent_layer.hook_wrapper")
     try:
@@ -98,7 +116,7 @@ def _after_wrapper(config: Config, command: str) -> list[str] | None:
         return [""] if wrapper in command else None
     for i, word in enumerate(words):
         if word.endswith(wrapper):
-            return words[i + 1 :]
+            return words[i + 1 :] if standalone(command) else [""]
     return None
 
 
@@ -142,7 +160,12 @@ def _check_command(
     elif not os.access(script, os.X_OK):
         report(f"{shown}: {event} hook script {script_shown} is not executable")
     hook = wrapped_hook(config, command)
-    if hook is not None and hook not in _hook_names():
+    if hook == "" and not standalone(command):
+        report(
+            f"{shown}: {event} hook {command!r} must run the wrapper alone: a shell operator, "
+            "substitution or line break around it can skip it or change its exit status"
+        )
+    elif hook is not None and hook not in _hook_names():
         report(f"{shown}: {event} hook {command!r} runs unknown qcal hook {hook!r}")
     if event == "PreToolUse" and wrapped_fail_open(config, command):
         report(
@@ -248,6 +271,7 @@ __all__ = [
     "check_mcp",
     "check_settings",
     "mcp_server_names",
+    "standalone",
     "wrapped_fail_open",
     "wrapped_hook",
     "wrapped_hook_args",

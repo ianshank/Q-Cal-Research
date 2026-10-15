@@ -671,3 +671,31 @@ def test_a_fail_open_deny_read_is_refused(config: Config, repo: Path) -> None:
     _network_agent(repo, hook_line="--fail-open deny-read ian_only")
     errors = check_agent_layer(config).errors
     assert any("runs --fail-open" in e for e in errors), errors
+
+
+@pytest.mark.parametrize(
+    "hook_line",
+    [
+        "deny-read ian_only ; true",  # the trailing command's status replaces the guard's
+        "deny-read ian_only || true",
+        "deny-read ian_only | cat",
+        "deny-read ian_only > /dev/null &",
+        "deny-read $(echo ian_only)",
+    ],
+)
+def test_a_guard_must_be_one_simple_command(config: Config, repo: Path, hook_line: str) -> None:
+    """Copilot, PR #5: `run_hook.sh deny-read ... ; true` exits 0, so it guards nothing."""
+    _network_agent(repo, hook_line=hook_line)
+    errors = check_agent_layer(config).errors
+    assert any("must run the wrapper alone" in e for e in errors), errors
+    assert sum("has no deny-read hook covering" in e for e in errors) == 3
+
+
+def test_quoted_operators_are_arguments_not_operators() -> None:
+    from qcal.integrity.agent_settings import standalone
+
+    # $( and backticks are refused even quoted: conservative, no hook needs them
+    assert standalone("run_hook.sh allow-only 'git diff a;b' \"x && y\" '$(z)'") is False
+    assert standalone("run_hook.sh allow-only 'git diff a;b' \"x && y\"") is True
+    assert standalone("run_hook.sh guard-bash\ntrue") is False
+    assert standalone("run_hook.sh guard-bash 'unbalanced") is False
