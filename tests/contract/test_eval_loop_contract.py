@@ -90,6 +90,37 @@ def test_the_loop_reads_no_files_and_opens_no_sockets(which: str) -> None:
     assert unexpected == [], unexpected
 
 
+_HOOK_PROBE = """
+import json, os, pathlib, sys
+from tests.contract._run_loop import audit_hook
+events, phase = {"build": []}, ["build"]
+sys.addaudithook(audit_hook(events, phase))
+target = sys.argv[1]
+open(os.fsencode(target), "rb").close()
+open(pathlib.Path(target), "rb").close()
+fd = os.open(target, os.O_RDONLY)
+open(fd, "rb", closefd=True).close()
+sys.stdout.write(json.dumps(events["build"]) + "\\n")
+"""
+
+
+@pytest.mark.integration
+def test_the_audit_sees_bytes_paths_path_objects_and_descriptors(tmp_path: Path) -> None:
+    """A loop must not read a file unseen by spelling its path as bytes or a descriptor."""
+    target = tmp_path / "manifest.txt"
+    target.write_text("held-out\n", "utf-8")
+    out = subprocess.run(
+        [sys.executable, "-c", _HOOK_PROBE, str(target)],
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=REPO_ROOT,
+    )
+    opened = [path for name, path in json.loads(out.stdout.strip().splitlines()[-1])]
+    assert opened.count(str(target)) >= 2  # the bytes and the Path spellings
+    assert any(p.startswith("fd:") for p in opened)  # the descriptor
+
+
 def _code_or_tooling(event: list[str]) -> bool:
     name, path = event
     return name == "open" and (path.endswith(CODE_SUFFIXES) or path.endswith(TOOLING_FILE))
