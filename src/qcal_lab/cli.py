@@ -16,7 +16,7 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from types import FrameType
-from typing import IO, Final
+from typing import IO, Any, Final
 
 from qcal.config import ConfigError, find_root, load_config
 from qcal.integrity.leakage import check_leakage, read_manifest
@@ -146,9 +146,10 @@ def _cmd_run(args: argparse.Namespace, root: Path) -> int:
     """Run one cell; the result envelope is written on every exit, ok or failed."""
     request = RunRequest(root, args.run_id, args.cell_id, args.seed, args.result_path)
     progress: list[dict[str, str]] = []
+    partial: dict[str, Any] = {}
     try:
         with _sigterm_interrupts():
-            result = run_experiment(request, progress=progress)
+            result = run_experiment(request, progress=progress, partial_environment=partial)
     except BaseException as exc:
         kind = failure_kind(exc)
         write_failure(
@@ -156,6 +157,7 @@ def _cmd_run(args: argparse.Namespace, root: Path) -> int:
             failure_kind=kind,
             error=f"{type(exc).__name__}: {exc}",
             artifacts=progress,
+            environment=partial,
         )
         _log.error("run %s failed (%s): %s", args.run_id, kind, exc)
         if isinstance(exc, ConfigError):

@@ -725,6 +725,7 @@ def test_prediction_code_is_the_prediction_modules_only(
         "data/splits.py",
         "predictions.py",
         "numerics.py",
+        "formats.py",
     ):
         (package / name).parent.mkdir(parents=True, exist_ok=True)
         (package / name).write_text(f"# {name}\n")
@@ -738,7 +739,13 @@ def test_prediction_code_is_the_prediction_modules_only(
     for unrelated in ("calib/platt.py", "experiment.py", "data/splits.py"):
         (package / unrelated).write_text("# edited\n")
         assert digest() == before, unrelated
-    for related in ("models/base.py", "data/coco.py", "predictions.py", "numerics.py"):
+    for related in (
+        "models/base.py",
+        "data/coco.py",
+        "predictions.py",
+        "numerics.py",
+        "formats.py",
+    ):
         (package / related).write_text(f"# edited {related}\n")
         assert digest() != before, related
         before = digest()

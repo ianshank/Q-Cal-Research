@@ -184,8 +184,9 @@ def test_prediction_key_composition(monkeypatch: pytest.MonkeyPatch) -> None:
     """What the cache key is made of, not just cache_key() itself (wave-2 review, N13).
 
     Pinned over a fixed context with the code digest stubbed, so dropping or renaming any
-    part (source, numerics and its environment, kind parts, images) moves it, while editing a
-    prediction module does not.
+    part (source, numerics and its environment, kind parts, images, the header) moves it,
+    while editing a prediction module does not. Re-pinned in docs/changes/qcal-foundations.md
+    (F3, N15): the predictions header joined the key (was c304d6e2...03ed).
     """
     from types import SimpleNamespace
 
@@ -203,5 +204,6 @@ def test_prediction_key_composition(monkeypatch: pytest.MonkeyPatch) -> None:
         dataset=SimpleNamespace(sha256="d" * 64),
         images_dir=None,
     )
-    key = experiment.prediction_key(ctx, "e" * 64, ["1", "2"])  # type: ignore[arg-type]
-    assert key == ("c304d6e2ba0473fb6a44bb0feada5ab54b1b070543f63cf8014fb9fbb94303ed")
+    header = PredictionsHeader("golden", "val", "raw", "d" * 64, "e" * 64, (1, 2), ctx.source)
+    key = experiment.prediction_key(ctx, "e" * 64, ["1", "2"], header)  # type: ignore[arg-type]
+    assert key == ("79591e3ba09d7d5f6652b99e111e7766e64c2a159590eca9a62fb5aa1ff996ad")

@@ -269,3 +269,36 @@ finding = "hashed_input is membership in config_inputs (case, symlinks, table sp
 old = '''    return absolute.relative_to(config.root).as_posix() in config_inputs(config)'''
 new = '''    return absolute.is_file()'''
 tests = ["tests/regression/test_registry_run_gates.py"]
+
+[[mutant]]
+id = "F3-formats-hashed"
+file = "src/qcal_lab/experiment.py"
+finding = "formats.py, through which predictions are written, is in the cache key's code digest"
+old = '''    "formats.py",  # predictions.py writes through it: its bytes decide the cached file's'''
+new = '''    # formats.py dropped'''
+tests = ["tests/unit/test_lab_prediction_modules.py"]
+
+[[mutant]]
+id = "F3-header-in-key"
+file = "src/qcal_lab/experiment.py"
+finding = "the predictions header is part of the cache key"
+old = '''        header=header.to_dict(),'''
+new = '''        header=None,'''
+tests = ["tests/unit/test_lab_prediction_modules.py"]
+
+[[mutant]]
+id = "F3-pessimistic-envelope"
+file = "src/qcal_lab/experiment.py"
+finding = "a run killed outright leaves a failed envelope listing what it produced"
+old = '''        self.artifacts.append({"path": self.relative(path), "kind": kind, "sha256": sha256})
+        self.checkpoint()'''
+new = '''        self.artifacts.append({"path": self.relative(path), "kind": kind, "sha256": sha256})'''
+tests = ["tests/regression/test_run_identity_and_formats.py"]
+
+[[mutant]]
+id = "F3-lab-hashed-input"
+file = "src/qcal_lab/config.py"
+finding = "the lab refuses a configuration file the registry does not hash"
+old = '''    if not hashed_input(qcal_config, path) and not hashed_input(qcal_config, resolved):'''
+new = '''    if False:'''
+tests = ["tests/regression/test_run_identity_and_formats.py"]

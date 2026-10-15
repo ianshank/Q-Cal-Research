@@ -226,8 +226,11 @@ def test_a_failed_run_reports_the_artifacts_it_wrote(
 ) -> None:
     root, cells = project
 
-    def partial(request: object, *, progress: list[dict[str, str]]) -> None:
+    def partial(
+        request: object, *, progress: list[dict[str, str]], partial_environment: dict[str, str]
+    ) -> None:
         progress.append({"path": "runs/results/R1/raw_val.jsonl", "kind": "predictions_raw_val"})
+        partial_environment["handwritten_sha256"] = "h" * 64  # what it knew before failing
         raise MemoryError
 
     monkeypatch.setattr(cli, "run_experiment", partial)
@@ -239,3 +242,4 @@ def test_a_failed_run_reports_the_artifacts_it_wrote(
     assert data["artifacts"] == [
         {"path": "runs/results/R1/raw_val.jsonl", "kind": "predictions_raw_val"}
     ]
+    assert data["environment"]["handwritten_sha256"] == "h" * 64
