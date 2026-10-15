@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import collections
 import dataclasses
+import fcntl
 import functools
 import hashlib
 import itertools
@@ -41,7 +42,7 @@ from qcal.protocols import Detector, ImageDetections
 from qcal.registry.executor import STATUS_FAILED, STATUS_OK, result_envelope, sha256_file
 from qcal.registry.experiments import Experiments, load_experiments
 from qcal.registry.gates import INPUTS_READ_KEY, code_location_problems
-from qcal.registry.records import SEED_EFFECTIVE_KEY, RunRecord, validate_run_id
+from qcal.registry.records import SEED_EFFECTIVE_KEY, RunRecord
 from qcal_lab import __version__
 from qcal_lab.calib import CALIBRATORS, build_calibrator
 from qcal_lab.calib.thresholds import threshold_grid
@@ -69,6 +70,7 @@ from qcal_lab.models import (
 )
 from qcal_lab.numerics import Regime, load_regime, recorded_environment
 from qcal_lab.predictions import (
+    UNREADABLE,
     CacheConflictError,
     CacheEntry,
     PredictionCache,
@@ -106,6 +108,11 @@ PREDICTION_MODULE_EXCLUSIONS: Final[Mapping[str, str]] = {
 #: not import the store (it writes records), so the producer check reads this one file;
 #: tests/unit/test_lab_experiment.py pins it to the store's own layout.
 RECORD_FILE: Final = "{run_id}.json"
+#: A running launcher's in-flight marker under paths.inflight_dir, locked while it runs; the
+#: same test pins it to qcal.registry.store's layout.
+MARKER_FILE: Final = "{run_id}.inflight.json"
+#: Puts tried under one key: the second follows a quarantine of unvouched bytes.
+_PUT_ATTEMPTS: Final = 2
 #: The pessimistic envelope's failure kind and error: what a run killed outright reports.
 UNFINISHED_KIND: Final = "unknown"
 UNFINISHED_ERROR: Final = "the program ended before writing its result (killed or crashed)"
@@ -524,20 +531,66 @@ def _cached_images(
     return images
 
 
-def _recorded_by_producer(ctx: _Context, entry: CacheEntry) -> bool:
-    """Whether the run that cached ``entry`` has a record listing it (path and sha256).
+def _vouched(ctx: _Context, path: Path, sha256: str) -> bool:
+    """Whether any run record, of any status, lists ``path`` with these bytes.
 
     The cache is gitignored and writable outside the registry, so a sidecar alone proves
-    nothing; a registered run's record does.
+    nothing; a registered run's record does. Any record counts, not only the sidecar's
+    producer: identical bytes re-put by a later run rename the producer, and a failed or
+    interrupted run's record lists the bytes it wrote as well as an ok one does.
     """
-    try:
-        name = RECORD_FILE.format(run_id=validate_run_id(entry.produced_by))
-        record_path = ctx.qcal_config.path("registry_dir") / name
-        record = RunRecord.from_dict(json.loads(record_path.read_text("utf-8")))
-    except (OSError, UnicodeDecodeError, ValueError, KeyError, TypeError):
+    listed = ctx.relative(path)
+    registry = ctx.qcal_config.path("registry_dir")
+    for record_path in sorted(registry.glob(RECORD_FILE.format(run_id="*"))):
+        try:
+            record = RunRecord.from_dict(json.loads(record_path.read_text("utf-8")))
+        except (OSError, UnicodeDecodeError, ValueError, KeyError, TypeError):
+            continue
+        if any(a.path == listed and a.sha256 == sha256 for a in record.artifacts):
+            return True
+    return False
+
+
+def _producer_running(ctx: _Context, run_id: str) -> bool:
+    """Whether ``run_id``'s launcher is alive: it holds the lock on its in-flight marker
+    until its record is written (qcal.registry.runner), so a held lock means running."""
+    if not run_id:
         return False
-    listed = ctx.relative(entry.path)
-    return any(a.path == listed and a.sha256 == entry.sha256 for a in record.artifacts)
+    marker = ctx.qcal_config.path("inflight_dir") / MARKER_FILE.format(run_id=run_id)
+    try:
+        handle = marker.open("rb")
+    except OSError:
+        return False
+    with handle:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    return False
+
+
+def _quarantine_unvouched(
+    ctx: _Context, cache: PredictionCache, key: str, conflict: CacheConflictError
+) -> dict[str, str] | None:
+    """Move other bytes under ``key`` aside when nothing vouches for them; what moved.
+
+    Bytes a record lists are evidence and never move. Neither do bytes whose producer is
+    still running: its record does not exist yet, and moving its file would fail that run
+    when the launcher re-hashes its artifacts. Unreadable bytes cannot be checked: kept.
+    """
+    existing = conflict.existing_sha256
+    path = cache.path(key)
+    if path is None or existing == UNREADABLE or _vouched(ctx, path, existing):
+        return None
+    producer = cache.producer(key)
+    if _producer_running(ctx, producer):
+        _log.info("cached predictions %s belong to running %s; kept", path.name, producer)
+        return None
+    moved = cache.quarantine(key, existing)
+    if moved is None:
+        return None
+    return {"sha256": existing, "produced_by": producer, "moved_to": ctx.relative(moved)}
 
 
 def prediction_key(
@@ -571,20 +624,21 @@ def _raw_predictions(
 ) -> tuple[ImageDetections, ...]:
     header = ctx.header(split, ids, "raw")
     key = prediction_key(ctx, header.split_sha256, ids, header)
-    entry = cache.get(key)
     data = b""
-    if entry is not None:
-        # One read: these bytes are hashed, vouched for by the producer's record and parsed,
-        # so a file swapped after the sidecar check is never used.
-        try:
-            data = entry.path.read_bytes()
-        except OSError:
-            entry = None
+    with cache.lock(key):
+        entry = cache.get(key)
+        if entry is not None:
+            # One read: these bytes are hashed, vouched for by a record and parsed, so a
+            # file swapped after the sidecar check is never used.
+            try:
+                data = entry.path.read_bytes()
+            except OSError:
+                entry = None
     if entry is not None:
         entry = dataclasses.replace(entry, sha256=hashlib.sha256(data).hexdigest())
-        if not _recorded_by_producer(ctx, entry):
+        if not _vouched(ctx, entry.path, entry.sha256):
             _log.warning(
-                "ignoring cached predictions %s: no record of %s lists them",
+                "ignoring cached predictions %s: no record lists them (cached by %s)",
                 entry.path.name,
                 entry.produced_by,
             )
@@ -603,13 +657,10 @@ def _raw_predictions(
     use: dict[str, Any] = {"hit": False, "produced_by": ctx.request.run_id}
     path, digest = cache.path(key), ""
     if path is not None:
-        try:
-            written = cache.put(key, header, images, produced_by=ctx.request.run_id)
-            path, digest = written.path, written.sha256
-        except CacheConflictError as exc:
-            _log.warning("%s; this run keeps its own predictions next to it", exc)
-            use["conflict"] = {"key": key, "cached_sha256": exc.existing_sha256}
-            path = None
+        with cache.lock(key):
+            written, use_update = _put(ctx, cache, key, header, images)
+        use.update(use_update)
+        path, digest = (written.path, written.sha256) if written is not None else (None, "")
     if path is None:
         path = ctx.artifact_dir / RAW_PREDICTIONS_FILE.format(split=split)
         digest = write_predictions(path, header, images)
@@ -617,6 +668,31 @@ def _raw_predictions(
     ctx.raw_digests[split] = digest
     ctx.add_artifact(path, RAW_PREDICTIONS_KIND.format(split=split), digest)
     return images
+
+
+def _put(
+    ctx: _Context,
+    cache: PredictionCache,
+    key: str,
+    header: PredictionsHeader,
+    images: Sequence[ImageDetections],
+) -> tuple[CacheEntry | None, dict[str, Any]]:
+    """Cache this run's predictions; on other bytes under the key, quarantine them once if
+    nothing vouches for them, else keep them and record the conflict."""
+    use: dict[str, Any] = {}
+    for _attempt in range(_PUT_ATTEMPTS):
+        try:
+            return cache.put(key, header, images, produced_by=ctx.request.run_id), use
+        except CacheConflictError as exc:
+            if "quarantined" not in use:
+                moved = _quarantine_unvouched(ctx, cache, key, exc)
+                if moved is not None:
+                    use["quarantined"] = moved
+                    continue
+            _log.warning("%s; this run keeps its own predictions next to it", exc)
+            use["conflict"] = {"key": key, "cached_sha256": exc.existing_sha256}
+            return None, use
+    return None, use
 
 
 def _subset(images: Sequence[ImageDetections], ids: Sequence[str]) -> tuple[ImageDetections, ...]:
@@ -880,6 +956,7 @@ __all__ = [
     "CALIBRATION_KIND",
     "HANDWRITTEN_DIR",
     "LIVE_SOURCE",
+    "MARKER_FILE",
     "PACKAGES_FILE",
     "PACKAGES_FORMAT",
     "PACKAGES_KIND",

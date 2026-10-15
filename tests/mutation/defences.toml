@@ -302,3 +302,59 @@ finding = "the lab refuses a configuration file the registry does not hash"
 old = '''    if not hashed_input(qcal_config, path) and not hashed_input(qcal_config, resolved):'''
 new = '''    if False:'''
 tests = ["tests/regression/test_run_identity_and_formats.py"]
+
+[[mutant]]
+id = "F3-vouched-never-move"
+file = "src/qcal_lab/experiment.py"
+finding = "cache bytes a record lists are evidence and are never quarantined"
+old = '''    if path is None or existing == UNREADABLE or _vouched(ctx, path, existing):'''
+new = '''    if path is None or existing == UNREADABLE:'''
+tests = ["tests/regression/test_run_identity_and_formats.py"]
+
+[[mutant]]
+id = "F3-running-producer"
+file = "src/qcal_lab/experiment.py"
+finding = "a running producer's cached bytes are kept (its record does not exist yet)"
+old = '''    if _producer_running(ctx, producer):'''
+new = '''    if False:'''
+tests = ["tests/regression/test_run_identity_and_formats.py"]
+
+[[mutant]]
+id = "F3-quarantine-rehash"
+file = "src/qcal_lab/predictions.py"
+finding = "quarantine moves only the bytes that were checked"
+old = '''        if hashlib.sha256(data).hexdigest() != sha256:'''
+new = '''        if False:'''
+tests = ["tests/regression/test_run_identity_and_formats.py"]
+
+[[mutant]]
+id = "F3-quarantine-overwrite"
+file = "src/qcal_lab/predictions.py"
+finding = "a quarantined file is never overwritten"
+old = '''            write_bytes_exclusive(target, data)'''
+new = '''            write_bytes_atomic(target, data)'''
+tests = ["tests/regression/test_run_identity_and_formats.py"]
+
+[[mutant]]
+id = "F3-attestation"
+file = "src/qcal_lab/models/mmdet.py"
+finding = "a checkpoint without class names needs Ian's attestation of the label order"
+old = '''        if attested == digest:'''
+new = '''        if True:'''
+tests = ["tests/unit/test_lab_models.py"]
+
+[[mutant]]
+id = "F3-label-order"
+file = "src/qcal_lab/models/mmdet.py"
+finding = "class names must match in label order, not as a set"
+old = '''    if _folded(classes) == _folded(expected):'''
+new = '''    if sorted(_folded(classes)) == sorted(_folded(expected)):'''
+tests = ["tests/unit/test_lab_models.py"]
+
+[[mutant]]
+id = "F3-mmcv-in-key"
+file = "src/qcal_lab/models/mmdet.py"
+finding = "the cache key holds mmcv's compiled ops, not only its version string"
+old = '''        "mmcv_ext_sha256": mmcv_extension_digest(),'''
+new = '''        "mmcv_ext_sha256": "",'''
+tests = ["tests/unit/test_lab_models.py"]

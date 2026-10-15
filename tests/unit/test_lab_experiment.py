@@ -338,10 +338,14 @@ def test_a_cache_entry_that_does_not_match_the_run_is_recomputed(
     second = run_experiment(_request(root, cells[0], run_id="R-b"))
     use = second.environment["prediction_cache"]["val"]
     assert (use["hit"], use["produced_by"]) == (False, "R-b")
-    assert use["conflict"]["cached_sha256"] == meta["sha256"]  # recorded for the audit
-    assert path.read_bytes() == forged  # never replaced: R-a's record lists this path
+    # R-a's record lists other bytes, and R-a is not running: the forged bytes are moved
+    # aside, never deleted, and recorded; this run's own predictions take the key.
+    assert use["quarantined"]["sha256"] == meta["sha256"]
+    assert (root / use["quarantined"]["moved_to"]).read_bytes() == forged
+    assert "conflict" not in use
     own = next(a["path"] for a in second.artifacts if a["kind"] == "predictions_raw_val")
-    assert own.startswith("runs/results/R-b/")
+    assert own.startswith("runs/cache/predictions/")
+    assert path.read_bytes() != forged
     assert second.metrics == first.metrics
 
 
@@ -653,7 +657,7 @@ def test_cached_predictions_count_only_with_their_producers_record(
     run_experiment(_request(root, cells[0], run_id="R-a"))  # never recorded
     second = run_experiment(_request(root, cells[0], run_id="R-b"))
     assert second.environment["prediction_cache"]["val"] == {"hit": False, "produced_by": "R-b"}
-    assert "no record of R-a lists them" in caplog.text
+    assert "no record lists them (cached by R-a)" in caplog.text
     register(root, "R-b", second.artifacts)
     third = run_experiment(_request(root, cells[0], run_id="R-c"))
     assert third.environment["prediction_cache"]["val"] == {"hit": True, "produced_by": "R-b"}
@@ -708,6 +712,13 @@ def test_the_record_file_follows_the_registry_store_layout(tmp_path: Path) -> No
     from qcal_lab.experiment import RECORD_FILE
 
     assert RegistryStore(tmp_path).path_for("R-1") == tmp_path / RECORD_FILE.format(run_id="R-1")
+
+
+def test_the_marker_file_is_the_launchers_layout() -> None:
+    from qcal.registry.store import MARKER_SUFFIX
+    from qcal_lab.experiment import MARKER_FILE
+
+    assert MARKER_FILE.format(run_id="R-1") == f"R-1{MARKER_SUFFIX}"
 
 
 def test_prediction_code_is_the_prediction_modules_only(

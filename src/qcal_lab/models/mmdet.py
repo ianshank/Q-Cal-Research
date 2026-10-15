@@ -8,13 +8,21 @@ public ``mmdet.apis`` functions and the ``pred_instances`` fields (``bboxes``, `
 
 ``model.test_cfg`` overrides come from configuration (``score_threshold``, ``max_per_image``),
 both required. The precision's numerics regime (:mod:`qcal_lab.numerics`) is applied before
-the model is built, and the run records every switch in effect and the device it used. The
-checkpoint's class names must equal the dataset's, in label order.
+the model is built, and the run records every switch in effect and the device it used.
+
+The checkpoint's class names are read from the checkpoint itself before the model is built,
+as MMDetection 3.3 reads them: ``init_detector`` substitutes COCO's names when a checkpoint
+carries none, so the built model's names prove nothing. They must equal the dataset's, in
+label order (exactly, or after folding case and underscores, as v1-era checkpoints spell
+``traffic_light``). A checkpoint without names is refused unless
+``detectors.<name>.label_order_attested_sha256`` names the dataset's category order: Ian's
+attestation, after checking the label order by hand (D2).
 """
 
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 from collections.abc import Mapping, Sequence
@@ -41,6 +49,10 @@ _log = get_logger("lab.models.mmdet")
 API_MODULE: Final = "mmdet.apis"
 TORCH_MODULE: Final = "torch"
 CONFIG_MODULE: Final = "mmengine.config"
+CHECKPOINT_MODULE: Final = "mmengine.runner"
+#: The compiled ops whose build decides kernels; a source rebuild keeps mmcv's version string.
+MMCV_EXTENSION: Final = "mmcv._ext"
+ATTESTATION_SETTING: Final = "label_order_attested_sha256"
 #: The device record fields that decide kernels, hence predictions (not which card it was).
 STACK_FIELDS: Final = ("torch", "cuda", "cudnn", "torch_build_sha256", "capability")
 _CFG_OPTIONS: Final = {
@@ -89,6 +101,58 @@ def check_label_map(name: str, classes: Sequence[str] | None, expected: Sequence
     )
 
 
+def label_order_digest(names: Sequence[str]) -> str:
+    """The digest an attestation names: the dataset's category names, one per line, in order."""
+    return hashlib.sha256("\n".join(names).encode("utf-8")).hexdigest()
+
+
+def _folded(names: Sequence[str]) -> list[str]:
+    return [str(n).casefold().replace("_", " ") for n in names]
+
+
+def checkpoint_classes(loader: Any, checkpoint: Path) -> list[str] | None:
+    """The class names a checkpoint carries, found where MMDetection 3.3 looks: its
+    ``meta["dataset_meta"]`` (keys in any case), else ``meta["CLASSES"]``; ``None`` if absent.
+
+    ``loader`` is ``mmengine.runner``: the deserialiser ``init_detector`` itself uses.
+    """
+    loaded = loader.CheckpointLoader.load_checkpoint(str(checkpoint), map_location="cpu")
+    meta = loaded.get("meta") if isinstance(loaded, Mapping) else None
+    if not isinstance(meta, Mapping):
+        return None
+    dataset_meta = meta.get("dataset_meta")
+    if isinstance(dataset_meta, Mapping):
+        lowered = {str(k).lower(): v for k, v in dataset_meta.items()}
+        if lowered.get("classes") is not None:
+            return [str(c) for c in lowered["classes"]]
+    classes = meta.get("CLASSES")
+    return None if classes is None else [str(c) for c in classes]
+
+
+def checkpoint_label_map(
+    name: str, classes: Sequence[str] | None, expected: Sequence[str], attested: str
+) -> str:
+    """How the checkpoint's labels match the dataset's: ``exact``, ``folded`` or ``attested``.
+
+    Refuses names that differ, and a checkpoint without names that nobody attested.
+    """
+    if classes is None:
+        digest = label_order_digest(expected)
+        if attested == digest:
+            return "attested"
+        raise DetectorError(
+            f"{name}: the checkpoint carries no class names, so MMDetection would label it "
+            f"with COCO's; check its label order, then set detectors.{name}.{ATTESTATION_SETTING}"
+            f' = "{digest}" (the dataset\'s category order; D2)'
+        )
+    if list(classes) == list(expected):
+        return "exact"
+    if _folded(classes) == _folded(expected):
+        return "folded"
+    check_label_map(name, classes, expected)  # raises, naming the first differing label
+    return "exact"  # pragma: no cover - check_label_map raised
+
+
 def model_classes(model: Any) -> list[str] | None:
     """The class names a built MMDetection model carries (``dataset_meta``), if any."""
     meta = getattr(model, "dataset_meta", None)
@@ -109,6 +173,7 @@ class MMDetDetector:
         cfg_options: Mapping[str, Any],
         api: Any,
         runtime: Mapping[str, Any] | None = None,
+        checkpoint_names: Sequence[str] | None = None,
     ) -> None:
         self.name = name
         self.runtime = dict(runtime or {})
@@ -121,7 +186,13 @@ class MMDetDetector:
             device=device,
             cfg_options=dict(cfg_options) or None,
         )
-        check_label_map(name, model_classes(self._model), ground_truth.category_names)
+        if checkpoint_names is not None:  # attested checkpoints carry none to compare
+            built = model_classes(self._model)
+            if built != list(checkpoint_names):
+                raise DetectorError(
+                    f"{name}: the built model's classes differ from its checkpoint's "
+                    f"({built!r} vs {list(checkpoint_names)!r})"
+                )
 
     def _image(self, image_id: str) -> ImageDetections:
         info = self.ground_truth.images.get(image_id)
@@ -176,6 +247,17 @@ def _build(context: DetectorContext) -> MMDetDetector:
             raise DetectorError(f"checkpoint {checkpoint} has sha256 {actual}, expected {expected}")
     else:
         _log.warning("%s: checkpoint_sha256 is not set; the checkpoint is not verified", prefix)
+    loader = _import(CHECKPOINT_MODULE, "the checkpoint's class names cannot be read")
+    try:
+        names = checkpoint_classes(loader, checkpoint)
+    except (OSError, RuntimeError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise DetectorError(f"cannot read checkpoint {checkpoint}: {exc}") from exc
+    label_map = checkpoint_label_map(
+        context.name,
+        names,
+        context.ground_truth.category_names,
+        str(context.settings.get(ATTESTATION_SETTING, "")),
+    )
     regime = load_regime(lab, context.precision)
     torch = _import(TORCH_MODULE, "the MMDetection detector cannot run")
     numerics = apply_regime(torch, regime, os.environ)  # before the model is built
@@ -194,7 +276,9 @@ def _build(context: DetectorContext) -> MMDetDetector:
             "precision": context.precision,
             "numerics": numerics,
             "device": device_record(torch, device),
+            "label_map": label_map,
         },
+        checkpoint_names=names,
     )
     # Importing mmdet and building the model may change switches; inference runs under these.
     detector.runtime["numerics"]["effective"] = effective_switches(torch)
@@ -237,7 +321,22 @@ def key_parts(lab: LabConfig, name: str) -> dict[str, Any]:
     return {
         "stack": {field: device.get(field) for field in STACK_FIELDS},
         "resolved_config_sha256": hashlib.sha256(resolved.encode("utf-8")).hexdigest(),
+        "mmcv_ext_sha256": mmcv_extension_digest(),
     }
+
+
+def mmcv_extension_digest() -> str:
+    """sha256 of mmcv's compiled ops (NMS and friends), ``""`` without them.
+
+    A source rebuild for another GPU architecture keeps mmcv's version string, so the
+    fingerprinted version alone would let the cache serve predictions from the old build.
+    """
+    try:
+        spec = importlib.util.find_spec(MMCV_EXTENSION)
+    except (ImportError, ValueError):
+        return ""
+    origin = None if spec is None else spec.origin
+    return sha256_file(Path(origin)) if origin and Path(origin).is_file() else ""
 
 
 DETECTORS.register("mmdet", _build)
@@ -245,11 +344,18 @@ KEY_PARTS.register("mmdet", key_parts)
 
 __all__ = [
     "API_MODULE",
+    "ATTESTATION_SETTING",
+    "CHECKPOINT_MODULE",
     "CONFIG_MODULE",
+    "MMCV_EXTENSION",
     "STACK_FIELDS",
     "TORCH_MODULE",
     "MMDetDetector",
     "check_label_map",
+    "checkpoint_classes",
+    "checkpoint_label_map",
     "key_parts",
+    "label_order_digest",
+    "mmcv_extension_digest",
     "model_classes",
 ]

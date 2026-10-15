@@ -126,3 +126,95 @@ def test_n12_a_case_mismatched_name_is_refused(project: tuple[Path, list[str]]) 
     lab = load_lab_config(root, root / "configs/LAB.TOML")
     with pytest.raises(ConfigError, match="not covered"):
         require_hashed(lab, load_config(root, environ={}))
+
+
+# --- N2: unvouched cache bytes are quarantined, never deleted; vouched or live ones stay -----
+
+
+def _forge_cached_val(root: Path, first: object) -> tuple[Path, str]:
+    """Replace the cached val predictions with other images, keeping the sidecar consistent."""
+    import hashlib
+
+    path = root / next(a["path"] for a in first.artifacts if a["kind"] == "predictions_raw_val")  # type: ignore[attr-defined]
+    lines = path.read_text().splitlines()
+    path.write_text(lines[0] + "\n" + lines[1].replace('"image_id":"', '"image_id":"x') + "\n")
+    forged = hashlib.sha256(path.read_bytes()).hexdigest()
+    sidecar = path.with_suffix(".meta.json")
+    meta = json.loads(sidecar.read_text())
+    sidecar.write_text(json.dumps({**meta, "sha256": forged}))
+    return path, forged
+
+
+def test_n2_bytes_a_record_vouches_for_never_move(project: tuple[Path, list[str]]) -> None:
+    from tests.lab_support import register
+
+    root, cells = project
+    first = run_experiment(_request(root, cells[0], 0, "R-a"))
+    path, forged = _forge_cached_val(root, first)
+    listed = [
+        {**a, "sha256": forged} if a["path"] == str(path.relative_to(root)) else a
+        for a in first.artifacts
+    ]
+    register(root, "R-a", listed)  # a record lists the forged bytes: they are evidence now
+    second = run_experiment(_request(root, cells[0], 0, "R-b"))
+    use = second.environment["prediction_cache"]["val"]
+    assert use["conflict"]["cached_sha256"] == forged
+    assert "quarantined" not in use
+    assert path.is_file()
+    assert __import__("hashlib").sha256(path.read_bytes()).hexdigest() == forged
+
+
+def test_n2_a_running_producers_bytes_are_kept(project: tuple[Path, list[str]]) -> None:
+    """Its record does not exist yet; moving its file would fail it when it is recorded."""
+    import fcntl
+
+    root, cells = project
+    first = run_experiment(_request(root, cells[0], 0, "R-a"))
+    path, forged = _forge_cached_val(root, first)
+    marker = root / "runs/inflight/R-a.inflight.json"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("{}")
+    with marker.open("rb") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)  # R-a's launcher is alive
+        second = run_experiment(_request(root, cells[0], 0, "R-b"))
+    use = second.environment["prediction_cache"]["val"]
+    assert use["conflict"]["cached_sha256"] == forged
+    assert path.is_file()
+
+
+def test_n2_quarantine_moves_only_the_bytes_it_checked(tmp_path: Path) -> None:
+    import hashlib
+
+    from qcal_lab.predictions import QUARANTINE_DIR, PredictionCache, cache_key
+    from tests.lab_support import image, predictions_header
+
+    cache = PredictionCache(tmp_path / "cache")
+    key = cache_key(detector={"name": "x"}, split_sha256="s")
+    entry = cache.put(key, predictions_header(), [image("a")], produced_by="R-1")
+    assert cache.quarantine(key, "0" * 64) is None  # other bytes than checked: untouched
+    assert entry.path.is_file()
+    moved = cache.quarantine(key, entry.sha256)
+    assert moved == tmp_path / "cache" / QUARANTINE_DIR / key / f"{entry.sha256}.jsonl"
+    assert hashlib.sha256(moved.read_bytes()).hexdigest() == entry.sha256
+    assert moved.with_suffix(".meta.json").is_file()
+    assert not entry.path.exists()
+    assert cache.quarantined() == [moved]
+    # the same bytes again: the existing quarantined copy is kept, nothing overwritten
+    again = cache.put(key, predictions_header(), [image("a")], produced_by="R-2")
+    before = moved.stat().st_mtime_ns
+    assert cache.quarantine(key, again.sha256) == moved
+    assert moved.stat().st_mtime_ns == before
+    assert cache.quarantine(key, again.sha256) is None  # nothing left under the key
+
+
+def test_n2_status_lists_quarantined_predictions(project: tuple[Path, list[str]]) -> None:
+    from qcal_lab.status import build_status
+
+    root, cells = project
+    first = run_experiment(_request(root, cells[0], 0, "R-a"))
+    _forge_cached_val(root, first)
+    run_experiment(_request(root, cells[0], 0, "R-b"))
+    report = build_status(load_config(root, environ={}), load_lab_config(root))
+    (item,) = [i for i in report.to_dict()["items"] if i["name"] == "prediction cache"]
+    assert item["ready"] is False
+    assert "1 quarantined" in item["detail"]

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from qcal.config import Config, ConfigError
@@ -18,6 +19,7 @@ from qcal_lab.config import LabConfig
 from qcal_lab.evaluation import HandwrittenMissingError, load_eval_loop
 from qcal_lab.models import detector_problems
 from qcal_lab.parity import KINDS, ParityError, load_cases
+from qcal_lab.predictions import PredictionCache
 
 
 @dataclass
@@ -79,6 +81,25 @@ def _detectors(report: StatusReport, lab: LabConfig) -> None:
         report.add(f"detector {name}", ok=not problems, detail="; ".join(problems) or "configured")
 
 
+def _quarantine(report: StatusReport, lab: LabConfig) -> None:
+    """Quarantined predictions are a conflict nobody explained: a detector that is not
+    deterministic, or a key that misses an input. Ian looks before registered runs."""
+    configured = lab.config.str_value("predictions.cache_dir")
+    if not configured:
+        report.add("prediction cache", ok=True, detail="disabled")
+        return
+    directory = Path(configured)
+    moved = PredictionCache(
+        directory if directory.is_absolute() else lab.config.root / directory
+    ).quarantined()
+    detail = (
+        f"{len(moved)} quarantined under {moved[0].parent.parent}: unexplained conflicts"
+        if moved
+        else "no quarantined predictions"
+    )
+    report.add("prediction cache", ok=not moved, detail=detail)
+
+
 def build_status(qcal_config: Config, lab: LabConfig) -> StatusReport:
     report = StatusReport()
     report.add(
@@ -108,6 +129,7 @@ def build_status(qcal_config: Config, lab: LabConfig) -> StatusReport:
     except (ConfigError, ImportError) as exc:
         report.add("evaluation loop (Ian)", ok=False, detail=f"cannot load: {exc}")
     _detectors(report, lab)
+    _quarantine(report, lab)
     try:
         cases = load_cases(lab.config.root / lab.text("parity.fixtures_dir"))
     except ParityError as exc:
