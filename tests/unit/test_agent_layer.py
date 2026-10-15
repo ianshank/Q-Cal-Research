@@ -640,6 +640,8 @@ def test_a_network_agent_without_deny_read_is_refused(config: Config, repo: Path
         ("deny-read docs/private/**", "Read|Grep|Glob", ["Read", "Grep", "Glob"]),
         ("guard-paths", "Read|Grep|Glob", ["Read", "Grep", "Glob"]),
         ("deny-read ian_only", "*", []),
+        # quoted, the categories are one argument: a glob that matches nothing (review B6)
+        ('deny-read "ian_only extra"', "Read|Grep|Glob", ["Read", "Grep", "Glob"]),
     ],
 )
 def test_each_read_tool_needs_the_required_deny_read(
@@ -663,3 +665,9 @@ def test_the_required_categories_are_configurable(make_config: Callable[[str], C
 def test_an_agent_without_network_tools_needs_no_deny_read(config: Config, repo: Path) -> None:
     frontmatter_file(repo, AGENT, VALID_AGENT)
     assert check_agent_layer(config).errors == []
+
+
+def test_a_fail_open_deny_read_is_refused(config: Config, repo: Path) -> None:
+    _network_agent(repo, hook_line="--fail-open deny-read ian_only")
+    errors = check_agent_layer(config).errors
+    assert any("runs --fail-open" in e for e in errors), errors

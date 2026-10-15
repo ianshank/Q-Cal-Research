@@ -478,3 +478,19 @@ finding = "an identity column no run recorded is refused, never matched (review 
 old = '''        if all(column not in row for row in rows):'''
 new = '''        if column in core and all(column not in row for row in rows):'''
 tests = ["tests/regression/test_registry_run_gates.py"]
+
+[[mutant]]
+id = "S3-hook-args-shell-split"
+file = "src/qcal/integrity/agent_settings.py"
+finding = "hook arguments are split as the shell splits them, quoting kept (review B6)"
+old = '''        words = shlex.split(command)'''
+new = '''        words = command.replace('"', " ").replace("'", " ").split()'''
+tests = ["tests/unit/test_agent_layer.py", "tests/unit/test_agent_policy.py"]
+
+[[mutant]]
+id = "S3-no-fail-open-guard"
+file = "src/qcal/integrity/agent_settings.py"
+finding = "a PreToolUse guard may not run fail-open (review B6)"
+old = '''    if event == "PreToolUse" and wrapped_fail_open(config, command):'''
+new = '''    if False:'''
+tests = ["tests/unit/test_agent_layer.py", "tests/unit/test_agent_policy.py"]

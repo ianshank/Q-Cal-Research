@@ -271,10 +271,37 @@ def test_wrapped_hook_names_must_exist(config: Config, repo: Path) -> None:
     ]
 
 
-def test_fail_open_flag_is_skipped_when_reading_the_hook_name(config: Config, repo: Path) -> None:
+def test_a_fail_open_guard_is_refused(config: Config, repo: Path) -> None:
+    """The hook name is still read past the flag, but a PreToolUse guard that fails would
+    allow the call: only the Stop hook may fail open (advisory review B6)."""
     wrapper_settings(repo, "Bash", "--fail-open guard-bash")
 
+    expected = (
+        f"{SETTINGS}: PreToolUse hook '{WRAPPER} --fail-open guard-bash' runs --fail-open: a "
+        "guard that fails would allow the call (only the Stop hook may fail open)"
+    )
+    assert check_agent_layer(config).errors == [expected]
+
+
+def test_the_stop_hook_may_fail_open(config: Config, repo: Path) -> None:
+    wrapper_settings(repo, "Bash", "guard-bash")
+    data = json.loads((repo / SETTINGS).read_text("utf-8"))
+    stop = {"type": "command", "command": f"{WRAPPER} --fail-open claims"}
+    data["hooks"]["Stop"] = [{"hooks": [stop]}]
+    (repo / SETTINGS).write_text(json.dumps(data), "utf-8")
+
     assert check_agent_layer(config).errors == []
+
+
+def test_hook_arguments_are_split_as_the_shell_splits_them(config: Config) -> None:
+    from qcal.integrity.agent_settings import wrapped_hook_args
+
+    assert wrapped_hook_args(config, f"{WRAPPER} deny-read 'ian_only ian_data'") == [
+        "deny-read",
+        "ian_only ian_data",  # one argument at run time, so one here
+    ]
+    assert wrapped_hook_args(config, f"{WRAPPER} deny-read 'unbalanced") == [""]
+    assert wrapped_hook_args(config, "echo 'unbalanced") is None
 
 
 @pytest.mark.parametrize(
