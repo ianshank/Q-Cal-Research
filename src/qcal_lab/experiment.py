@@ -572,25 +572,36 @@ def _producer_running(ctx: _Context, run_id: str) -> bool:
 
 def _quarantine_unvouched(
     ctx: _Context, cache: PredictionCache, key: str, conflict: CacheConflictError
-) -> dict[str, str] | None:
+) -> dict[str, Any] | None:
     """Move other bytes under ``key`` aside when nothing vouches for them; what moved.
 
-    Bytes a record lists are evidence and never move. Neither do bytes whose producer is
-    still running: its record does not exist yet, and moving its file would fail that run
-    when the launcher re-hashes its artifacts. Unreadable bytes cannot be checked: kept.
+    Bytes a record lists are evidence and never move. Neither do bytes any of whose
+    producers is still running: its record does not exist yet, and moving its file would
+    fail that run when the launcher re-hashes its artifacts. Unreadable bytes cannot be
+    checked: kept. The producers are checked before the records: a launcher releases its
+    marker only after writing its record, so a producer that finished in between is then
+    found by :func:`_vouched` (the other order could miss both).
     """
     existing = conflict.existing_sha256
     path = cache.path(key)
-    if path is None or existing == UNREADABLE or _vouched(ctx, path, existing):
+    if path is None or existing == UNREADABLE:
         return None
-    producer = cache.producer(key)
-    if _producer_running(ctx, producer):
-        _log.info("cached predictions %s belong to running %s; kept", path.name, producer)
+    producers = cache.producers(key)
+    running = [run for run in producers if _producer_running(ctx, run)]
+    if running:
+        _log.info("cached predictions %s belong to running %s; kept", path.name, running)
+        return None
+    if _vouched(ctx, path, existing):
         return None
     moved = cache.quarantine(key, existing)
     if moved is None:
         return None
-    return {"sha256": existing, "produced_by": producer, "moved_to": ctx.relative(moved)}
+    return {
+        "sha256": existing,
+        "produced_by": producers[-1] if producers else "",
+        "producers": producers,
+        "moved_to": ctx.relative(moved),
+    }
 
 
 def prediction_key(

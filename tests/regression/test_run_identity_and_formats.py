@@ -182,6 +182,56 @@ def test_n2_a_running_producers_bytes_are_kept(project: tuple[Path, list[str]]) 
     assert path.is_file()
 
 
+def test_n2_a_producer_finishing_during_the_check_is_vouched_for(
+    project: tuple[Path, list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The producer is checked before the records: one that writes its record and releases
+    its marker in between is then found by its record (advisory review B4)."""
+    from qcal_lab import experiment
+    from tests.lab_support import register
+
+    root, cells = project
+    first = run_experiment(_request(root, cells[0], 0, "R-a"))
+    path, forged = _forge_cached_val(root, first)
+    listed = [
+        {**a, "sha256": forged} if a["path"] == str(path.relative_to(root)) else a
+        for a in first.artifacts
+    ]
+
+    def finishes_now(ctx: object, run_id: str) -> bool:
+        register(root, run_id, listed)  # its launcher writes the record, drops the marker
+        return False
+
+    monkeypatch.setattr(experiment, "_producer_running", finishes_now)
+    second = run_experiment(_request(root, cells[0], 0, "R-b"))
+    use = second.environment["prediction_cache"]["val"]
+    assert "quarantined" not in use
+    assert path.is_file()
+
+
+def test_n2_an_earlier_live_producer_keeps_bytes_a_later_one_re_put(
+    project: tuple[Path, list[str]],
+) -> None:
+    """R-c re-put R-a's bytes and died; R-a is still running: nothing moves."""
+    import fcntl
+
+    root, cells = project
+    first = run_experiment(_request(root, cells[0], 0, "R-a"))
+    path, _ = _forge_cached_val(root, first)
+    sidecar = path.with_suffix(".meta.json")
+    meta = json.loads(sidecar.read_text())
+    sidecar.write_text(json.dumps({**meta, "produced_by": "R-c", "producers": ["R-a", "R-c"]}))
+    marker = root / "runs/inflight/R-a.inflight.json"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("{}")
+    with marker.open("rb") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)  # R-a's launcher is alive; R-c's is not
+        second = run_experiment(_request(root, cells[0], 0, "R-b"))
+    use = second.environment["prediction_cache"]["val"]
+    assert "quarantined" not in use
+    assert path.is_file()
+
+
 def test_n2_quarantine_moves_only_the_bytes_it_checked(tmp_path: Path) -> None:
     import hashlib
 

@@ -307,15 +307,17 @@ tests = ["tests/regression/test_run_identity_and_formats.py"]
 id = "F3-vouched-never-move"
 file = "src/qcal_lab/experiment.py"
 finding = "cache bytes a record lists are evidence and are never quarantined"
-old = '''    if path is None or existing == UNREADABLE or _vouched(ctx, path, existing):'''
-new = '''    if path is None or existing == UNREADABLE:'''
+old = '''    if _vouched(ctx, path, existing):
+        return None
+    moved = cache.quarantine(key, existing)'''
+new = '''    moved = cache.quarantine(key, existing)'''
 tests = ["tests/regression/test_run_identity_and_formats.py"]
 
 [[mutant]]
 id = "F3-running-producer"
 file = "src/qcal_lab/experiment.py"
 finding = "a running producer's cached bytes are kept (its record does not exist yet)"
-old = '''    if _producer_running(ctx, producer):'''
+old = '''    if running:'''
 new = '''    if False:'''
 tests = ["tests/regression/test_run_identity_and_formats.py"]
 
@@ -494,3 +496,41 @@ finding = "a PreToolUse guard may not run fail-open (review B6)"
 old = '''    if event == "PreToolUse" and wrapped_fail_open(config, command):'''
 new = '''    if False:'''
 tests = ["tests/unit/test_agent_layer.py", "tests/unit/test_agent_policy.py"]
+
+[[mutant]]
+id = "F3-producers-before-records"
+file = "src/qcal_lab/experiment.py"
+finding = "producers are checked before records, so one finishing in between is vouched for (review B4)"
+old = '''    if path is None or existing == UNREADABLE:
+        return None
+    producers = cache.producers(key)
+    running = [run for run in producers if _producer_running(ctx, run)]
+    if running:
+        _log.info("cached predictions %s belong to running %s; kept", path.name, running)
+        return None
+    if _vouched(ctx, path, existing):
+        return None'''
+new = '''    if path is None or existing == UNREADABLE or _vouched(ctx, path, existing):
+        return None
+    producers = cache.producers(key)
+    running = [run for run in producers if _producer_running(ctx, run)]
+    if running:
+        _log.info("cached predictions %s belong to running %s; kept", path.name, running)
+        return None'''
+tests = ["tests/regression/test_run_identity_and_formats.py"]
+
+[[mutant]]
+id = "F3-every-producer"
+file = "src/qcal_lab/experiment.py"
+finding = "any live producer of the bytes keeps them, not only the latest (review B4)"
+old = '''    running = [run for run in producers if _producer_running(ctx, run)]'''
+new = '''    running = [run for run in producers[-1:] if _producer_running(ctx, run)]'''
+tests = ["tests/regression/test_run_identity_and_formats.py"]
+
+[[mutant]]
+id = "F3-put-keeps-producers"
+file = "src/qcal_lab/predictions.py"
+finding = "re-putting identical bytes keeps the earlier producers (review B4)"
+old = '''            producers = [*earlier, produced_by]'''
+new = '''            producers = [produced_by]'''
+tests = ["tests/unit/test_lab_predictions.py"]

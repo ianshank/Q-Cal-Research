@@ -340,19 +340,31 @@ class PredictionCache:
             finally:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
-    def producer(self, key: str) -> str:
-        """The run the key's sidecar names, or ``""`` when there is none to read."""
+    def producers(self, key: str) -> list[str]:
+        """Every run that put the key's bytes, oldest first; ``[]`` when none can be read.
+
+        Identical bytes re-put by a later run keep the earlier producers: the first may still
+        be running, and its record will list the file.
+        """
         path = self.path(key)
         if path is None:
-            return ""
+            return []
         try:
             document = json.loads(self._sidecar(path).read_text("utf-8"))
             meta = open_envelope(
                 document, CACHE_ENTRY_FORMAT, CACHE_ENTRY_VERSION, path.name, error=PredictionsError
             )
         except (OSError, UnicodeDecodeError, json.JSONDecodeError, PredictionsError):
-            return ""
-        return str(meta.get("produced_by", ""))
+            return []
+        listed = meta.get("producers")
+        if isinstance(listed, list) and all(isinstance(r, str) for r in listed):
+            return [r for r in listed if r]
+        latest = str(meta.get("produced_by", ""))  # a sidecar written before the list existed
+        return [latest] if latest else []
+
+    def producer(self, key: str) -> str:
+        """The latest run the key's sidecar names, or ``""`` when there is none to read."""
+        return (self.producers(key) or [""])[-1]
 
     def quarantine(self, key: str, sha256: str) -> Path | None:
         """Move the key's bytes aside if they still hash to ``sha256``; the moved file's path.
@@ -425,15 +437,16 @@ class PredictionCache:
     ) -> CacheEntry:
         """Cache ``images`` under ``key``, never replacing other bytes there.
 
-        Identical bytes already under the key are kept, and the sidecar names ``produced_by``
-        from now on (the earlier producer's record may be missing). Other bytes raise
-        :class:`CacheConflictError`.
+        Identical bytes already under the key are kept, and the sidecar adds ``produced_by``
+        to their producers (the earlier producer's record may be missing, or not written
+        yet). Other bytes raise :class:`CacheConflictError`. Call it under :meth:`lock`.
         """
         path = self.path(key)
         if path is None:
             raise PredictionsError("the prediction cache is disabled")
         data = dumps(header, images)
         digest = hashlib.sha256(data).hexdigest()
+        producers = [produced_by]
         try:
             write_bytes_exclusive(path, data)
         except FileExistsError:
@@ -445,8 +458,16 @@ class PredictionCache:
             if existing != digest:
                 raise CacheConflictError(key, existing, digest) from None
             _log.info("cached predictions %s already hold these bytes", path.name)
+            earlier = [r for r in self.producers(key) if r != produced_by]
+            producers = [*earlier, produced_by]
         created = datetime.now(UTC).isoformat()
-        meta = {"sha256": digest, "key": key, "produced_by": produced_by, "created_at": created}
+        meta = {
+            "sha256": digest,
+            "key": key,
+            "produced_by": produced_by,
+            "producers": producers,
+            "created_at": created,
+        }
         document = envelope(CACHE_ENTRY_FORMAT, CACHE_ENTRY_VERSION, meta)
         write_bytes_atomic(self._sidecar(path), json_bytes(document))
         return CacheEntry(path, produced_by, created, digest)

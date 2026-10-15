@@ -149,6 +149,23 @@ def test_cache_round_trip_and_tamper_detection(tmp_path: Path) -> None:
     assert cache.get(key) is None  # digest mismatch: ignored, recomputed by the caller
 
 
+def test_identical_bytes_keep_every_producer(tmp_path: Path) -> None:
+    """The first producer may still be running when a second puts the same bytes."""
+    cache = PredictionCache(tmp_path / "cache")
+    entry = cache.put("k", HEADER, IMAGES, produced_by="R-1")
+    cache.put("k", HEADER, IMAGES, produced_by="R-2")
+    cache.put("k", HEADER, IMAGES, produced_by="R-1")  # again: moved to the end, not repeated
+    assert cache.producers("k") == ["R-2", "R-1"]
+    assert cache.producer("k") == "R-1"
+    sidecar = entry.path.with_suffix(".meta.json")
+    document = json.loads(sidecar.read_text())
+    del document["producers"]  # written before the list existed: its one producer
+    sidecar.write_text(json.dumps(document))
+    assert cache.producers("k") == ["R-1"]
+    assert PredictionCache(None).producers("k") == []
+    assert cache.producers("absent") == []
+
+
 def test_cache_metadata_must_name_the_key(tmp_path: Path) -> None:
     cache = PredictionCache(tmp_path / "cache")
     entry = cache.put("k1", HEADER, IMAGES, produced_by="R-1")
