@@ -44,7 +44,7 @@ max_tolerance_fraction = 0.05
 [preflight]
 # lab-status checks that lock and cache directories are not on these (qcal_lab.preflight):
 # flock there may refuse (ENOLCK) or lock nothing across hosts.
-network_filesystems = ["nfs", "nfs4", "cifs", "smb3", "smbfs", "fuse.sshfs", "9p", "afs", "ceph", "glusterfs", "lustre"]
+network_filesystems = ["nfs", "nfs4", "cifs", "smb3", "smbfs", "fuse.sshfs", "9p", "afs", "ceph", "glusterfs", "lustre", "beegfs", "gpfs", "fuse.ceph-fuse", "fuse.glusterfs", "fuse.s3fs", "fuse.gcsfuse"]
 mounts_file = "/proc/mounts"
 
 [eval_contract]

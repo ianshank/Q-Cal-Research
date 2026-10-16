@@ -778,8 +778,8 @@ tests = [
 id = "PRF-sanity-decimal"
 file = "src/qcal_lab/sanity.py"
 finding = "values are compared as written: 0.8 is within 0.1 of 0.7 (panel round 2)"
-old = '''        value = Decimal(repr(measured))'''
-new = '''        value = Decimal(measured)'''
+old = '''        value = Decimal(repr(float(measured)))'''
+new = '''        value = Decimal(float(measured))'''
 tests = [
     "tests/unit/test_lab_sanity.py::test_the_tolerance_is_inclusive_in_the_declared_units",
 ]
@@ -1328,4 +1328,46 @@ old = '''    return json.dumps(encode(_plain(data)), sort_keys=True, separators=
 new = '''    return json.dumps(encode(data), sort_keys=True, separators=(",", ":"), default=repr)'''
 tests = [
     "tests/unit/test_lab_eval_contract.py::test_numpy_like_numbers_do_not_break_the_comparison",
+]
+
+[[mutant]]
+id = "PRF-sanity-numpy"
+file = "src/qcal_lab/sanity.py"
+finding = "a numpy measurement is judged by its value (panel round 3)"
+old = '''        value = Decimal(repr(float(measured)))'''
+new = '''        value = Decimal(repr(measured))'''
+tests = [
+    "tests/unit/test_lab_sanity.py::test_a_numpy_measurement_is_judged_by_its_value",
+]
+
+[[mutant]]
+id = "MC-errors-not-kills"
+file = "scripts/mutation_check.py"
+finding = "a setup error is not a kill (panel round 3)"
+old = '''        if case.find("failure") is not None
+    ]'''
+new = '''        if case.find("failure") is not None or case.find("error") is not None
+    ]'''
+tests = [
+    "tests/unit/test_mutation_check.py::test_failing_tests_are_read_from_the_junit_report",
+]
+
+[[mutant]]
+id = "MC-discover-error"
+file = "scripts/mutation_check.py"
+finding = "discovery reports a collection error as an error (panel round 3)"
+old = '''            verdict = DISCOVERED if code in (0, TESTS_FAILED) else ERROR'''
+new = '''            verdict = DISCOVERED'''
+tests = [
+    "tests/unit/test_mutation_check.py::test_discovery_reports_a_collection_error_as_an_error",
+]
+
+[[mutant]]
+id = "PF-escapes"
+file = "src/qcal_lab/preflight.py"
+finding = "every octal escape in a mount point is decoded (panel round 3)"
+old = '''            point = OCTAL_ESCAPE.sub(lambda m: chr(int(m[1], 8)), fields[1])  # \040 and the like'''
+new = '''            point = fields[1].replace("\\040", " ")'''
+tests = [
+    "tests/unit/test_lab_preflight.py::test_the_mount_table_is_parsed_with_escaped_spaces",
 ]

@@ -125,10 +125,10 @@ def test_failing_tests_are_read_from_the_junit_report(tmp_path: Path) -> None:
         "</testsuite></testsuites>",
     )
     write(tmp_path, "tests/test_f.py", "")
-    assert mc.failing_tests(report, tmp_path) == [
-        "tests/test_f.py::test_bad",
-        "tests/test_f.py::TestF::test_err",  # the class is part of the node id
-    ]
+    assert mc.failing_tests(report, tmp_path) == ["tests/test_f.py::test_bad"]  # not errors
+    failed = report.read_text().replace("<error/>", "<failure/>")
+    report.write_text(failed)
+    assert mc.failing_tests(report, tmp_path)[1] == "tests/test_f.py::TestF::test_err"  # class
     assert mc.failing_tests(tmp_path / "absent.xml", tmp_path) == []
     assert mc.node_id(tmp_path, "gone.mod", "t") == "gone/mod.py::t"  # no such file
 
@@ -167,6 +167,39 @@ def test_a_defence_whose_tests_fail_unmutated_is_an_error(
     root = _project(tmp_path, ENTRY.format(id="a", old="return 1", new="return 2"))
     write(root, "src/qcal/__init__.py", "def f() -> int:\n    return 3  # one return 1\n")
     assert mc.main(["--root", str(root), "--only", "a"]) == 1
+    assert capsys.readouterr().out.startswith("ERROR")
+
+
+@pytest.mark.parametrize(
+    ("source", "node", "defined"),
+    [
+        ("def test_one():\n    pass\n", "t.py::test_one[p]", True),
+        ("class TestF:\n    def test_one(self):\n        pass\n", "t.py::TestF::test_one", True),
+        (
+            "class TestF:\n    def test_renamed(self):\n        pass\n",
+            "t.py::TestF::test_one",
+            False,
+        ),
+        ("class TestFoo:\n    def test_one(self):\n        pass\n", "t.py::TestF::test_one", False),
+        ("def test_one_more():\n    pass\n", "t.py::test_one", False),
+        ("def test_one():\n    pass\n", "t.py::test_one::inner", False),  # not a class
+        ("def broken(:\n", "t.py::broken", False),
+    ],
+)
+def test_a_named_node_must_be_defined_down_to_its_last_part(
+    source: str, node: str, defined: bool
+) -> None:
+    """Panel round 3: a renamed method in a kept class, or a class name that is a prefix of
+    another, used to pass."""
+    assert mc._defines(source, node) is defined
+
+
+@pytest.mark.integration
+def test_discovery_reports_a_collection_error_as_an_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _project(tmp_path, ENTRY.format(id="a", old="def f() -> int:", new="def f( -> int:"))
+    assert mc.main(["--root", str(root), "--discover"]) == 1
     assert capsys.readouterr().out.startswith("ERROR")
 
 

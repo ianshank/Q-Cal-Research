@@ -106,13 +106,13 @@ def lab_config(root: Path, text: str = "") -> LabConfig:
 
 
 def ians_loop_absent(monkeypatch: Any) -> str:
-    """Make the packaged ``eval_loop.module`` unimportable for this test, written or not.
+    """Make the configured ``eval_loop.module`` unimportable for this test, written or not.
 
     Tests of the "Ian has not written his loop yet" path use this instead of relying on the
     file being absent, so they keep testing that path after his commit. A ``None`` entry in
     ``sys.modules`` makes the import raise ``ModuleNotFoundError`` naming that module.
     """
-    module = parse_lab_config(Path(), None).text("eval_loop.module")
+    module = load_lab_config(Path(__file__).resolve().parents[1]).text("eval_loop.module")
     monkeypatch.setitem(sys.modules, module, None)
     return module
 

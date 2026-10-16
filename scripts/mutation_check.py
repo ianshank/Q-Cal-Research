@@ -31,6 +31,7 @@ Standard library only.
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import os
 import shutil
@@ -54,6 +55,7 @@ TESTS_FAILED: Final = 1
 TIMEOUT_S: Final = 900
 REQUIRED: Final = ("id", "file", "old", "new", "tests", "finding")
 NODE: Final = "::"
+DEFINITIONS: Final = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
 
 
 class DefenceError(ValueError):
@@ -138,8 +140,17 @@ def applicability_problems(root: Path, mutants: Sequence[Mutant]) -> list[str]:
 def _defines(source: str, node: str) -> bool:
     """Whether the test (or class) a node names is defined in ``source``: renames are caught
     here, by the unit test of this file, not later as an ERROR of the mutation run."""
-    name = node.split(NODE)[1].split("[", 1)[0]
-    return f"def {name}(" in source or f"class {name}" in source
+    parts = [part.split("[", 1)[0] for part in node.split(NODE)[1:]]
+    try:
+        body: list[ast.stmt] = ast.parse(source).body
+    except SyntaxError:
+        return False
+    for part in parts:
+        found = next((n for n in body if isinstance(n, DEFINITIONS) and n.name == part), None)
+        if found is None:
+            return False
+        body = found.body if isinstance(found, ast.ClassDef) else []
+    return True
 
 
 def test_file(node: str) -> str:
@@ -167,7 +178,7 @@ def copy_tree(root: Path, files: Sequence[str], dest: Path) -> None:
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target, follow_symlinks=False)
     git = ["git", "-c", "user.name=mutation", "-c", "user.email=mutation@localhost"]
-    git += ["-c", "commit.gpgsign=false", "-C", str(dest)]
+    git += ["-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-C", str(dest)]
     for args in (["init", "-q"], ["add", "-A"], ["commit", "-q", "-m", "copy"]):
         subprocess.run([*git, *args], capture_output=True, check=True)
 
@@ -207,7 +218,8 @@ def node_id(root: Path, classname: str, name: str) -> str:
 
 
 def failing_tests(junit: Path, root: Path) -> list[str]:
-    """The node id of every failed or errored test case in a JUnit report."""
+    """The node id of every failed test case in a JUnit report. An error (a broken fixture or
+    setup) is not a failure: no assertion caught the mutant, so it never counts as a kill."""
     try:
         tree = ET.parse(junit)  # noqa: S314 - pytest's own report, written in our temp dir
     except (OSError, ET.ParseError):
@@ -215,7 +227,7 @@ def failing_tests(junit: Path, root: Path) -> list[str]:
     return [
         node_id(root, case.get("classname", ""), case.get("name", ""))
         for case in tree.iter("testcase")
-        if case.find("failure") is not None or case.find("error") is not None
+        if case.find("failure") is not None
     ]
 
 
@@ -273,8 +285,9 @@ def check(
         junit = Path(tmp) / "mutant.xml"
         code, out = run_tests(copy, python, tests, junit, first_failure=not discover)
         failed = failing_tests(junit, copy)
-        if discover:
-            return Outcome(mutant.id, DISCOVERED, "\n".join(failed))
+        if discover:  # a collection error is not "nothing caught it"
+            verdict = DISCOVERED if code in (0, TESTS_FAILED) else ERROR
+            return Outcome(mutant.id, verdict, "\n".join(failed) or f"pytest exit {code}\n{out}")
         verdict = classify(code, failed, mutant.tests)
         detail = ", ".join(failed[:3]) if verdict == KILLED else f"pytest exit {code}\n{out}"
         return Outcome(mutant.id, verdict, detail)

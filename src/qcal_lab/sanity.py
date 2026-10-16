@@ -16,6 +16,7 @@ metrics), so a declared check is NOT ASSESSED until then; nothing here computes 
 
 from __future__ import annotations
 
+import numbers
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
@@ -217,7 +218,7 @@ class SanityReport:
 
 
 def judge(
-    expected: Expectation, measured: float | None, configured: Configured | None = None
+    expected: Expectation, measured: object, configured: Configured | None = None
 ) -> SanityReport:
     """PASS when ``measured`` (pycocotools AP, a fraction) is within the declared tolerance of
     the zoo value, compared in the declared units with the values as written."""
@@ -230,10 +231,10 @@ def judge(
         return SanityReport(
             expected.detector, NOT_ASSESSED, ["AP measurement is disabled until D8"]
         )
-    try:
-        value = Decimal(repr(measured))
-    except InvalidOperation:  # pragma: no cover - repr() of a float always parses
-        value = Decimal("NaN")
+    value = Decimal("NaN")  # anything but a real number is an impossible measurement
+    if not isinstance(measured, bool) and isinstance(measured, numbers.Real):
+        # float() first: numpy 2 spells repr(np.float64(x)) "np.float64(x)"
+        value = Decimal(repr(float(measured)))
     if not (value.is_finite() and Decimal(0) <= value <= Decimal(1)):
         return SanityReport(expected.detector, FAIL, ["the measured AP is not in [0, 1]"])
     if abs(value * scale - zoo_ap) <= tolerance:

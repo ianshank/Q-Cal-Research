@@ -20,12 +20,16 @@ MOUNTS = """\
 server:/export /mnt/shared nfs4 rw 0 0
 /dev/sdb1 /mnt/shared/local ext4 rw 0 0
 host:/x /mnt/with\\040space fuse.sshfs rw 0 0
+host:/y /mnt/tab\\011and\\134slash nfs4 rw 0 0
 """
 NETWORK = frozenset({"nfs4", "fuse.sshfs"})
 
 
 def test_the_mount_table_is_parsed_with_escaped_spaces() -> None:
-    assert preflight.mount_points(MOUNTS)[-1] == ("/mnt/with space", "fuse.sshfs")
+    assert preflight.mount_points(MOUNTS)[-2:] == [
+        ("/mnt/with space", "fuse.sshfs"),
+        ("/mnt/tab\tand\\slash", "nfs4"),
+    ]
     assert preflight.mount_points("short line\n") == []
 
 

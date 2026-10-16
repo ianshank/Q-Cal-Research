@@ -68,7 +68,17 @@ def test_nothing_is_declared_until_ian_declares_it() -> None:
 
 
 @pytest.mark.parametrize(
-    "key", ["zoo_ap", "units", "source", "checkpoint_sha256", "image_set", "test_cfg", "on_fail"]
+    "key",
+    [
+        "zoo_ap",
+        "tolerance",
+        "units",
+        "source",
+        "checkpoint_sha256",
+        "image_set",
+        "test_cfg",
+        "on_fail",
+    ],
 )
 def test_an_incomplete_declaration_is_not_assessed_and_names_what_is_missing(key: str) -> None:
     values = declared()
@@ -110,7 +120,19 @@ def test_the_tolerance_is_inclusive_in_the_declared_units(
     assert judge(expectation("det", values, cap=cap), measured).verdict == verdict
 
 
-@pytest.mark.parametrize("measured", [math.nan, math.inf, -0.1, 1.5])
+class NumpyLike(float):
+    """numpy 2's float64 is a float whose repr is ``np.float64(x)``, which Decimal refuses."""
+
+    def __repr__(self) -> str:
+        return f"np.float64({float(self)!r})"
+
+
+def test_a_numpy_measurement_is_judged_by_its_value() -> None:
+    """Panel round 3: Decimal(repr(np.float64(0.71))) raised, and the check said FAIL."""
+    assert judge(expectation("det", declared()), NumpyLike(0.71)).verdict == "PASS"
+
+
+@pytest.mark.parametrize("measured", [math.nan, math.inf, -0.1, 1.5, "0.7"])
 def test_an_impossible_measurement_fails(measured: float) -> None:
     report = judge(expectation("det", declared()), measured)
     assert (report.verdict, report.reasons) == ("FAIL", ["the measured AP is not in [0, 1]"])

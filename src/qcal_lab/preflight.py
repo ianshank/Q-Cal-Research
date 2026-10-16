@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Final
@@ -32,6 +33,8 @@ CUDA_PREFIX: Final = "cuda"
 MMCV_EXT: Final = "mmcv._ext"
 #: device, mount point, type: the fields of a mount-table line read here.
 MOUNT_FIELDS: Final = 3
+#: The kernel writes space, tab, newline and backslash in mount points as \ooo.
+OCTAL_ESCAPE: Final = re.compile(r"\\([0-7]{3})")
 
 Importer = Callable[[str], Any]
 
@@ -50,7 +53,7 @@ def mount_points(text: str) -> list[tuple[str, str]]:
     for line in text.splitlines():
         fields = line.split()
         if len(fields) >= MOUNT_FIELDS:
-            point = fields[1].replace("\\040", " ")  # the kernel escapes spaces
+            point = OCTAL_ESCAPE.sub(lambda m: chr(int(m[1], 8)), fields[1])  # \040 and the like
             entries.append((point, fields[2]))
     return entries
 
