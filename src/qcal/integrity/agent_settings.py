@@ -120,9 +120,11 @@ def _after_wrapper(config: Config, command: str) -> list[str] | None:
         return [""] if wrapper in command else None
     if not any(word.endswith(wrapper) for word in words):
         return None
-    first = words[0]
-    if first.startswith(prefix) and first.endswith(wrapper) and standalone(command):
-        return words[1:]
+    # Compared as written, before the shell's unquoting: `\$CLAUDE_PROJECT_DIR/...` unquotes
+    # to the same word but runs a literal path that does not exist, so the guard never runs.
+    leading = command.lstrip()
+    if leading.startswith(prefix + wrapper) and leading[len(prefix + wrapper) :][:1] in ("", " "):
+        return words[1:] if standalone(command) else [""]
     return [""]
 
 

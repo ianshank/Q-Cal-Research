@@ -698,8 +698,20 @@ def test_a_guard_must_be_one_simple_command(config: Config, repo: Path, hook_lin
         f"QCAL_PYTHON=/bin/true {WRAPPER_CMD} deny-read ian_only ian_data",  # swaps its python
         "/tmp/elsewhere/run_hook.sh deny-read ian_only ian_data",  # not the project's wrapper
         "run_hook.sh deny-read ian_only ian_data",  # whichever one PATH finds
+        # Panel round 3: unquoted, this is the same word, but the shell runs a literal path
+        "\\$CLAUDE_PROJECT_DIR/.claude/hooks/run_hook.sh deny-read ian_only ian_data",
+        '"$CLAUDE_PROJECT_DIR"/src/qcal_lab/run_hook.sh deny-read ian_only ian_data',  # agents'
+        '"$CLAUDE_PROJECT_DIR"/.claude/hooks/run_hook.shx deny-read ian_only ian_data',
     ],
-    ids=["prefix-command", "prefix-assignment", "other-wrapper", "bare-wrapper"],
+    ids=[
+        "prefix-command",
+        "prefix-assignment",
+        "other-wrapper",
+        "bare-wrapper",
+        "escaped-dollar",
+        "agent-owned-wrapper",
+        "longer-name",
+    ],
 )
 def test_the_wrapper_must_be_the_projects_and_come_first(
     config: Config, repo: Path, command: str

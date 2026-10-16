@@ -214,11 +214,9 @@ tests = [
 id = "S4-wait-reraises"
 file = "src/qcal/registry/executor.py"
 finding = "an interrupted run keeps the program's envelope (artifacts, environment)"
-old = '''        if interrupt is not None:
-            return self._after_interrupt(proc, spec, started, interrupt, usage=usage)'''
-new = '''        if interrupt is not None:
-            self._terminate(proc)
-            raise interrupt'''
+old = '''                return self._after_interrupt(proc, spec, started, interrupt, usage=usage)'''
+new = '''                self._terminate(proc)
+                raise interrupt'''
 tests = [
     "tests/unit/test_executor.py::test_an_interrupted_launcher_kills_the_program_and_returns_the_interrupt",
     "tests/unit/test_executor.py::test_an_interrupted_run_keeps_its_artifacts_and_environment_never_its_metrics",
@@ -715,8 +713,8 @@ tests = [
 id = "S3-guard-standalone"
 file = "src/qcal/integrity/agent_settings.py"
 finding = "a wrapped guard is one simple command; `; true` would replace its exit status (Copilot, PR #5)"
-old = '''    if first.startswith(prefix) and first.endswith(wrapper) and standalone(command):'''
-new = '''    if first.startswith(prefix) and first.endswith(wrapper):'''
+old = '''        return words[1:] if standalone(command) else [""]'''
+new = '''        return words[1:]'''
 tests = ["tests/unit/test_agent_layer.py::test_a_guard_must_be_one_simple_command"]
 
 [[mutant]]
@@ -1154,31 +1152,6 @@ tests = [
 ]
 
 [[mutant]]
-id = "B2-wrapper-first"
-file = "src/qcal/integrity/agent_settings.py"
-finding = "no command or NAME= may precede the hook wrapper (panel round 2)"
-old = '''    if first.startswith(prefix) and first.endswith(wrapper) and standalone(command):
-        return words[1:]
-    return [""]'''
-new = '''    for i, word in enumerate(words):
-        if word.endswith(wrapper):
-            return words[i + 1 :] if standalone(command) else [""]
-    return None'''
-tests = [
-    "tests/unit/test_agent_layer.py::test_the_wrapper_must_be_the_projects_and_come_first",
-]
-
-[[mutant]]
-id = "B2-wrapper-prefix"
-file = "src/qcal/integrity/agent_settings.py"
-finding = "the hook wrapper must be the project's (panel round 2)"
-old = '''    if first.startswith(prefix) and first.endswith(wrapper) and standalone(command):'''
-new = '''    if first.endswith(wrapper) and standalone(command):'''
-tests = [
-    "tests/unit/test_agent_layer.py::test_the_wrapper_must_be_the_projects_and_come_first",
-]
-
-[[mutant]]
 id = "PF-network"
 file = "src/qcal_lab/preflight.py"
 finding = "a lock directory on a network filesystem is reported (rev. 3 preflight)"
@@ -1370,4 +1343,24 @@ old = '''            point = OCTAL_ESCAPE.sub(lambda m: chr(int(m[1], 8)), field
 new = '''            point = fields[1].replace("\\040", " ")'''
 tests = [
     "tests/unit/test_lab_preflight.py::test_the_mount_table_is_parsed_with_escaped_spaces",
+]
+
+[[mutant]]
+id = "B2-wrapper-as-written"
+file = "src/qcal/integrity/agent_settings.py"
+finding = "the wrapper is the project's, first, and compared as written (panel rounds 2-3)"
+old = '''    if leading.startswith(prefix + wrapper) and leading[len(prefix + wrapper) :][:1] in ("", " "):'''
+new = '''    if words[0].endswith(wrapper):'''
+tests = [
+    "tests/unit/test_agent_layer.py::test_the_wrapper_must_be_the_projects_and_come_first",
+]
+
+[[mutant]]
+id = "S6-dispatch-kill"
+file = "src/qcal/registry/executor.py"
+finding = "a signal before the escalation handlers are in place still kills the program (panel round 3)"
+old = '''            except BaseException:  # another signal before every escalation handler was in place'''
+new = '''            except ZeroDivisionError:  # another signal before every escalation handler was in place'''
+tests = [
+    "tests/unit/test_executor.py::test_a_signal_before_the_escalation_handlers_are_in_place_still_kills_the_program",
 ]
