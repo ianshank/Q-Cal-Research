@@ -46,3 +46,9 @@ max_tolerance_fraction = 0.05
 # flock there may refuse (ENOLCK) or lock nothing across hosts.
 network_filesystems = ["nfs", "nfs4", "cifs", "smb3", "smbfs", "fuse.sshfs", "9p", "afs", "ceph", "glusterfs", "lustre"]
 mounts_file = "/proc/mounts"
+
+[eval_contract]
+# The MUST "results do not depend on the image order" compares numbers up to rounding: a
+# sum over images taken in another order may differ in its last bits (qcal_lab.eval_contract).
+reorder_rel_tol = 1e-12
+reorder_abs_tol = 1e-15

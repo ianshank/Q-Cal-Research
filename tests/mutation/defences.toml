@@ -859,7 +859,7 @@ tests = [
 id = "PRF-must-order"
 file = "src/qcal_lab/eval_contract.py"
 finding = "a loop whose results depend on the image order fails the contract (panel round 2)"
-old = '''    if canonical(shuffled) != canonical(first):'''
+old = '''    if not close(shuffled, first, *reorder_tolerance()):'''
 new = '''    if False:'''
 tests = [
     "tests/unit/test_lab_eval_contract.py::test_a_loop_depending_on_the_image_order_fails",
@@ -1308,4 +1308,24 @@ old = '''        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)'''
 new = '''        descriptor = os.open(path, os.O_RDONLY)'''
 tests = [
     "tests/unit/test_lab_declarations.py::test_a_link_swapped_in_after_the_path_check_is_not_followed",
+]
+
+[[mutant]]
+id = "PRF-order-tolerant"
+file = "src/qcal_lab/eval_contract.py"
+finding = "reordered results are compared up to rounding, not bit for bit (panel round 3)"
+old = '''    if not close(shuffled, first, *reorder_tolerance()):'''
+new = '''    if canonical(shuffled) != canonical(first):'''
+tests = [
+    "tests/unit/test_lab_eval_contract.py::test_a_sum_taken_in_listed_order_is_not_order_dependence",
+]
+
+[[mutant]]
+id = "PRF-canonical-plain"
+file = "src/qcal_lab/eval_contract.py"
+finding = "numpy-like numbers do not break the comparison (panel round 3)"
+old = '''    return json.dumps(encode(_plain(data)), sort_keys=True, separators=(",", ":"), default=repr)'''
+new = '''    return json.dumps(encode(data), sort_keys=True, separators=(",", ":"), default=repr)'''
+tests = [
+    "tests/unit/test_lab_eval_contract.py::test_numpy_like_numbers_do_not_break_the_comparison",
 ]

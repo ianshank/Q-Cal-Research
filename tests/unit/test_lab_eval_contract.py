@@ -101,6 +101,60 @@ def test_a_loop_depending_on_the_image_order_fails(monkeypatch: pytest.MonkeyPat
     assert report.must == ["the loop's results depend on the order the images are listed in"]
 
 
+def test_a_sum_taken_in_listed_order_is_not_order_dependence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Panel round 3: a correct loop that adds per-image values in the order listed differs in
+    the last bit when the images are reversed (0.1 + 0.2 + 0.3 != 0.3 + 0.2 + 0.1)."""
+    assert 0.1 + 0.2 + 0.3 != 0.3 + 0.2 + 0.1  # the premise, in IEEE doubles
+
+    class SumsInListedOrder(NaNObjective):
+        def metrics(self, predictions, ground_truth):  # type: ignore[no-untyped-def]
+            first = sorted(ground_truth.images)[:3]
+            value = dict(zip(first, (0.1, 0.2, 0.3), strict=True))
+            total = 0.0
+            for image in predictions:  # naive accumulation, in listed order
+                total += value.get(image.image_id, 0.0)
+            return {"total": total}
+
+    _with_loop(monkeypatch, SumsInListedOrder)
+    report = _check()
+    assert report.verdict == "PASS", report.must
+
+
+class Scalar:
+    """Stands in for a numpy scalar: a number that is not a Python float."""
+
+    def __init__(self, value: float) -> None:
+        self.value = value
+
+    def __float__(self) -> float:
+        return self.value
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "same"),
+    [
+        ({"a": [0.6000000000000001]}, {"a": [0.6]}, True),  # rounding
+        ({"a": 0.6}, {"a": 0.6 + 1e-9}, False),  # a real difference
+        ({"a": math.nan}, {"a": math.nan}, True),
+        ({"a": math.nan}, {"a": 0.0}, False),
+        ({"a": [1.0]}, {"a": [1.0, 2.0]}, False),
+        ({"a": 1.0}, {"b": 1.0}, False),
+        ({"a": Scalar(0.25)}, {"a": 0.25}, True),
+        ({"a": "x"}, {"a": "y"}, False),
+    ],
+)
+def test_reordered_results_are_compared_up_to_rounding(first: Any, second: Any, same: bool) -> None:
+    assert eval_contract.close(first, second, *eval_contract.reorder_tolerance()) is same
+
+
+def test_numpy_like_numbers_do_not_break_the_comparison() -> None:
+    assert eval_contract.canonical({"m": Scalar(0.5), "n": [Scalar(math.nan)]}) == (
+        '{"m":0.5,"n":["nan"]}'
+    )
+
+
 class Fixture(NaNObjective):
     """The fixture loop's objective too: SHOULD-clean unless a test overrides a part."""
 

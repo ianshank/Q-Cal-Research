@@ -27,7 +27,7 @@ from qcal.log import get_logger
 from qcal.protocols import ImageDetections
 from qcal.reports import FAIL, PASS
 from qcal_lab.calib.two_threshold import keep_class
-from qcal_lab.config import LabConfig
+from qcal_lab.config import LabConfig, load_tooling
 from qcal_lab.data.coco import GroundTruth, parse_coco
 from qcal_lab.data.fixture import build_fixture, fixture_bytes
 from qcal_lab.evaluation import (
@@ -46,6 +46,7 @@ CONTRACT_VERSION: Final = 1
 #: A threshold above every score: the objective must cope with a class that kept nothing.
 EMPTY_THRESHOLD: Final = 1.5
 NOT_ASSESSED: Final = "NOT ASSESSED"
+TOOLING_SECTION: Final = "eval_contract"
 
 
 def contract_fixture(settings: Mapping[str, Any]) -> GroundTruth:
@@ -84,17 +85,52 @@ def outputs(
     }
 
 
+def _plain(value: Any) -> Any:
+    """``value`` with numbers as Python floats (a loop may return numpy scalars)."""
+    if isinstance(value, dict):
+        return {str(k): _plain(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [_plain(v) for v in value]
+    if not isinstance(value, bool | int | float | str) and hasattr(value, "__float__"):
+        return float(value)
+    return value
+
+
 def canonical(data: Any) -> str:
     def encode(value: Any) -> Any:
         if isinstance(value, float) and not math.isfinite(value):
             return repr(value)  # NaN is allowed for an objective; JSON has no NaN
         if isinstance(value, dict):
-            return {str(k): encode(v) for k, v in value.items()}
-        if isinstance(value, list | tuple):
+            return {k: encode(v) for k, v in value.items()}
+        if isinstance(value, list):
             return [encode(v) for v in value]
         return value
 
-    return json.dumps(encode(data), sort_keys=True, separators=(",", ":"))
+    return json.dumps(encode(_plain(data)), sort_keys=True, separators=(",", ":"), default=repr)
+
+
+def reorder_tolerance(tooling: Mapping[str, Any] | None = None) -> tuple[float, float]:
+    """``(rel_tol, abs_tol)`` for comparing results on reordered images (``tooling.toml``)."""
+    section = (tooling if tooling is not None else load_tooling()).get(TOOLING_SECTION, {})
+    return float(section["reorder_rel_tol"]), float(section["reorder_abs_tol"])
+
+
+def close(first: Any, second: Any, rel_tol: float, abs_tol: float) -> bool:
+    """Equal in structure and text, numbers equal up to rounding (NaN equals NaN): a sum
+    taken in another order may differ in its last bits without the loop depending on it."""
+    a, b = _plain(first), _plain(second)
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a.keys() == b.keys() and all(close(a[k], b[k], rel_tol, abs_tol) for k in a)
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) == len(b) and all(
+            close(x, y, rel_tol, abs_tol) for x, y in zip(a, b, strict=True)
+        )
+    numbers = (int, float)
+    if isinstance(a, numbers) and isinstance(b, numbers) and not isinstance(a, bool):
+        if math.isnan(a) or math.isnan(b):
+            return math.isnan(a) and math.isnan(b)
+        return math.isclose(a, b, rel_tol=rel_tol, abs_tol=abs_tol)
+    return bool(a == b)
 
 
 class _Raised(Exception):
@@ -158,7 +194,7 @@ def _must(
     shuffled = _probe(
         "the loop on reordered images", lambda: outputs(loop, reordered, ground_truth)
     )
-    if canonical(shuffled) != canonical(first):
+    if not close(shuffled, first, *reorder_tolerance()):
         problems.append("the loop's results depend on the order the images are listed in")
     second = _probe("the factory's second call", build)
     if not isinstance(second, EvalLoop):
@@ -302,9 +338,11 @@ __all__ = [
     "ContractReport",
     "canonical",
     "check_eval_loop",
+    "close",
     "contract_fixture",
     "fixture_inputs",
     "must_problems",
     "outputs",
+    "reorder_tolerance",
     "should_findings",
 ]
