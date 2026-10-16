@@ -95,6 +95,42 @@ def test_n1_a_run_killed_outright_leaves_a_failed_envelope(
     assert environment["inputs_read"]
 
 
+KILL_DRIVER = """
+import os, signal, sys
+from qcal_lab import experiment
+from qcal_lab.cli import main
+experiment.train_calibration = lambda *a, **k: os.kill(os.getpid(), signal.SIGKILL)
+sys.exit(main(sys.argv[1:]))
+"""
+
+
+@pytest.mark.integration
+def test_n1_a_real_sigkill_leaves_the_pessimistic_envelope(
+    project: tuple[Path, list[str]],
+) -> None:
+    """The same, with the kernel's SIGKILL in a separate process: no Python cleanup runs."""
+    import signal
+    import subprocess
+    import sys
+
+    root, cells = project
+    result = root / "runs/results/R-sigkill.json"
+    args = ["--root", str(root), "run", "--run-id", "R-sigkill", "--cell-id", cells[0]]
+    args += ["--seed", "0", "--result-path", str(result)]
+    done = subprocess.run(
+        [sys.executable, "-c", KILL_DRIVER, *args],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert done.returncode == -signal.SIGKILL, done.stderr[-2000:]
+    envelope = json.loads(result.read_text())
+    assert (envelope["status"], envelope["failure_kind"]) == ("failed", UNFINISHED_KIND)
+    assert len(envelope["artifacts"]) == 3  # each raw predictions file, listed when written
+
+
 def test_n1_a_finished_run_replaces_the_pessimistic_envelope(
     project: tuple[Path, list[str]],
 ) -> None:
