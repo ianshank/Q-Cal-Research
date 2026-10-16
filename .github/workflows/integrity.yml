@@ -30,13 +30,13 @@ jobs:
       HEAD_REF: ${{ github.event.pull_request.head.ref }}
     steps:
       - name: Check out the base commit (trusted code and policy)
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.base.sha }}
           fetch-depth: 0
       - name: Fetch the pull request head as data only
         run: git fetch --no-tags origin "+refs/pull/${PR_NUMBER}/head:refs/remotes/pr/head"
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Install qcal from the base commit
@@ -47,7 +47,7 @@ jobs:
         run: python -m qcal ci registry-immutable --base "$BASE_SHA" --head "$HEAD_SHA" --github
       - name: The other model's current review is committed
         run: python -m qcal ci review-check --base "$BASE_SHA" --head "$HEAD_SHA" --branch "$HEAD_REF" --github --json-out review.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: integrity-reports
