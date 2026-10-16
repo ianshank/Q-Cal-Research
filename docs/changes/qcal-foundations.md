@@ -235,6 +235,21 @@ Verified against `50efe97`:
       under the contract. Requiring it would test a call the pipeline never makes.
     - The fixture loop now counts missed objects and images from the ground truth, so it
       is clean under all three; its values on the smoke project are unchanged.
+14. **S6, signed follow-ups G1 needs** (panel round 2; branch `claude/qcal-foundations-r3`).
+    - **(a)** `paths.declarations` in signed `qcal.toml` names Ian's declarations file, so an
+      agent cannot repoint it. `qcal_lab.declarations` refuses a path through a symbolic link,
+      a `registry_only` category (machine-written, some untracked), and, in git, a file that
+      is not exactly what `HEAD` holds. `signing.protect_symlinks`: a commit that adds,
+      changes or removes a symbolic link anywhere needs a signature.
+    - **(b)** An identity value that is `""` (a run that did not record it) matches nothing,
+      unless the column is in `registry.identity_nullable` (default none).
+    - **(c)** `registry.code_tree_paths`: the launcher records the committed tree id of each
+      path (`provenance.code_tree`) and their digest (`code_tree_sha256`, a core index
+      column), and refuses a registered run while one has uncommitted changes. `qcal.toml`
+      names `src/qcal` and `src/qcal_lab`.
+    - **(d)** Executor windows: escalation before the interrupt is logged; a failure reading
+      an interrupted run keeps the interrupt; only Ctrl-C and launcher signals are
+      interrupts, anything else kills the group and propagates; EPERM is logged.
 
 ## Compatibility
 - **Exit codes.**
@@ -311,11 +326,17 @@ Verified against `50efe97`:
 4. **Oct 24:** file this branch's advisory review under `review/claude/` at the signing session.
    It is a `cross_review` path, so it is a signed commit.
 5. **After each session, until PR-G:** the interim artifact copy above.
+6. **By Oct 24 (S6):** whether `code_tree_sha256` joins `registry.identity_columns` (it
+   replaces trusting `env.qcal_lab_source_sha256`, which the program reports about itself),
+   and which identity columns, if any, may be empty (`registry.identity_nullable`; for
+   example `env.handwritten_sha256` before the loop exists). Commit
+   `docs/reference/declarations.toml` signed: it is read only as committed.
 
 ## Ian hours
 About 1.8: S1 0.2, S2 0.3, S3 0.2, S4 0.5, S5 0.2, agent-owned commits 0.25, signing 0.15.
 Measured after the review fixes: 874+/144- lines on the signed surface, about 1.6 h at
-~650 lines/h (PR-B1 about 1.1 h, PR-B2 about 0.5 h), plus S6.
+~650 lines/h (PR-B1 about 1.1 h, PR-B2 about 0.5 h), plus S6: 176+/22- signed lines in four
+commits (`2bd8f98`, `a571a31`, `4ed2dca`, `434a6b0`), about 0.3 h. PR-B1 with S6: about 1.4 h.
 
 ## Acceptance
 - [ ] `make check` green with the anchored exclusion (coverage ≥ 95)
