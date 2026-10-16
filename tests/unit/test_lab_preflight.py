@@ -70,8 +70,10 @@ def _importer(*, mmcv: bool = True, cuda: bool = True) -> Any:
             "cuda:1",
             _importer(mmcv=False),
             [
-                "mmcv._ext does not import (ImportError: libcudart.so.12: cannot open shared "
-                "object file)"
+                (
+                    "mmcv._ext does not import (ImportError: libcudart.so.12: cannot open shared "
+                    "object file)"
+                )
             ],
         ),
     ],
