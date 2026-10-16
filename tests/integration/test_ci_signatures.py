@@ -161,6 +161,35 @@ def test_unprotected_unsigned_change_passes(project: Path) -> None:
     assert report.verdicts == [CommitVerdict(sha, [], True, "no protected paths")]
 
 
+def _link(root: Path, relative: str, target: str) -> None:
+    path = root / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.symlink_to(target)
+
+
+@signing
+def test_adding_a_symlink_anywhere_needs_a_signature(project: Path) -> None:
+    """A link in an unprotected place can stand in for a protected file (panel round 2):
+    a reader that follows it reads bytes no signed commit chose."""
+    _link(project, "notes/declarations.toml", "todo.md")
+    sha = commit(project, "add a link")
+    report = verify(project)
+    assert not report.passed
+    assert report.violations == [CommitVerdict(sha, ["notes/declarations.toml"], False, "unsigned")]
+    removed = project / "notes/declarations.toml"
+    removed.unlink()
+    gone = commit(project, "remove the link")
+    assert [v.sha for v in verify(project).violations] == [sha, gone]  # removing one too
+
+
+@signing
+def test_symlinks_can_be_left_unprotected(make_project: Callable[..., Path], keys: Keys) -> None:
+    root = make_project(ENFORCE + "protect_symlinks = false\n", signer_line(keys.allowed))
+    _link(root, "notes/link", "todo.md")
+    commit(root, "add a link")
+    assert verify(root).passed
+
+
 @signing
 def test_protected_change_signed_by_an_unlisted_key_is_a_violation(
     project: Path, keys: Keys

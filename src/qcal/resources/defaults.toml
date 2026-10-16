@@ -25,6 +25,10 @@ table_specs_dir = "configs/tables"
 manifests_dir = "data/manifests"
 dataset_cards_dir = "docs/data"
 source_dir = "src"                    # where a registered run's own qcal must be imported from
+# Ian's declarations (qcal_lab.declarations): values only he sets, such as a detector sanity
+# check's expectation. Signed configuration names the file, so an agent cannot repoint it;
+# "" declares nothing.
+declarations = ""
 
 [logging]
 level = "INFO"
@@ -122,6 +126,9 @@ require_committer_match = true
 # Verify with this program regardless of the machine's git configuration.
 ssh_program = "ssh-keygen"
 immutable_dirs = ["runs/registry"]
+# A commit that adds or changes a symbolic link anywhere needs a signature: a link can make a
+# protected path read an agent-writable file without the protected path changing.
+protect_symlinks = true
 
 [review]
 # The cross-review merge rule (`qcal ci review-check`, run by integrity.yml).

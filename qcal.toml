@@ -5,6 +5,10 @@
 # is documented in src/qcal/resources/defaults.toml. Inspect the merged result
 # with `qcal config`.
 
+[paths]
+# Ian's declarations (D2): ian_data, so only his signed commits change it.
+declarations = "docs/reference/declarations.toml"
+
 [git]
 # `civ` is the current default branch; the plan recommends renaming it to `main`.
 protected_branches = ["main", "civ"]

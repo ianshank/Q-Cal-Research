@@ -23,7 +23,7 @@ import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from qcal.ci import check_mode
 from qcal.config import REPO_CONFIG_NAME, Config, load_config
@@ -33,6 +33,8 @@ from qcal.policy import Policy
 from qcal.reports import verdict
 
 _log = get_logger("ci.signatures")
+#: git's tree-entry mode for a symbolic link.
+SYMLINK_MODE: Final = "120000 "
 
 
 @dataclass
@@ -199,6 +201,7 @@ def verify_signatures(
     categories = config.str_list("signing.signed_categories")
     signers = show_file(ref, config.str_value("signing.allowed_signers"), repo)
     report = SignatureReport(mode=chosen, keys=count_keys(signers))
+    trees = TreeIndex(repo)
     commits = git(["rev-list", "--reverse", f"{base}..{head}"], repo).split()
     _log.info(
         "checking %d commit(s) in %s..%s with policy from %s (mode=%s, keys=%d)",
@@ -209,6 +212,14 @@ def verify_signatures(
         chosen,
         report.keys,
     )
+
+    links = config.bool_value("signing.protect_symlinks")
+
+    def protected_at(ref: str, path: str) -> bool:
+        """In a signed category, or (``signing.protect_symlinks``) a symbolic link at ``ref``."""
+        if policy.in_categories(path, categories):
+            return True
+        return links and (trees.entry(ref, path) or "").startswith(SYMLINK_MODE)
 
     require_match = config.bool_value("signing.require_committer_match")
     ssh_program = config.str_value("signing.ssh_program")
@@ -230,7 +241,6 @@ def verify_signatures(
             return cache[sha]
 
         parents = {sha: parents_of(repo, sha) for sha in commits}
-        trees = TreeIndex(repo)
         for sha in commits:
             if len(parents[sha]) > 1:
                 # A merge may carry content from any parent; the net-content rule below
@@ -239,13 +249,17 @@ def verify_signatures(
                 touched = [
                     f
                     for f in merged
-                    if policy.in_categories(f, categories)
+                    if (protected_at(sha, f) or protected_at(base, f))
                     and trees.entry(sha, f) != trees.entry(base, f)  # base merges are fine
                 ]
                 detail = "merge: judged by net content" if touched else "no protected paths"
                 report.verdicts.append(CommitVerdict(sha, touched, signed=True, detail=detail))
                 continue
-            protected = [f for f in changed_files(repo, sha) if policy.in_categories(f, categories)]
+            protected = [
+                f
+                for f in changed_files(repo, sha)
+                if protected_at(sha, f) or any(protected_at(p, f) for p in parents[sha])
+            ]
             if not protected:
                 report.verdicts.append(
                     CommitVerdict(sha, [], signed=True, detail="no protected paths")
@@ -260,7 +274,7 @@ def verify_signatures(
         # that drops or rolls back protected content is caught.
         fork_point = merge_base(base, head, repo) or base
         for path in changed_between(repo, fork_point, head):
-            if not policy.in_categories(path, categories):
+            if not (protected_at(head, path) or protected_at(fork_point, path)):
                 continue
             # Mode is content: a merge that only drops +x from a hook is a change too.
             target = trees.entry(head, path)
