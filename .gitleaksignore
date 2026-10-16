@@ -1,0 +1,7 @@
+# Findings gitleaks reports that are not secrets. One exact fingerprint per line, each with
+# the reason and how to check it. Adding a line silences the secret scan for that line of that
+# commit only; never add a broad pattern here.
+
+# A golden sha256 digest, not a key: test_cache_key pins cache_key() over literal inputs
+# written in the same test (`git show ba29898:tests/regression/test_run_identity_goldens.py`).
+ba29898f4308349eb726b44c23c68f728e569369:tests/regression/test_run_identity_goldens.py:generic-api-key:132

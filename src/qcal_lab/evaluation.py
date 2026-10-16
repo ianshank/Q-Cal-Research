@@ -7,8 +7,9 @@ This interface is a proposal; Ian may change it, and the pipeline follows.
 
 The pipeline never computes a reported metric itself. It calls :meth:`EvalLoop.targets` to
 get calibration targets on the fit split, :meth:`EvalLoop.threshold_objective` (LRP in the
-paper) to select thresholds on the fit and select splits, and :meth:`EvalLoop.metrics` once,
-on the evaluate split.
+paper) to select both thresholds on the select split (u_c on its raw scores, v_c on its
+calibrated scores), and :meth:`EvalLoop.metrics` once, on the evaluate split. Version 2 of
+this interface is proposed in ``docs/changes/evalloop-v2.md``.
 """
 
 from __future__ import annotations

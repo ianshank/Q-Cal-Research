@@ -9,6 +9,8 @@ from qcal.hooks import guards
 from qcal.hooks.payload import HookPayload, PayloadError
 from qcal.policy import Policy
 
+pytestmark = pytest.mark.rule("C0", "C2", "C4", "C5", "A2")
+
 
 def payload(tool: str | None = "Write", **tool_input: object) -> HookPayload:
     data: dict[str, object] = {"tool_input": tool_input, "cwd": None}
@@ -197,6 +199,38 @@ def test_deny_read_by_category_and_glob(config, policy, repo: Path) -> None:
 def test_allow_only(command: str, allowed: bool, rule: str) -> None:
     decision = guards.allow_only(payload("Bash", command=command), commands=["make release"])
     assert (decision.allow, decision.rule) == (allowed, rule)
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["make release\nrm -rf /", "make\nrelease", "make\x00release", "make release\x7f"],
+)
+def test_allow_only_refuses_control_characters(command: str) -> None:
+    decision = guards.allow_only(payload("Bash", command=command), commands=["make release"])
+    assert (decision.allow, decision.rule) == (False, "allow_only.control")
+
+
+def test_allow_only_ignores_surrounding_whitespace() -> None:
+    decision = guards.allow_only(
+        payload("Bash", command="  make release\n"), commands=["make release"]
+    )
+    assert decision.allow
+
+
+def test_hard_link_denial_can_be_switched_off(make_config, tmp_path: Path) -> None:
+    import os
+
+    from tests.conftest import require_hard_links
+
+    require_hard_links(tmp_path)
+    (tmp_path / "a").write_text("x")
+    os.link(tmp_path / "a", tmp_path / "b")
+    on = make_config("")
+    off = make_config("[hooks]\ndeny_hard_links = false\n")
+    assert guards.hard_link_denial(str(tmp_path / "b"), tmp_path, config=on) is not None
+    assert guards.hard_link_denial(str(tmp_path / "b"), tmp_path, config=off) is None
+    assert guards.hard_link_denial(str(tmp_path / "absent"), tmp_path, config=on) is None
+    assert guards.hard_link_denial(str(tmp_path), tmp_path, config=on) is None  # a directory
 
 
 def test_allow_only_without_command() -> None:

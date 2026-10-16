@@ -71,6 +71,8 @@ def check_registry_immutable(
         )
         if problem:
             report.violations.append(f"{path}: {problem}")
+    for violation in report.violations:
+        _log.warning("registry immutability: %s", violation)
     _log.info(
         "registry immutability: %s (%d added)",
         verdict(report.passed),

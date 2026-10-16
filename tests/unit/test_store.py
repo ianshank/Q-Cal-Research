@@ -15,6 +15,8 @@ from qcal.registry.records import RecordError
 from qcal.registry.store import RecordExistsError, RegistryStore
 from tests.conftest import make_record
 
+pytestmark = pytest.mark.rule("C7")
+
 
 @pytest.fixture
 def store(tmp_path: Path) -> RegistryStore:

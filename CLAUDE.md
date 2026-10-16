@@ -22,7 +22,9 @@ is not imported here so it does not load twice). Plan: docs/SDLC_IMPLEMENTATION_
 
 ## Conventions
 - No hardcoded values: configuration lives in `qcal.toml` over packaged defaults
-  (`src/qcal/resources/defaults.toml`); override with `QCAL__SECTION__KEY=value`.
+  (`src/qcal/resources/defaults.toml`); `QCAL__SECTION__KEY=value` overrides are for
+  debugging only: registered runs refuse them (logging excepted) and `qcal config --check`
+  rejects unknown or mistyped keys.
 - Protocol-based DI (`src/qcal/protocols.py`, `qcal.components.ComponentRegistry`).
 - Deterministic scripts over agents: launching, auditing, licensing and tables are `qcal` commands.
 - Tests for every module; ruff + mypy --strict clean; coverage gate in `pyproject.toml`.

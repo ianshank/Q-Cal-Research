@@ -77,10 +77,10 @@ The scaffold is in place ([LAB.md](LAB.md)). Still open:
 | TD-11 | `guard-bash` recognizes known push spellings only | An unusual spelling can still push from an agent's shell | The ruleset forbidding direct pushes is the control; add spellings as they are found, each with a security test | S |
 | TD-9 | Parquet output is tested only in the dedicated CI job | The main matrix covers CSV only | Acceptable; the parquet job runs on every PR | S |
 | TD-12 | The two-threshold grid (`calibration.grid_*`) is not stated in the paper | Thresholds may differ from the oracle's | Confirm against the oracle outputs (paper-reproducer); record the grid in `configs/lab.toml` | S |
-| TD-13 | Isotonic duplicate-score merging follows scikit-learn's convention as remembered | Tiny differences on tied scores | The calibrator parity cases decide | S |
+| TD-13 | Isotonic duplicate-score merging follows scikit-learn's convention as remembered | Tiny differences on tied scores | **Evidence, Oct 11:** matches scikit-learn 1.9.1 to 1e-12 on tie-heavy float64 inputs and to 2e-6 with float32 inputs and `duplicate_resolution = 1e-6` (`tests/oracle`). Open only for which dtype the fiveai oracle feeds; its parity cases decide | S |
 | TD-14 | The MMDetection adapter is tested only against fakes | API drift would surface at the first real run | The environment spike runs one image end to end; add an integration test on the GPU runner | M |
 | TD-15 | Calibrators are pure Python | Slower than NumPy at about 10^5 detections | Acceptable now (seconds per fit); move to NumPy if profiling says so | S |
-| TD-16 | Platt scaling uses damped Newton; the paper uses L-BFGS | Same minimiser for a convex objective; iteration traces differ | Parity cases decide; the saved calibrator records iterations and convergence | S |
+| TD-16 | Platt scaling uses damped Newton; the paper uses L-BFGS | Same minimiser for a convex objective; iteration traces differ | **Evidence, Oct 11:** reaches SciPy's L-BFGS-B optimum (bound a >= 0) to 1e-10 in loss and 1e-6 in calibrated output on 20 sets, boundary cases included (`tests/oracle`). Parity cases remain the authority | S |
 
 Closed in this change: every finding of the Phase 0 peer review. Tests named
 `test_<finding>_*` in `tests/regression/test_peer_review_findings.py` and

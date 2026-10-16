@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
@@ -9,14 +11,18 @@ import pytest
 
 from qcal.protocols import ImageDetections
 from qcal_lab.calib import build_calibrator
-from qcal_lab.calib.base import CalibrationError, IdentityCalibrator
+from qcal_lab.calib.base import CALIBRATOR_FORMAT, CalibrationError, IdentityCalibrator
 from qcal_lab.calib.two_threshold import (
+    CALIBRATION_FORMAT,
+    CALIBRATION_VERSION,
     GLOBAL_KEY,
     SplitData,
     ThresholdedCalibration,
     apply_thresholds,
     keep_class,
+    read_calibration,
     train_calibration,
+    write_calibration,
 )
 from qcal_lab.data.coco import GroundTruth
 from tests.lab_support import det, ground_truth, image, lab_config
@@ -202,3 +208,30 @@ def test_train_refuses_an_unknown_scope(tmp_path: Path) -> None:
 def test_keep_class_keeps_every_image() -> None:
     kept = keep_class([image("1", det(0.9, 0), det(0.9, 1)), image("2", det(0.1, 0))], 0, 0.5)
     assert [(i.image_id, len(i.detections)) for i in kept] == [("1", 1), ("2", 0)]
+
+
+# -- the saved calibration file (docs/changes/run-identity-and-formats.md) --------------------
+
+
+def test_a_calibration_file_round_trips_with_its_envelope(tmp_path: Path) -> None:
+    cal = _train(tmp_path, "per_class", ScriptedLoop({("calibration", 0): 0.25}), name="platt")
+    path = tmp_path / "out" / "calibration.json"
+    digest = write_calibration(path, cal)
+    assert digest == hashlib.sha256(path.read_bytes()).hexdigest()
+    document = json.loads(path.read_text())
+    assert (document["format"], document["version"]) == (CALIBRATION_FORMAT, CALIBRATION_VERSION)
+    assert all(c["format"] == CALIBRATOR_FORMAT for c in document["calibrators"].values())
+    batch = [image("9", det(0.9, 0), det(0.3, 1), det(0.7, 2))]
+    assert read_calibration(path).apply(batch) == cal.apply(batch)
+    assert not list(path.parent.glob(".*.tmp"))  # written through a temporary file
+
+
+def test_a_calibration_file_without_its_envelope_is_refused(tmp_path: Path) -> None:
+    cal = _train(tmp_path, "global", ScriptedLoop({}), name="none")
+    path = tmp_path / "calibration.json"
+    path.write_text(json.dumps(cal.to_dict()))
+    with pytest.raises(CalibrationError, match=r"not a qcal_lab\.calibration document"):
+        read_calibration(path)
+    path.write_text("{")
+    with pytest.raises(CalibrationError, match="cannot read"):
+        read_calibration(path)

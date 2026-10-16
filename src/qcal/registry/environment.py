@@ -7,20 +7,23 @@ WARNING and the collector contributes nothing. Configuration chooses which run
 
 from __future__ import annotations
 
+import csv
 import hashlib
 import importlib
 import importlib.metadata
 import importlib.util
+import os
 import platform
 import shutil
 import socket
 import subprocess
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextvars import ContextVar
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
+import qcal
 from qcal import gitutil
 from qcal.components import ComponentRegistry
 from qcal.config import load_defaults
@@ -31,6 +34,19 @@ _log = get_logger("registry.environment")
 Collector = Callable[[Path], dict[str, Any]]
 COLLECTORS: ComponentRegistry[Collector] = ComponentRegistry("environment collector")
 _TEGRA_RELEASE = Path("/etc/nv_tegra_release")
+# nvidia-smi fields per GPU, and the record key each becomes. compute_cap needs a recent
+# driver; without it the collector falls back to names and drivers only.
+_GPU_FIELDS: Final = (
+    ("index", "index"),
+    ("uuid", "uuid"),
+    ("pci.bus_id", "pci_bus_id"),
+    ("name", "name"),
+    ("compute_cap", "compute_cap"),
+    ("memory.total", "memory_total_mib"),
+    ("driver_version", "driver"),
+)
+_GPU_FALLBACK_FIELDS: Final = (("name", "name"), ("driver_version", "driver"))
+_INTEGER_GPU_FIELDS: Final = frozenset({"index", "memory_total_mib"})
 DEFAULT_COMMAND_TIMEOUT_S = float(load_defaults()["registry"]["env_command_timeout_s"])
 _command_timeout: ContextVar[float] = ContextVar(
     "qcal_env_command_timeout", default=DEFAULT_COMMAND_TIMEOUT_S
@@ -111,15 +127,33 @@ def _packages(_: Path) -> dict[str, Any]:
     return {"env_hash": digest, "package_count": len(pins)}
 
 
+def _query_gpus(fields: Sequence[tuple[str, str]]) -> list[dict[str, Any]] | None:
+    query = ",".join(name for name, _ in fields)
+    out = _run(["nvidia-smi", f"--query-gpu={query}", "--format=csv,noheader,nounits"])
+    if not out:
+        return None
+    gpus: list[dict[str, Any]] = []
+    for row in csv.reader(line for line in out.splitlines() if line.strip()):
+        gpu: dict[str, Any] = {}
+        for (_, key), raw in zip(fields, row, strict=False):
+            value = raw.strip()
+            gpu[key] = int(value) if key in _INTEGER_GPU_FIELDS and value.isdigit() else value
+        gpus.append(gpu)
+    return gpus
+
+
 @COLLECTORS.register("nvidia")
 def _nvidia(_: Path) -> dict[str, Any]:
-    out = _run(["nvidia-smi", "--query-gpu=name,driver_version", "--format=csv,noheader"])
-    if not out:
+    """Every GPU on the host, in nvidia-smi (PCI bus) order. Which one a run used is the
+    program's to report: CUDA numbers devices fastest-first unless CUDA_DEVICE_ORDER says
+    otherwise, so an index here need not match the program's device index."""
+    gpus = _query_gpus(_GPU_FIELDS) or _query_gpus(_GPU_FALLBACK_FIELDS)
+    if not gpus:
         return {}
-    gpus = [line.split(",") for line in out.splitlines() if line.strip()]
     return {
-        "gpu": "; ".join(g[0].strip() for g in gpus),
-        "driver": gpus[0][1].strip() if len(gpus[0]) > 1 else None,
+        "gpus": gpus,
+        "gpu": "; ".join(str(g.get("name", "")) for g in gpus),
+        "driver": gpus[0].get("driver") or None,
     }
 
 
@@ -155,3 +189,28 @@ def _jetson(_: Path) -> dict[str, Any]:
 
 def python_executable() -> str:
     return sys.executable
+
+
+def launcher_identity(root: Path) -> dict[str, Any]:
+    """The interpreter and qcal that launched a run (``provenance.launcher``)."""
+    package = Path(qcal.__file__).resolve().parent
+    resolved = root.resolve()
+    location = (
+        package.relative_to(resolved).as_posix()
+        if package.is_relative_to(resolved)
+        else str(package)
+    )
+    return {
+        "python": sys.executable,
+        "python_version": platform.python_version(),
+        "qcal_version": qcal.__version__,
+        "qcal_location": location,
+    }
+
+
+def recorded_variables(
+    names: Sequence[str], environ: Mapping[str, str] | None = None
+) -> dict[str, str | None]:
+    """The named environment variables verbatim, ``None`` when unset."""
+    source = os.environ if environ is None else environ
+    return {name: source.get(name) for name in names}

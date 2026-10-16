@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import unicodedata
 from pathlib import Path
 
 import pytest
+from hypothesis import example, given
+from hypothesis import strategies as st
 
+from qcal.config import ConfigError
 from qcal.policy import Policy
+
+pytestmark = pytest.mark.rule("C5", "C6")
 
 
 @pytest.fixture
@@ -110,3 +116,90 @@ def test_blocked_by_and_in_categories(policy: Policy, repo: Path) -> None:
     assert verdict.blocked_by(["registry_only"]) == ("registry_only",)
     assert policy.in_categories("qcal.toml", ["enforcement_surface"])
     assert not policy.in_categories("docs/a.md", ["enforcement_surface"])
+
+
+# --- clean-room matching folds Unicode (docs/changes/qcal-foundations.md, S2) ----------------
+
+FOLDING = Policy({}, clean_room_substrings=["secret-lab"])
+# Long-stable code points only: the matrix spans Unicode 14 to 15.1.
+STABLE = st.characters(min_codepoint=0x20, max_codepoint=0x24F) | st.sampled_from(
+    ["\u200b", "\u00ad", "\ufeff", "\u0301", "\u0327", "\u2010", "\u2011", "\u2212", "\uff41"]
+)
+
+
+@given(st.text(alphabet=STABLE, max_size=12))
+@example("e\u0301")
+def test_folding_is_idempotent(text: str) -> None:
+    assert FOLDING.fold(FOLDING.fold(text)) == FOLDING.fold(text)
+
+
+@given(
+    st.text(alphabet=STABLE, max_size=12),
+    st.integers(0, 12),
+    st.sampled_from(["\u200b", "\u00ad", "\ufeff"]),
+)
+def test_a_format_character_anywhere_changes_nothing(text: str, at: int, cf: str) -> None:
+    assert FOLDING.fold(text[:at] + cf + text[at:]) == FOLDING.fold(text)
+
+
+@given(st.text(alphabet=STABLE, max_size=12))
+@example("caf\u00e9")
+def test_composed_and_decomposed_spellings_fold_alike(text: str) -> None:
+    nfc, nfd = unicodedata.normalize("NFC", text), unicodedata.normalize("NFD", text)
+    assert FOLDING.fold(nfc) == FOLDING.fold(nfd)
+
+
+def test_fullwidth_ascii_folds_like_ascii() -> None:
+    fullwidth = "".join(chr(ord(c) + 0xFEE0) for c in "Secret-Lab")
+    assert FOLDING.fold(fullwidth) == FOLDING.fold("secret-lab") == "secret-lab"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "a SECRET-LAB note",
+        "secret\u2011lab",  # non-breaking hyphen
+        "secret\u2212lab",  # minus sign
+        "secr\u00e9t-lab",  # precomposed accent
+        "se\u200bcret-lab",  # zero-width space
+    ],
+)
+def test_disguised_spellings_are_clean_room_hits(text: str) -> None:
+    assert FOLDING.clean_room_hits(text) == ("secret-lab",)
+
+
+def test_folding_never_widens_the_needles() -> None:
+    assert FOLDING.clean_room_hits("secret lab") == ()
+    assert FOLDING.clean_room_hits("secretlab") == ()
+
+
+def test_case_sensitive_matching_does_not_casefold() -> None:
+    strict = Policy({}, clean_room_substrings=["Lab"], case_insensitive=False)
+    assert strict.clean_room_hits("lab") == ()
+    assert strict.clean_room_hits("\uff2c\uff41\uff42") == ("Lab",)  # full-width "Lab"
+
+
+def test_folding_can_be_switched_off() -> None:
+    plain = Policy(
+        {}, clean_room_substrings=["lab"], unicode_normalization="", strip_unicode_categories=[]
+    )
+    assert plain.clean_room_hits("\uff4c\uff41\uff42") == ()
+    assert plain.clean_room_hits("LAB") == ("lab",)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"unicode_normalization": "NFKX"}, "unicode_normalization must be one of"),
+        ({"strip_unicode_categories": ["Cf", "Zz"]}, "unknown categories"),
+    ],
+)
+def test_a_misconfigured_fold_is_a_configuration_error(kwargs: dict, message: str) -> None:
+    with pytest.raises(ConfigError, match=message):
+        Policy({}, **kwargs)
+
+
+def test_folding_is_configured_from_the_policy_section(make_config) -> None:
+    config = make_config('[policy]\nunicode_normalization = "NFC"\nstrip_unicode_categories = []\n')
+    policy = Policy.from_config(config)
+    assert policy.fold("\uff41") == "\uff41"  # NFC keeps full-width forms

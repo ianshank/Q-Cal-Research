@@ -25,7 +25,12 @@ from pathlib import Path
 
 from qcal.config import Config
 from qcal.globs import first_match, iter_files
-from qcal.integrity.aggregates import aggregate, format_value
+from qcal.integrity.aggregates import (
+    aggregate,
+    format_value,
+    identity_columns,
+    unsound_aggregate,
+)
 from qcal.log import get_logger
 from qcal.policy import Policy
 from qcal.registry.index import read_index, superseded_ids
@@ -56,6 +61,9 @@ class _Context:
     # cell id -> run ids of its current ok runs; empty disables the completeness rule
     current_by_cell: Mapping[str, frozenset[str]] = field(default_factory=dict)
     allow_pooled_cells: bool = False
+    environment_prefix: str = "env."
+    identity: tuple[str, ...] = ("config_inputs_sha256",)
+    core: tuple[str, ...] = ("config_inputs_sha256",)
 
 
 class _RefError(ValueError):
@@ -134,6 +142,16 @@ def verify_reference(ref: str, displayed: str, ctx: _Context) -> str | None:
         agg, metric, run_ids = _parse_ref(ref)
         expected = aggregate(agg, _values(ref, metric, run_ids, ctx))
         _require_complete(ref, run_ids, ctx)
+        rows = [ctx.rows[r] for r in run_ids]
+        problem = unsound_aggregate(
+            agg,
+            rows,
+            environment_prefix=ctx.environment_prefix,
+            identity=ctx.identity,
+            core=ctx.core,
+        )
+        if problem:
+            raise _RefError(f"{ref}: {problem}")
     except _RefError as exc:
         return str(exc)
     except (KeyError, ValueError) as exc:
@@ -171,6 +189,9 @@ def check_claims(config: Config) -> list[Finding]:
             else {}
         ),
         allow_pooled_cells=config.bool_value("tables.allow_pooled_cells"),
+        environment_prefix=str(config.get("registry.column_prefixes.environment")),
+        identity=identity_columns(config),
+        core=tuple(config.str_list("registry.core_columns")),
     )
     adjacent = (
         re.compile(config.str_value("claims.value_prefix_pattern")),

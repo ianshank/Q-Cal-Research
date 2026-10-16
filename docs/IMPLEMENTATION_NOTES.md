@@ -120,7 +120,16 @@ qcal config               # merged configuration and where each layer came from
 
 All values come from `src/qcal/resources/defaults.toml`, overridden by the repository's
 `qcal.toml`, overridden by `QCAL__<SECTION>__<KEY>=<toml value>` environment variables.
-`qcal config` prints the merged result and its sources.
+`qcal config` prints the merged result, its sources and its environment inputs;
+`qcal config --check` rejects unknown, removed and mistyped keys (`qcal.config.OPEN_TABLES`
+lists the tables whose keys the repository chooses).
+
+Registered runs read committed configuration only (`qcal.registry.gates`): environment
+overrides outside `logging` are refused, as are locator variables that point elsewhere, a
+`qcal.toml` that differs from `HEAD`, and a pre-registration other than the configured one.
+The record carries `provenance.{config_sources, config_environment, config_inputs_sha256,
+policy_source, policy_sha256}`; `qcal registry audit --strict` fails when a cell's seeds ran
+under different configuration files (`mixed_inputs`).
 
 - `--debug` or `QCAL_DEBUG=1`: DEBUG logs and full tracebacks.
 - `--log-format json` or `QCAL_LOG_FORMAT=json`: one JSON object per log line.

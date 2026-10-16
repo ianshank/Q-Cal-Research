@@ -29,6 +29,11 @@ def settings(root: Path, hooks: dict[str, list[dict[str, Any]]]) -> Path:
     return write(root, SETTINGS, json.dumps({"hooks": hooks}))
 
 
+def _tool_policy_errors(config: Config) -> list[str]:
+    """Errors other than the network-agent deny-read rule, which has its own tests."""
+    return [e for e in check_agent_layer(config).errors if "no deny-read hook" not in e]
+
+
 def group(matcher: Any) -> dict[str, Any]:
     return {"matcher": matcher, "hooks": [{"type": "prompt", "prompt": "x"}]}
 
@@ -63,7 +68,7 @@ def test_agent_combining_write_and_network_tools_fails(
 ) -> None:
     front(repo, AGENT, BASE_AGENT + f"tools: {tools}\n")
 
-    errors = check_agent_layer(config).errors
+    errors = _tool_policy_errors(config)
 
     assert len(errors) == 1
     assert "combines write-capable tools" in errors[0]
@@ -72,13 +77,14 @@ def test_agent_combining_write_and_network_tools_fails(
 def test_disallowed_tools_remove_the_conflict(config: Config, repo: Path) -> None:
     front(repo, AGENT, BASE_AGENT + "tools: Read, Bash, WebFetch\ndisallowedTools: Bash\n")
 
-    assert check_agent_layer(config).errors == []
+    assert _tool_policy_errors(config) == []
 
 
 def test_read_only_network_agent_passes(config: Config, repo: Path) -> None:
     front(repo, AGENT, BASE_AGENT + "tools: Read, Grep, WebFetch, WebSearch\n")
 
-    assert check_agent_layer(config).errors == []
+    # Network agents must also deny-read Ian's files (tests/unit/test_agent_layer.py).
+    assert _tool_policy_errors(config) == []
 
 
 def test_skill_allowed_tools_follow_the_same_policy(config: Config, repo: Path) -> None:
@@ -265,10 +271,37 @@ def test_wrapped_hook_names_must_exist(config: Config, repo: Path) -> None:
     ]
 
 
-def test_fail_open_flag_is_skipped_when_reading_the_hook_name(config: Config, repo: Path) -> None:
+def test_a_fail_open_guard_is_refused(config: Config, repo: Path) -> None:
+    """The hook name is still read past the flag, but a PreToolUse guard that fails would
+    allow the call: only the Stop hook may fail open (advisory review B6)."""
     wrapper_settings(repo, "Bash", "--fail-open guard-bash")
 
+    expected = (
+        f"{SETTINGS}: PreToolUse hook '{WRAPPER} --fail-open guard-bash' runs --fail-open: a "
+        "guard that fails would allow the call (only the Stop hook may fail open)"
+    )
+    assert check_agent_layer(config).errors == [expected]
+
+
+def test_the_stop_hook_may_fail_open(config: Config, repo: Path) -> None:
+    wrapper_settings(repo, "Bash", "guard-bash")
+    data = json.loads((repo / SETTINGS).read_text("utf-8"))
+    stop = {"type": "command", "command": f"{WRAPPER} --fail-open claims"}
+    data["hooks"]["Stop"] = [{"hooks": [stop]}]
+    (repo / SETTINGS).write_text(json.dumps(data), "utf-8")
+
     assert check_agent_layer(config).errors == []
+
+
+def test_hook_arguments_are_split_as_the_shell_splits_them(config: Config) -> None:
+    from qcal.integrity.agent_settings import wrapped_hook_args
+
+    assert wrapped_hook_args(config, f"{WRAPPER} deny-read 'ian_only ian_data'") == [
+        "deny-read",
+        "ian_only ian_data",  # one argument at run time, so one here
+    ]
+    assert wrapped_hook_args(config, f"{WRAPPER} deny-read 'unbalanced") == [""]
+    assert wrapped_hook_args(config, "echo 'unbalanced") is None
 
 
 @pytest.mark.parametrize(

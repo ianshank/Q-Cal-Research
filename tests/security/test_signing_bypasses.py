@@ -8,7 +8,7 @@ from qcal.ci.immutability import check_registry_immutable
 from qcal.ci.signatures import signature_kind, verify_signatures
 from tests.conftest import run_git, sign, write
 
-pytestmark = [pytest.mark.integration, pytest.mark.requires_ssh_keygen]
+pytestmark = [pytest.mark.integration, pytest.mark.requires_ssh_keygen, pytest.mark.rule("C0")]
 
 
 def test_crafted_merge_cannot_delete_protected_files(signed_repo) -> None:

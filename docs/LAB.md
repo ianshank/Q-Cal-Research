@@ -147,8 +147,8 @@ byte-identical.
 
 | Component | Status |
 |---|---|
-| Platt scaling, isotonic regression, Alg. A.1/A.2 | unit and property tests; oracle parity pending outputs |
-| Isotonic duplicate-score merging | follows scikit-learn's convention as remembered [unverified]; parity decides |
+| Platt scaling, isotonic regression, Alg. A.1/A.2 | unit tests; Hypothesis invariants with slow references (`tests/unit/test_calib_properties.py`); scikit-learn and SciPy oracles (`tests/oracle`); fiveai parity pending outputs |
+| Isotonic duplicate-score merging | matches scikit-learn 1.9.1 for float64 (1e-15) and float32 (1e-6) inputs; which dtype the fiveai oracle uses is for parity to decide |
 | Threshold grid and `probability_epsilon` | the paper does not state them; confirm against the oracle |
 | Alg. A.1 threshold selection | unit tests only; no oracle case kind covers it yet (NEXT_STEPS) |
 | MMDetection adapter | tested against fakes; unverified until the environment spike |

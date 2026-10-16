@@ -5,8 +5,8 @@ from __future__ import annotations
 import argparse
 from typing import TextIO
 
-from qcal.cli.common import EXIT_OK, SubParsers, add_json_flag, emit
-from qcal.config import Config, ConfigError
+from qcal.cli.common import EXIT_FAILED, EXIT_OK, SubParsers, add_json_flag, emit
+from qcal.config import Config, ConfigError, config_key_problems
 
 
 def cmd_policy_list(args: argparse.Namespace, config: Config, out: TextIO) -> int:
@@ -55,8 +55,21 @@ def cmd_policy_check(args: argparse.Namespace, config: Config, out: TextIO) -> i
     return EXIT_OK
 
 
-def cmd_config(_args: argparse.Namespace, config: Config, out: TextIO) -> int:
-    payload = {"root": str(config.root), "sources": list(config.sources), "config": config.data}
+def cmd_config(args: argparse.Namespace, config: Config, out: TextIO) -> int:
+    if args.check:
+        from qcal.reports import verdict
+
+        problems = config_key_problems(config.data)
+        report = {"verdict": verdict(not problems), "problems": problems}
+        text = "\n".join([f"config: {verdict(not problems)}", *(f"  {p}" for p in problems)])
+        emit(out, report, as_json=args.json, text=text)
+        return EXIT_FAILED if problems else EXIT_OK
+    payload: dict[str, object] = {
+        "root": str(config.root),
+        "sources": list(config.sources),
+        "environment_inputs": dict(config.environment_inputs),
+        "config": config.data,
+    }
     emit(out, payload, as_json=True, text="")
     return EXIT_OK
 
@@ -74,4 +87,10 @@ def add_commands(sub: SubParsers) -> None:
     pol_check.set_defaults(handler=cmd_policy_check)
 
     cfg = sub.add_parser("config", help="print the merged configuration and its sources")
+    cfg.add_argument(
+        "--check",
+        action="store_true",
+        help="fail on unknown, removed or mistyped keys (registered runs refuse them)",
+    )
+    add_json_flag(cfg)
     cfg.set_defaults(handler=cmd_config)

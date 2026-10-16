@@ -17,6 +17,7 @@ from qcal_lab.data.coco import GroundTruth, ImageInfo
 from qcal_lab.data.fixture import require_fixture
 from qcal_lab.models.base import (
     DETECTORS,
+    KEY_PARTS,
     DetectorContext,
     DetectorError,
     setting_int,
@@ -109,5 +110,7 @@ def _build(context: DetectorContext) -> FixtureDetector:
 
 
 DETECTORS.register("fixture", _build)
+# Pure Python over its own settings, which the cache key already covers: nothing beneath them.
+KEY_PARTS.register("fixture", lambda _lab, _name: {})
 
 __all__ = ["FixtureDetector"]

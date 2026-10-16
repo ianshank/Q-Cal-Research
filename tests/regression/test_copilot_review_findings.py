@@ -300,7 +300,12 @@ def test_parity_readiness_needs_every_kind_of_oracle_case(repo: Path) -> None:
 
     fixtures = repo / "tests/parity/fixtures"
     fixtures.mkdir(parents=True)
-    oracle = {"repository": "fiveai/detection_calibration", "commit": "abc123"}
+    oracle = {
+        "repository": "fiveai/detection_calibration",
+        "commit": "abc123",
+        "environment": {"python": "3.8.18"},
+    }
+    envelope = {"format": "qcal_lab.parity_case", "version": 1}
 
     def parity_item() -> tuple[bool, str]:
         report = build_status(load_config(repo, environ={}), load_lab_config(repo))
@@ -308,9 +313,13 @@ def test_parity_readiness_needs_every_kind_of_oracle_case(repo: Path) -> None:
             (ok, detail) for name, ok, detail in report.items if name == "oracle parity cases"
         )
 
-    (fixtures / "iso.json").write_text(json.dumps({"kind": "calibrator", "oracle": oracle}))
+    (fixtures / "iso.json").write_text(
+        json.dumps({**envelope, "kind": "calibrator", "oracle": oracle})
+    )
     ok, detail = parity_item()
     assert not ok
     assert detail == "1 calibrator, 0 metric; none of kind metric"
-    (fixtures / "laece.json").write_text(json.dumps({"kind": "metric", "oracle": oracle}))
+    (fixtures / "laece.json").write_text(
+        json.dumps({**envelope, "kind": "metric", "oracle": oracle})
+    )
     assert parity_item() == (True, "1 calibrator, 1 metric")

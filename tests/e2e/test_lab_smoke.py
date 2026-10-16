@@ -8,7 +8,7 @@ import sys
 
 import pytest
 
-from qcal_lab.config import load_lab_config
+from qcal_lab.smoke import smoke_settings
 from tests.conftest import REPO_ROOT, require_tool
 
 pytestmark = pytest.mark.e2e
@@ -24,7 +24,7 @@ def test_python_m_qcal_lab_smoke_passes_within_budget() -> None:
     )
     report = json.loads(out.stdout)
     assert out.returncode == 0, report
-    budget = load_lab_config(REPO_ROOT).config.float_value("smoke.max_seconds")
+    budget = float(smoke_settings()["max_seconds"])
     assert report["seconds"] < budget
     names = [c["name"] for c in report["checks"]]
     assert (

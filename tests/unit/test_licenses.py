@@ -25,6 +25,8 @@ from qcal.integrity.licenses import (
 )
 from tests.conftest import write
 
+pytestmark = pytest.mark.rule("C6", "A6")
+
 Headers = Sequence[tuple[str, str]]
 
 

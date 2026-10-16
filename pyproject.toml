@@ -22,6 +22,8 @@ dev = [
   "mypy>=1.10",
   "types-PyYAML>=6.0",
 ]
+# Test-only mathematical oracles (tests/oracle): never imported by src/. BSD-licensed.
+oracle = ["scikit-learn>=1.5", "scipy>=1.13", "pycocotools>=2.0.8", "numpy>=1.26"]
 
 [project.scripts]
 qcal = "qcal.cli:main"
@@ -60,11 +62,14 @@ branch = true
 fail_under = 95  # measured 99% (98.9% without the parquet extra) when raised
 show_missing = true
 skip_covered = true
+# Every pattern is anchored: coverage excludes a whole function when any line of its
+# signature matches (tests/integration/test_repository_layout.py keeps it so).
 exclude_also = [
-  "if TYPE_CHECKING:",
-  "raise NotImplementedError",
-  "if __name__ == .__main__.:",
-  "\\.\\.\\.",
+  '^\s*if TYPE_CHECKING:',
+  '^\s*raise NotImplementedError',
+  '^if __name__ == .__main__.:',
+  '^\s*\.\.\.\s*$',
+  ':\s*\.\.\.\s*(#.*)?$',
 ]
 
 [tool.ruff]

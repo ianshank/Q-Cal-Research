@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -48,7 +49,8 @@ def test_metric_names_that_break_claim_references_are_rejected(name: str, tmp_pa
     with pytest.raises(RecordError, match="metric name"):
         make_record(metrics={name: 1.0})
     result = tmp_path / "r.json"
-    result.write_text(f'{{"metrics": {{"{name}": 1.0}}}}')
+    envelope = {"format": "qcal.executor_result", "version": 1, "status": "ok"}
+    result.write_text(json.dumps({**envelope, "metrics": {name: 1.0}}))
     assert "claim references" in (read_result(result, tmp_path).error or "")
 
 

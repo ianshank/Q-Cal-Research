@@ -16,7 +16,7 @@ from qcal.registry.records import RunRecord
 from qcal.registry.store import RegistryStore
 from tests.conftest import make_record, run_git, write
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.rule("C7")]
 
 REGISTRY = "runs/registry"
 R1 = f"{REGISTRY}/R1.json"

@@ -75,6 +75,7 @@ pre-pr: check ## check, plus secrets and the container when the tools are presen
 	else echo "pre-pr: $(DOCKER) unavailable; CI builds and tests the container" >&2; fi
 
 integrity: agent-layer ## head-side integrity checks
+	$(QCAL) config --check
 	$(QCAL) registry index --check
 	$(QCAL) registry tables --check
 	$(QCAL) claims

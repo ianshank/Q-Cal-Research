@@ -12,7 +12,7 @@ import pytest
 
 from tests.conftest import REPO_ROOT
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.rule("C0")]
 WRAPPER = REPO_ROOT / ".claude" / "hooks" / "run_hook.sh"
 
 

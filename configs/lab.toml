@@ -17,3 +17,8 @@ images_dir = "data/raw/coco/val2017"
 config = ""
 checkpoint = ""
 checkpoint_sha256 = ""
+# Test-time settings are pinned here, never left to the MMDetection config's defaults: a run
+# refuses while one is missing. max_per_image is COCO's 100 detections per image. The score
+# threshold is Ian's to set (F10, docs/changes/run-identity-and-formats.md), before the first
+# registered run.
+max_per_image = 100

@@ -4,6 +4,8 @@
 # arrays and scalars replace. Environment variables of the form
 # QCAL__<SECTION>__<KEY>=<toml value> override both, for example
 #   QCAL__LOGGING__LEVEL='"DEBUG"'   or   QCAL__REGISTRY__MAX_RUNS_PER_BATCH=5
+# They are a debugging aid: registered runs refuse every override outside [logging], and
+# `qcal config --check` rejects unknown or mistyped keys from any layer.
 # Glob patterns are anchored at the repository root; use "**/" to match at any depth.
 
 [paths]
@@ -17,10 +19,12 @@ index_csv = "runs/index.csv"
 index_parquet = "runs/index.parquet"
 logs_dir = "runs/logs"
 results_dir = "runs/results"
+inflight_dir = "runs/inflight"         # per-(cell, seed) locks and markers of running runs
 tables_dir = "paper/tables"
 table_specs_dir = "configs/tables"
 manifests_dir = "data/manifests"
 dataset_cards_dir = "docs/data"
+source_dir = "src"                    # where a registered run's own qcal must be imported from
 
 [logging]
 level = "INFO"
@@ -35,6 +39,11 @@ timeout_s = 60                        # every git subprocess
 
 [policy]
 case_insensitive = true
+# Clean-room matching folds text first: decompose (NFKD for "NFKC", NFD for "NFC"), drop these
+# Unicode categories (Cf: format characters such as zero-width spaces; Mn: combining marks),
+# map every dash to "-", casefold, recompose. Path categories never fold.
+unicode_normalization = "NFKC"        # NFKC | NFC | "" (off)
+strip_unicode_categories = ["Cf", "Mn"]
 clean_room_substrings = ["nbcu", "edge-dit", "edge_dit", "edgedit"]
 
 [policy.categories]
@@ -136,6 +145,9 @@ project_dir_env = "CLAUDE_PROJECT_DIR"
 edit_tools = ["Edit", "Write", "MultiEdit", "NotebookEdit"]
 path_fields = ["file_path", "path", "notebook_path"]
 deny_categories = ["ian_only", "registry_only", "enforcement_surface", "git_internals"]
+# Refuse edits and private reads of a file with more than one hard link: the other name may
+# be a protected file, and checking which would need a scan of the whole tree.
+deny_hard_links = true
 push_deny_flags = [
   "--force", "-f", "--force-with-lease", "--force-if-includes",
   "--mirror", "--all", "--delete", "-d", "--prune",
@@ -148,8 +160,8 @@ extra_bash_deny = [
 ]
 
 [registry]
-schema_version = 1
 run_id_template = "R{timestamp}-{cell_id}-s{seed}-{nonce}"
+batch_id_template = "B{timestamp}-{nonce}"   # provenance.batch_id of the runs of one run-batch
 timestamp_format = "%Y%m%dT%H%M%SZ"
 nonce_bytes = 3
 env_collectors = ["python", "host", "git", "packages", "nvidia", "torch", "tensorrt", "jetson"]
@@ -157,6 +169,21 @@ env_command_timeout_s = 10           # per external probe (nvidia-smi, nvpmodel)
 config_hash_inputs = ["configs/**/*.yaml", "configs/**/*.yml", "configs/**/*.toml"]
 max_runs_per_batch = 50
 require_clean_tree = false
+# A launcher waits this long for another launcher's lock on the same (cell, seed) before it
+# refuses the run, polling at lock_poll_s. paths.inflight_dir must be on a host-local
+# filesystem: flock over NFS without lockd, or sshfs, does not lock across hosts.
+lock_wait_s = 2.0
+lock_poll_s = 0.05
+# Refuse a registered run whose qcal is not imported from paths.source_dir, so the code
+# that writes the record is the repository's own. Off here (tests and throwaway projects
+# import an installed qcal); qcal.toml turns it on.
+require_code_in_root = false
+# Environment variables that change how a program runs on a GPU, recorded verbatim in
+# provenance.environment_variables (null when unset).
+recorded_env_vars = [
+  "CUDA_VISIBLE_DEVICES", "CUDA_DEVICE_ORDER", "NVIDIA_TF32_OVERRIDE", "CUBLAS_WORKSPACE_CONFIG",
+  "PYTORCH_CUDA_ALLOC_CONF", "CUDA_MODULE_LOADING", "LD_LIBRARY_PATH", "OMP_NUM_THREADS",
+]
 require_supersede_reason = true       # `--reason` is recorded in provenance.supersede_reason
 ok_status = "ok"
 failed_status = "failed"
@@ -164,17 +191,27 @@ write_parquet = "auto"                # auto | always | never
 core_columns = [
   "run_id", "cell_id", "seed", "seed_role", "status", "supersedes",
   "started_at", "finished_at", "duration_s", "git_sha", "git_dirty", "config_hash",
+  "config_inputs_sha256", "definition_sha256", "policy_sha256", "experiments_sha256",
+  "batch_id", "failure_kind",
 ]
+# Index columns every run aggregated into one table value (or claim) must agree on: seeds
+# that differ here are not draws of one experiment. Each is a core column or a prefixed one
+# (env.<key>). The default keeps the configuration files; qcal.toml sets the repository's set.
+identity_columns = ["config_inputs_sha256"]
 
 [registry.column_prefixes]
 factors = "factor."
 metrics = "metric."
 environment = "env."
+resources = "res."
 
 [executor]
 kind = "subprocess"                   # registered executor used when --executor is not given
-command = []                          # argv template; placeholders: {run_id} {cell_id} {seed} {seed_role} {result_path} {log_path} {root}
+command = []                          # argv template; placeholders: {python} {run_id} {cell_id} {seed} {seed_role} {result_path} {log_path} {root}
+# {python} is the launcher's own interpreter: no machine path enters the hashed command.
 timeout_s = 0                         # 0 disables the timeout
+kill_grace_s = 30                     # after a timeout or interrupt: SIGTERM, wait this long, SIGKILL
+poll_interval_s = 0.2                 # how often the launcher checks on the program
 result_filename = "{run_id}.json"
 log_filename = "{run_id}.log"
 env_prefix = "QCAL_RUN_"
@@ -257,7 +294,8 @@ superseded_is_error = true
 
 [data]
 splits = ["trt_calib_images", "calibrator_fit_split", "val", "test"]
-manifest_pattern = "{split}.txt"
+manifest_pattern = "{split}.txt"      # may also name {dataset}
+datasets = ["id"]                    # the first is the default {dataset} of a manifest
 comment_prefix = "#"
 
 [licenses]
@@ -290,6 +328,12 @@ skill_allowed_keys = [
   "background", "hooks", "paths", "shell", "metadata", "license", "compatibility",
 ]
 forbidden_permission_modes = ["bypassPermissions"]
+isolation_values = ["worktree"]       # what an agent's isolation may say
+max_turns_limit = 100                 # an agent's maxTurns must be an integer from 1 to this
+# A network agent (network tools, mcp__ tools or mcpServers) must wrap deny-read around each
+# read tool with at least these categories; qcal.toml adds the repository's own.
+network_agent_deny_read = ["ian_only"]
+read_tools = ["Read", "Grep", "Glob"]
 hook_wrapper = "run_hook.sh"          # settings commands through it must name a real qcal hook
 required_pretooluse_hooks = []        # qcal.toml lists the guards this repository must wire
 skill_required_keys = ["description"]

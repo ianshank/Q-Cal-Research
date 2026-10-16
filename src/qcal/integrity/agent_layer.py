@@ -23,7 +23,13 @@ from pathlib import Path
 from typing import Any
 
 from qcal.config import Config
-from qcal.integrity.agent_settings import check_hooks, check_mcp, check_settings
+from qcal.integrity.agent_settings import (
+    check_hooks,
+    check_mcp,
+    check_settings,
+    mcp_server_names,
+    wrapped_hook_args,
+)
 from qcal.integrity.command_refs import check_command_refs
 from qcal.integrity.licenses import FrontmatterError, read_frontmatter
 from qcal.log import get_logger
@@ -106,6 +112,9 @@ class _ToolPolicy:
         )
         return (writes, network) if writes and network else None
 
+    def network_in(self, tools: Iterable[str]) -> bool:
+        return any(t in self.network or t.startswith(self.network_prefixes) for t in tools)
+
     def model_ok(self, model: Any) -> bool:
         return isinstance(model, str) and (
             model in self.models or self.model_pattern.fullmatch(model) is not None
@@ -155,6 +164,76 @@ def _check_bool_keys(
     for key in keys:
         if key in data and not isinstance(data[key], bool):
             report.errors.append(f"{shown}: {key} must be true or false, got {data[key]!r}")
+
+
+def _check_limits(
+    shown: Path, data: dict[str, Any], config: Config, report: AgentLayerReport
+) -> None:
+    """``isolation`` and ``maxTurns`` take effect only with valid values; a typo is silent."""
+    isolations = config.str_list("agent_layer.isolation_values")
+    if "isolation" in data and data["isolation"] not in isolations:
+        report.errors.append(
+            f"{shown}: isolation must be one of {isolations}, got {data['isolation']!r}"
+        )
+    if "maxTurns" in data:
+        turns, limit = data["maxTurns"], config.int_value("agent_layer.max_turns_limit")
+        if isinstance(turns, bool) or not isinstance(turns, int) or not 1 <= turns <= limit:
+            report.errors.append(
+                f"{shown}: maxTurns must be an integer from 1 to {limit}, got {turns!r}"
+            )
+
+
+def _mcp_servers(
+    shown: Path, data: dict[str, Any], known: set[str], report: AgentLayerReport
+) -> list[str]:
+    """The agent's ``mcpServers``: names defined in the project's MCP file, nothing inline."""
+    value = data.get("mcpServers")
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+        report.errors.append(
+            f"{shown}: mcpServers must list server names from the project's MCP file "
+            "(inline definitions are not checked)"
+        )
+        return [str(v) for v in value] if isinstance(value, list) else []
+    unknown = sorted(set(value) - known)
+    if unknown:
+        report.errors.append(f"{shown}: mcpServers names unknown servers {unknown}")
+    return list(value)
+
+
+def _covers(matcher: Any, tool: str) -> bool:
+    if matcher in (None, "", "*"):
+        return True
+    try:
+        return re.fullmatch(str(matcher), tool) is not None
+    except re.error:
+        return False
+
+
+def _check_network_deny_read(
+    shown: Path, data: dict[str, Any], config: Config, report: AgentLayerReport
+) -> None:
+    """A network agent must deny-read the configured categories on every read tool, so
+    fetched content cannot steer it into quoting Ian's private files."""
+    required = set(config.str_list("agent_layer.network_agent_deny_read"))
+    if not required:
+        return
+    groups = (data.get("hooks") or {}).get("PreToolUse") or []
+    for tool in config.str_list("agent_layer.read_tools"):
+        guarded = False
+        for group in groups:
+            if not isinstance(group, dict) or not _covers(group.get("matcher"), tool):
+                continue
+            for hook in group.get("hooks") or []:
+                args = wrapped_hook_args(config, str(hook.get("command", ""))) or []
+                if args[:1] == ["deny-read"] and required <= set(args[1:]):
+                    guarded = True
+        if not guarded:
+            report.errors.append(
+                f"{shown}: uses network tools but {tool} has no deny-read hook covering "
+                f"{sorted(required)}"
+            )
 
 
 def check_agent_layer(config: Config) -> AgentLayerReport:
@@ -218,6 +297,7 @@ def _check_agents(
     allowed = set(config.str_list("agent_layer.agent_allowed_keys"))
     required = config.str_list("agent_layer.agent_required_keys")
     forbidden_modes = set(config.str_list("agent_layer.forbidden_permission_modes"))
+    servers = mcp_server_names(config)
     for path, data in agents.items():
         shown = path.relative_to(root)
         _check_frontmatter(shown, data, allowed=allowed, required=required, report=report)
@@ -227,6 +307,7 @@ def _check_agents(
             report.errors.append(f"{shown}: permissionMode {data['permissionMode']} is forbidden")
         _check_model(shown, data, policy, report)
         _check_bool_keys(shown, data, ("background",), report)
+        _check_limits(shown, data, config, report)
         # Only a bare name removes a tool; "Bash(curl:*)" narrows Bash but leaves it granted.
         disallowed = {
             name
@@ -237,9 +318,12 @@ def _check_agents(
             )
             if "(" not in raw
         }
-        _check_tools(
-            shown, [t for t in tool_names(data.get("tools")) if t not in disallowed], policy, report
-        )
+        # Each MCP server the agent may use is a network tool, like its mcp__ tools.
+        tools = [t for t in tool_names(data.get("tools")) if t not in disallowed]
+        tools += [f"mcp__{name}" for name in _mcp_servers(shown, data, servers, report)]
+        _check_tools(shown, tools, policy, report)
+        if policy.network_in(tools):
+            _check_network_deny_read(shown, data, config, report)
         missing_skills = sorted(set(tool_names(data.get("skills"))) - skill_names)
         if missing_skills:
             report.errors.append(f"{shown}: references unknown skills {missing_skills}")

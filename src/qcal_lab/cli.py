@@ -9,11 +9,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import signal
 import sys
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
-from typing import IO
+from types import FrameType
+from typing import IO, Any, Final
 
 from qcal.config import ConfigError, find_root, load_config
 from qcal.integrity.leakage import check_leakage, read_manifest
@@ -25,7 +28,13 @@ from qcal_lab.config import load_lab_config
 from qcal_lab.data.coco import DatasetError, load_coco
 from qcal_lab.data.splits import SplitError, manifest_path, partition, split_digest, write_manifest
 from qcal_lab.evaluation import EvaluationError
-from qcal_lab.experiment import PlanError, RunRequest, run_experiment, write_result
+from qcal_lab.experiment import (
+    PlanError,
+    RunRequest,
+    run_experiment,
+    write_failure,
+    write_result,
+)
 from qcal_lab.models import DetectorError
 from qcal_lab.predictions import PredictionsError
 
@@ -44,6 +53,49 @@ RUN_FAILURES = (
 )
 
 
+#: Exception class names (from libraries this module does not import) and the failure kind
+#: each means in the result envelope (``qcal.registry.records.FAILURE_KINDS``).
+_KIND_BY_CLASS_NAME: Final = {
+    "OutOfMemoryError": "cuda_oom",  # torch.cuda.OutOfMemoryError
+    "AcceleratorError": "cuda_error",  # torch >= 2.8 device-side errors
+    "CudaError": "cuda_error",
+}
+
+
+class RunInterrupted(BaseException):
+    """SIGTERM from the launcher (a timeout or its own interrupt): stop, record, exit."""
+
+
+def failure_kind(exc: BaseException) -> str:
+    """The result envelope's failure kind for an exception that ended a run."""
+    if isinstance(exc, KeyboardInterrupt | RunInterrupted):
+        return "interrupted"
+    if isinstance(exc, ConfigError):
+        return "config"
+    if isinstance(exc, PlanError | ExperimentsError):
+        return "plan"
+    if isinstance(exc, MemoryError):
+        return "host_oom"
+    for cls in type(exc).__mro__:
+        if cls.__name__ in _KIND_BY_CLASS_NAME:
+            return _KIND_BY_CLASS_NAME[cls.__name__]
+    return "unknown"
+
+
+@contextmanager
+def _sigterm_interrupts() -> Iterator[None]:
+    """Turn SIGTERM into :class:`RunInterrupted` so the run still writes its envelope."""
+
+    def handler(signum: int, _frame: FrameType | None) -> None:
+        raise RunInterrupted(f"signal {signum}")
+
+    previous = signal.signal(signal.SIGTERM, handler)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m qcal_lab", description=__doc__)
     parser.add_argument("--root", type=Path, help="repository root (default: discovered)")
@@ -59,6 +111,25 @@ def build_parser() -> argparse.ArgumentParser:
     smoke = sub.add_parser("smoke", help="the whole loop on a synthetic fixture (< 5 min)")
     smoke.add_argument("--workdir", type=Path, help="keep the smoke project here")
     smoke.add_argument("--json", action="store_true")
+
+    contract = sub.add_parser(
+        "check-eval-loop", help="run the EvalLoop contract on Ian's loop (or the fixture's)"
+    )
+    contract.add_argument("--json", action="store_true")
+    contract.add_argument(
+        "--fixture", action="store_true", help="check the fixture stand-in (validates the checks)"
+    )
+    contract.add_argument(
+        "--strict", action="store_true", help="exit 1 unless PASS (NOT ASSESSED included)"
+    )
+
+    cases = sub.add_parser(
+        "protocol-cases", help="write the synthetic protocol cases Ian runs the oracle on"
+    )
+    cases.add_argument("--out", type=Path, help="directory (default: protocol_cases.directory)")
+    cases.add_argument(
+        "--check", action="store_true", help="exit 1 if the committed cases have drifted"
+    )
 
     status = sub.add_parser("status", help="what still blocks a registered Phase 1 run")
     status.add_argument("--json", action="store_true")
@@ -91,13 +162,31 @@ def _parse_sizes(text: str) -> list[tuple[str, int]]:
 
 
 def _cmd_run(args: argparse.Namespace, root: Path) -> int:
+    """Run one cell; the result envelope is written on every exit, ok or failed."""
     request = RunRequest(root, args.run_id, args.cell_id, args.seed, args.result_path)
+    progress: list[dict[str, str]] = []
+    partial: dict[str, Any] = {}
     try:
-        result = run_experiment(request)
-    except RUN_FAILURES as exc:
-        _log.error("run %s failed: %s", args.run_id, exc)
-        return EXIT_FAILED
-    write_result(args.result_path, result)
+        with _sigterm_interrupts():
+            result = run_experiment(request, progress=progress, partial_environment=partial)
+            # Written under the handler too: a SIGTERM while the envelope is written still
+            # ends in write_failure, never in a program that died without one.
+            write_result(args.result_path, result)
+    except BaseException as exc:
+        kind = failure_kind(exc)
+        write_failure(
+            args.result_path,
+            failure_kind=kind,
+            error=f"{type(exc).__name__}: {exc}",
+            artifacts=progress,
+            environment=partial,
+        )
+        _log.error("run %s failed (%s): %s", args.run_id, kind, exc)
+        if isinstance(exc, ConfigError):
+            return EXIT_USAGE
+        if kind != "unknown" or isinstance(exc, RUN_FAILURES):
+            return EXIT_FAILED
+        raise  # an unexpected error: the envelope says "unknown"; the traceback goes to the log
     _log.info(
         "run %s: %d metric(s), %d artifact(s)",
         args.run_id,
@@ -130,6 +219,39 @@ def _cmd_status(args: argparse.Namespace, root: Path, out: IO[str]) -> int:
         (json.dumps(report.to_dict(), indent=2) if args.json else report.render_text()) + "\n"
     )
     return EXIT_FAILED if args.strict and not report.passed else EXIT_OK
+
+
+def _cmd_check_eval_loop(args: argparse.Namespace, root: Path, out: IO[str]) -> int:
+    from qcal_lab.eval_contract import FAIL, check_eval_loop
+    from qcal_lab.smoke import smoke_settings
+
+    report = check_eval_loop(
+        load_lab_config(root), load_config(root), smoke_settings(), fixture=args.fixture
+    )
+    out.write(
+        (json.dumps(report.to_dict(), indent=2) if args.json else report.render_text()) + "\n"
+    )
+    failed = report.verdict == FAIL or (args.strict and not report.passed)
+    return EXIT_FAILED if failed else EXIT_OK
+
+
+def _cmd_protocol_cases(args: argparse.Namespace, root: Path, out: IO[str]) -> int:
+    from qcal_lab.protocol_cases import CaseSettings, build_cases, drift, write_cases
+
+    try:
+        settings = CaseSettings.load(load_lab_config(root))
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
+    directory = args.out if args.out is not None else root / settings.directory
+    files = build_cases(settings)
+    if args.check:
+        problems = drift(directory, files)
+        out.write("".join(f"{p}\n" for p in problems))
+        out.write(f"protocol cases: {verdict(not problems)}\n")
+        return EXIT_FAILED if problems else EXIT_OK
+    written = write_cases(directory, files)
+    out.write(f"protocol cases: {len(written)} written, {len(files) - len(written)} unchanged\n")
+    return EXIT_OK
 
 
 def _cmd_splits(args: argparse.Namespace, root: Path, out: IO[str]) -> int:
@@ -191,7 +313,21 @@ def main(argv: Sequence[str] | None = None, *, out: IO[str] | None = None) -> in
         return EXIT_FAILED
 
 
-_COMMANDS = {"smoke": _cmd_smoke, "status": _cmd_status, "splits": _cmd_splits}
+_COMMANDS = {
+    "smoke": _cmd_smoke,
+    "status": _cmd_status,
+    "splits": _cmd_splits,
+    "check-eval-loop": _cmd_check_eval_loop,
+    "protocol-cases": _cmd_protocol_cases,
+}
 
 
-__all__ = ["EXIT_FAILED", "EXIT_OK", "EXIT_USAGE", "build_parser", "main"]
+__all__ = [
+    "EXIT_FAILED",
+    "EXIT_OK",
+    "EXIT_USAGE",
+    "RunInterrupted",
+    "build_parser",
+    "failure_kind",
+    "main",
+]

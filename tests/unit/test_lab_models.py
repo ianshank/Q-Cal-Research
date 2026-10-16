@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
@@ -13,11 +13,29 @@ from qcal.config import ConfigError
 from qcal.protocols import Detector
 from qcal_lab.data.coco import parse_coco
 from qcal_lab.data.fixture import NotFixtureError, build_fixture, fixture_bytes, is_fixture
-from qcal_lab.models import DetectorError, build_detector, detector_spec
+from qcal_lab.models import (
+    DETECTORS,
+    KEY_PARTS,
+    KIND_SCORE_DEFINITIONS,
+    KIND_TARGETS,
+    TEST_CFG_SETTINGS,
+    DetectorError,
+    build_detector,
+    detector_spec,
+    detector_targets,
+    detector_test_cfg,
+    score_definition,
+)
 from qcal_lab.models import mmdet as mmdet_module
 from qcal_lab.models.base import setting_int, setting_number
 from qcal_lab.models.fixture import FixtureDetector
-from tests.lab_support import fixture_document, fixture_ground_truth, ground_truth, lab_config
+from tests.lab_support import (
+    FakeTorch,
+    fixture_document,
+    fixture_ground_truth,
+    ground_truth,
+    lab_config,
+)
 
 FIXTURE = fixture_ground_truth()
 
@@ -160,11 +178,13 @@ class FakeApi:
         self.init_args: dict[str, Any] = {}
         self.calls: list[str] = []
 
-    def init_detector(self, config: str, checkpoint: str, **kwargs: Any) -> str:
+    def init_detector(self, config: str, checkpoint: str, **kwargs: Any) -> SimpleNamespace:
         self.init_args = {"config": config, "checkpoint": checkpoint, **kwargs}
-        return "model"
+        return SimpleNamespace(dataset_meta={"classes": self.classes})
 
-    def inference_detector(self, model: str, path: str) -> SimpleNamespace:
+    classes: tuple[str, ...] = ("c1", "c3")  # ground_truth()'s categories, in label order
+
+    def inference_detector(self, model: SimpleNamespace, path: str) -> SimpleNamespace:
         self.calls.append(path)
         boxes, scores, labels = zip(*self.rows, strict=True) if self.rows else ((), (), ())
         return SimpleNamespace(
@@ -172,6 +192,22 @@ class FakeApi:
                 bboxes=FakeTensor(list(boxes)), scores=FakeTensor(list(scores)), labels=list(labels)
             )
         )
+
+
+class FakeCheckpointLoader:
+    """mmengine.runner.CheckpointLoader: by default the checkpoint carries the api's classes."""
+
+    def __init__(self, api: FakeApi) -> None:
+        self.api = api
+        self.meta: dict[str, Any] | None = None  # set to override what the checkpoint holds
+        self.calls: list[dict[str, Any]] = []
+
+    def load_checkpoint(self, path: str, **kwargs: Any) -> dict[str, Any]:
+        self.calls.append({"path": path, **kwargs})
+        if self.meta is not None:
+            return {"meta": self.meta}
+        classes = self.api.classes
+        return {"meta": {"dataset_meta": {"classes": classes}} if classes is not None else {}}
 
 
 @pytest.fixture
@@ -183,13 +219,15 @@ def mmdet_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     checkpoint = tmp_path / "atss.pth"
     checkpoint.write_bytes(b"weights")
     api = FakeApi([([1, 2, 3, 4], 0.3, 1), ([0, 0, 5, 5], 0.9, 0)])
-    torch = SimpleNamespace(
-        backends=SimpleNamespace(
-            cuda=SimpleNamespace(matmul=SimpleNamespace(allow_tf32=True)),
-            cudnn=SimpleNamespace(allow_tf32=True),
-        )
-    )
-    modules = {"mmdet.apis": api, "torch": torch}
+    torch = FakeTorch()
+    loader = FakeCheckpointLoader(api)
+    modules = {
+        "mmdet.apis": api,
+        "torch": torch,
+        "mmengine.runner": SimpleNamespace(CheckpointLoader=loader),
+    }
+    monkeypatch.delenv("CUBLAS_WORKSPACE_CONFIG", raising=False)
+    monkeypatch.delenv("NVIDIA_TF32_OVERRIDE", raising=False)
 
     def fake_import(name: str) -> Any:
         if name not in modules:
@@ -205,12 +243,21 @@ def mmdet_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         "score_threshold = 0.05\nmax_per_image = 100\n"
     )
     return SimpleNamespace(
-        gt=gt, images=images, api=api, torch=torch, modules=modules, body=body, tmp=tmp_path
+        gt=gt,
+        images=images,
+        api=api,
+        loader=loader,
+        torch=torch,
+        modules=modules,
+        body=body,
+        tmp=tmp_path,
+        monkeypatch=monkeypatch,
     )
 
 
 def test_mmdet_adapter_converts_pred_instances(mmdet_setup) -> None:
     s = mmdet_setup
+    s.monkeypatch.setenv("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
     lab = lab_config(s.tmp, s.body)
     detector = build_detector(lab, "atss_r50", s.gt, precision="fp32_tf32_off", images_dir=s.images)
     assert s.api.init_args["cfg_options"] == {
@@ -218,13 +265,27 @@ def test_mmdet_adapter_converts_pred_instances(mmdet_setup) -> None:
         "model.test_cfg.max_per_img": 100,
     }
     assert s.api.init_args["device"] == "cuda:0"
-    assert s.torch.backends.cuda.matmul.allow_tf32 is False
     assert s.torch.backends.cudnn.allow_tf32 is False
-    assert detector.runtime == {
-        "precision": "fp32_tf32_off",
+    numerics = detector.runtime["numerics"]
+    assert numerics["regime"]["precision"] == "fp32_tf32_off"
+    assert numerics["effective"] == {
         "allow_tf32_matmul": False,
         "allow_tf32_cudnn": False,
+        "cudnn_benchmark": False,
+        "cudnn_deterministic": True,
+        "deterministic_algorithms": True,
+        "deterministic_warn_only": False,
     }
+    assert numerics["environment"] == {
+        "NVIDIA_TF32_OVERRIDE": None,
+        "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
+    }
+    device = detector.runtime["device"]
+    assert (device["device"], device["uuid"], device["capability"]) == (
+        "cuda:0",
+        "GPU-0000",
+        "12.0",
+    )
     result = detector.predict(["1"])[0]
     assert [(d.score, d.label) for d in result.detections] == [(0.9, 0), (0.3, 1)]
     assert result.detections[1].box_xyxy == (1.0, 2.0, 3.0, 4.0)
@@ -234,13 +295,48 @@ def test_mmdet_adapter_converts_pred_instances(mmdet_setup) -> None:
         detector.predict(["7"])
 
 
-def test_mmdet_adapter_leaves_tf32_alone_for_plain_fp32(mmdet_setup) -> None:
+def test_mmdet_adapter_leaves_torch_defaults_alone_for_plain_fp32(mmdet_setup) -> None:
     s = mmdet_setup
-    lab = lab_config(s.tmp, s.body.replace("score_threshold = 0.05\nmax_per_image = 100\n", ""))
+    lab = lab_config(s.tmp, s.body)
     detector = build_detector(lab, "atss_r50", s.gt, precision="fp32", images_dir=s.images)
     assert s.torch.backends.cudnn.allow_tf32 is True
-    assert s.api.init_args["cfg_options"] is None
-    assert detector.runtime["allow_tf32_cudnn"] is True  # recorded, so the run says so
+    assert detector.runtime["numerics"]["effective"]["allow_tf32_cudnn"] is True  # recorded
+
+
+def test_mmdet_adapter_needs_the_regimes_environment(mmdet_setup) -> None:
+    s = mmdet_setup
+    lab = lab_config(s.tmp, s.body)
+    with pytest.raises(ConfigError, match="needs CUBLAS_WORKSPACE_CONFIG set"):
+        build_detector(lab, "atss_r50", s.gt, precision="fp32_tf32_off", images_dir=s.images)
+    assert s.api.init_args == {}  # refused before the model was built
+
+
+@pytest.mark.parametrize("setting", ["score_threshold", "max_per_image"])
+def test_mmdet_test_time_settings_are_required(mmdet_setup, setting: str) -> None:
+    s = mmdet_setup
+    body = "\n".join(line for line in s.body.splitlines() if not line.startswith(setting))
+    with pytest.raises(ConfigError, match=f"detectors.atss_r50.{setting} is not set"):
+        build_detector(lab_config(s.tmp, body), "atss_r50", s.gt, precision="fp32")
+
+
+@pytest.mark.parametrize(
+    ("classes", "message"),
+    [
+        (None, "carries no class names"),
+        (("c3", "c1"), r"at label 0 \('c3', expected 'c1'"),
+        (("c1",), r"at label 1 \(nothing, expected 'c3'; 1 vs 2 classes\)"),
+        (("c1", "c3", "c4"), r"at label 2 \('c4', expected nothing"),
+    ],
+)
+def test_mmdet_adapter_refuses_a_different_label_map(
+    mmdet_setup, classes: tuple[str, ...] | None, message: str
+) -> None:
+    s = mmdet_setup
+    s.api.classes = classes
+    with pytest.raises(DetectorError, match=message):
+        build_detector(
+            lab_config(s.tmp, s.body), "atss_r50", s.gt, precision="fp32", images_dir=s.images
+        )
 
 
 @pytest.mark.parametrize(
@@ -320,3 +416,301 @@ def test_fingerprint_follows_file_contents_and_package_versions(tmp_path: Path) 
     assert first["packages"]["pytest"] == pytest.__version__
     weights.write_bytes(b"v2")  # replaced at the same path
     assert fingerprint()["files"]["checkpoint"] != first["files"]["checkpoint"]
+
+
+# --- deployment targets ----------------------------------------------------------------------
+
+
+def test_every_registered_kind_declares_its_targets() -> None:
+    """A kind without targets could run no cell; a target for no kind is a typo."""
+    assert set(KIND_TARGETS) == set(DETECTORS.names())
+    assert all(KIND_TARGETS.values())
+
+
+def test_detector_targets_follow_the_configured_kind(tmp_path: Path) -> None:
+    lab = lab_config(tmp_path, '[detectors.mystery]\nkind = "onnx"\n')
+    assert detector_targets(lab, "fixture") == {"torch_fp32"}
+    assert detector_targets(lab, "mystery") == frozenset()  # an unknown kind produces nothing
+    with pytest.raises(ConfigError, match="not configured"):
+        detector_targets(lab, "absent")
+
+
+# --- what a detector's predictions are (predictions headers) ---------------------------------
+
+
+def test_every_registered_kind_says_what_its_scores_are() -> None:
+    assert set(KIND_SCORE_DEFINITIONS) == set(DETECTORS.names())
+    assert all(definition.strip() for definition in KIND_SCORE_DEFINITIONS.values())
+
+
+def test_a_kind_that_does_not_define_its_scores_is_refused(tmp_path: Path) -> None:
+    lab = lab_config(tmp_path, '[detectors.mystery]\nkind = "onnx"\n')
+    assert score_definition(lab, "fixture") == KIND_SCORE_DEFINITIONS["fixture"]
+    with pytest.raises(ConfigError, match="does not define what its scores are"):
+        score_definition(lab, "mystery")
+
+
+def test_the_mmdet_adapter_overrides_exactly_the_recorded_test_cfg_settings() -> None:
+    assert set(mmdet_module._CFG_OPTIONS) == set(TEST_CFG_SETTINGS)
+
+
+def test_detector_test_cfg_records_only_configured_overrides(tmp_path: Path) -> None:
+    lab = lab_config(
+        tmp_path, '[detectors.m]\nkind = "mmdet"\nmax_per_image = 100\nconfig = "c.py"\n'
+    )
+    assert detector_test_cfg(lab, "m") == {"max_per_image": 100}
+    assert detector_test_cfg(lab, "fixture") == {}
+
+
+# --- what beneath the settings decides predictions (cache key parts) --------------------------
+
+
+def test_every_detector_kind_registers_its_cache_key_parts(tmp_path: Path) -> None:
+    from qcal_lab.models import detector_key_parts
+
+    assert set(KEY_PARTS.names()) == set(DETECTORS.names())
+    assert detector_key_parts(lab_config(tmp_path), "fixture") == {}
+
+
+class FakeConfig:
+    texts: ClassVar[dict[str, str]] = {}
+
+    @classmethod
+    def fromfile(cls, path: str) -> SimpleNamespace:
+        if path not in cls.texts:
+            raise FileNotFoundError(path)
+        return SimpleNamespace(pretty_text=cls.texts[path])
+
+
+def test_mmdet_key_parts_hold_the_stack_and_the_resolved_config(mmdet_setup) -> None:
+    s = mmdet_setup
+    config_path = str(s.tmp / "atss.py")
+    FakeConfig.texts = {config_path: "model = dict(type='ATSS')"}
+    s.modules["mmengine.config"] = SimpleNamespace(Config=FakeConfig)
+    lab = lab_config(s.tmp, s.body)
+    parts = mmdet_module.key_parts(lab, "atss_r50")
+    assert parts["stack"] == {
+        "torch": "2.9.0+cu128",
+        "cuda": "12.8",
+        "cudnn": 91000,
+        "torch_build_sha256": hashlib.sha256(b"PyTorch built with: CUDA 12.8").hexdigest(),
+        "capability": "12.0",
+    }
+    FakeConfig.texts = {config_path: "model = dict(type='ATSS', neck=...)"}  # a _base_ changed
+    assert (
+        mmdet_module.key_parts(lab, "atss_r50")["resolved_config_sha256"]
+        != (parts["resolved_config_sha256"])
+    )
+    assert s.api.init_args == {}  # no model was built for the key
+    FakeConfig.texts = {}
+    with pytest.raises(DetectorError, match="cannot resolve the MMDetection config"):
+        mmdet_module.key_parts(lab, "atss_r50")
+
+
+class DictConfig:
+    """A resolved config exposing ``to_dict``, as mmengine's does."""
+
+    def __init__(self, data: dict[str, Any]) -> None:
+        self.data = data
+        self.pretty_text = repr(data)  # depends on formatting; must not be what is hashed
+
+    def to_dict(self) -> dict[str, Any]:
+        return self.data
+
+
+def test_the_resolved_config_is_hashed_as_canonical_json(mmdet_setup) -> None:
+    """Key order and yapf's formatting must not move the cache key."""
+    s = mmdet_setup
+    loaded: list[dict[str, Any]] = [{"model": {"type": "ATSS", "neck": "FPN"}}]
+    s.modules["mmengine.config"] = SimpleNamespace(
+        Config=SimpleNamespace(fromfile=lambda _path: DictConfig(loaded[0]))
+    )
+    lab = lab_config(s.tmp, s.body)
+    first = mmdet_module.key_parts(lab, "atss_r50")["resolved_config_sha256"]
+    loaded[0] = {"model": {"neck": "FPN", "type": "ATSS"}}  # same config, other key order
+    assert mmdet_module.key_parts(lab, "atss_r50")["resolved_config_sha256"] == first
+
+    def broken(_path: str) -> None:
+        raise ImportError("a custom module the config imports is missing")
+
+    s.modules["mmengine.config"] = SimpleNamespace(Config=SimpleNamespace(fromfile=broken))
+    with pytest.raises(DetectorError, match="cannot resolve the MMDetection config"):
+        mmdet_module.key_parts(lab, "atss_r50")
+
+
+def test_switches_are_recorded_as_they_stand_once_the_model_is_built(mmdet_setup) -> None:
+    """Building the model may change a switch; inference runs under what is recorded."""
+    s = mmdet_setup
+    real_init = s.api.init_detector
+
+    def init_and_turn_on_autotuning(*args: Any, **kwargs: Any) -> Any:
+        s.torch.backends.cudnn.benchmark = True
+        return real_init(*args, **kwargs)
+
+    s.api.init_detector = init_and_turn_on_autotuning
+    detector = build_detector(
+        lab_config(s.tmp, s.body), "atss_r50", s.gt, precision="fp32", images_dir=s.images
+    )
+    assert detector.runtime["numerics"]["effective"]["cudnn_benchmark"] is True
+
+
+# --- the checkpoint's own class names (docs/changes/qcal-foundations.md, N14) ------------------
+
+
+@pytest.mark.parametrize(
+    ("meta", "classes", "match"),
+    [
+        ({"dataset_meta": {"classes": ["c1", "c3"]}}, ("c1", "c3"), "exact"),
+        ({"dataset_meta": {"CLASSES": ["c1", "c3"]}}, ("c1", "c3"), "exact"),  # 3.0rc spelling
+        ({"CLASSES": ["c1", "c3"]}, ("c1", "c3"), "exact"),  # 2.x checkpoints
+        ({"dataset_meta": {"classes": ["C1", "c3"]}}, ("C1", "c3"), "folded"),  # case folds
+    ],
+)
+def test_the_checkpoints_class_names_are_read_before_the_model_is_built(
+    mmdet_setup, meta: dict[str, Any], classes: tuple[str, ...], match: str
+) -> None:
+    s = mmdet_setup
+    s.loader.meta = meta
+    s.api.classes = classes  # the built model keeps its checkpoint's names
+    detector = build_detector(
+        lab_config(s.tmp, s.body), "atss_r50", s.gt, precision="fp32", images_dir=s.images
+    )
+    assert detector.runtime["label_map"] == match
+    assert s.loader.calls[0]["map_location"] == "cpu"
+
+
+def test_a_checkpoint_without_class_names_needs_an_attestation(mmdet_setup) -> None:
+    """MMDetection would label it with COCO's names, which a model check cannot see. Ian's
+    attestation (his declarations file) names this checkpoint and this order (review B1)."""
+    s = mmdet_setup
+    s.loader.meta = {}
+    s.api.classes = ("person", "car")  # what init_detector's COCO fallback would claim
+    lab = lab_config(s.tmp, s.body)
+    checkpoint_sha256 = hashlib.sha256(b"weights").hexdigest()
+    digest = mmdet_module.label_order_digest(checkpoint_sha256, s.gt.category_names)
+    reads: list[str] = []
+
+    def declared(value: str) -> Any:
+        def read() -> dict[str, str]:
+            reads.append(value)
+            return {mmdet_module.ATTESTATION_SETTING: value}
+
+        return read
+
+    def build(value: str) -> Any:
+        return build_detector(
+            lab, "atss_r50", s.gt, precision="fp32", images_dir=s.images, declared=declared(value)
+        )
+
+    with pytest.raises(DetectorError, match="carries no class names") as refused:
+        build("")
+    assert s.api.init_args == {}  # refused before the model was built
+    assert digest not in str(refused.value)  # the value to declare is never printed
+    assert build(digest).runtime["label_map"] == "attested"
+    other_checkpoint = mmdet_module.label_order_digest("0" * 64, s.gt.category_names)
+    with pytest.raises(DetectorError, match="carries no class names"):
+        build(other_checkpoint)  # attested for another checkpoint: refused
+    reordered = mmdet_module.label_order_digest(checkpoint_sha256, s.gt.category_names[::-1])
+    with pytest.raises(DetectorError, match="carries no class names"):
+        build(reordered)
+
+
+@pytest.mark.parametrize(
+    "built",
+    [
+        SimpleNamespace(dataset_meta={"classes": ("person", "car", "dog")}),  # 3 names, 2 classes
+        SimpleNamespace(bbox_head=SimpleNamespace(num_classes=80)),  # a COCO head
+        SimpleNamespace(roi_head=SimpleNamespace(bbox_head=SimpleNamespace(num_classes=1))),
+        SimpleNamespace(),  # nothing to count: refused, not assumed
+    ],
+)
+def test_an_attested_checkpoint_must_build_the_datasets_class_count(
+    mmdet_setup, built: SimpleNamespace
+) -> None:
+    """The attestation covers the label order; the built model must still predict exactly
+    the dataset's number of classes (Copilot, PR #5)."""
+    s = mmdet_setup
+    s.loader.meta = {}
+    checkpoint_sha256 = hashlib.sha256(b"weights").hexdigest()
+    digest = mmdet_module.label_order_digest(checkpoint_sha256, s.gt.category_names)
+    s.api.init_detector = lambda *args, **kwargs: built  # type: ignore[method-assign]
+    with pytest.raises(DetectorError, match="an attested label order needs the same number"):
+        build_detector(
+            lab_config(s.tmp, s.body),
+            "atss_r50",
+            s.gt,
+            precision="fp32",
+            images_dir=s.images,
+            declared=lambda: {mmdet_module.ATTESTATION_SETTING: digest},
+        )
+
+
+def test_an_attestation_needs_the_checkpoint_digest(mmdet_setup) -> None:
+    s = mmdet_setup
+    s.loader.meta = {}
+    unpinned = s.body.replace(
+        f'checkpoint_sha256 = "{hashlib.sha256(b"weights").hexdigest()}"\n', ""
+    )
+    with pytest.raises(DetectorError, match=r"needs detectors\.atss_r50\.checkpoint_sha256"):
+        build_detector(
+            lab_config(s.tmp, unpinned), "atss_r50", s.gt, precision="fp32", images_dir=s.images
+        )
+
+
+def test_class_names_in_the_checkpoint_never_read_the_declarations(mmdet_setup) -> None:
+    s = mmdet_setup
+    s.loader.meta = {"dataset_meta": {"classes": ["c1", "c3"]}}
+    s.api.classes = ("c1", "c3")
+
+    def unreadable() -> Any:
+        raise AssertionError("declarations read for a checkpoint that names its classes")
+
+    detector = build_detector(
+        lab_config(s.tmp, s.body),
+        "atss_r50",
+        s.gt,
+        precision="fp32",
+        images_dir=s.images,
+        declared=unreadable,
+    )
+    assert detector.runtime["label_map"] == "exact"
+
+
+def test_the_built_model_must_keep_the_checkpoints_classes(mmdet_setup) -> None:
+    s = mmdet_setup
+    s.loader.meta = {"dataset_meta": {"classes": ["c1", "c3"]}}
+    s.api.classes = ("c3", "c1")  # the built model disagrees with its own checkpoint
+    with pytest.raises(DetectorError, match="differ from its checkpoint's"):
+        build_detector(
+            lab_config(s.tmp, s.body), "atss_r50", s.gt, precision="fp32", images_dir=s.images
+        )
+
+
+def test_an_unreadable_checkpoint_is_a_detector_error(mmdet_setup) -> None:
+    s = mmdet_setup
+
+    def broken(path: str, **_: Any) -> None:
+        raise RuntimeError("bad zip")
+
+    s.loader.load_checkpoint = broken  # type: ignore[method-assign]
+    with pytest.raises(DetectorError, match="cannot read checkpoint"):
+        build_detector(
+            lab_config(s.tmp, s.body), "atss_r50", s.gt, precision="fp32", images_dir=s.images
+        )
+
+
+def test_the_cache_key_holds_the_mmcv_build(mmdet_setup, monkeypatch: pytest.MonkeyPatch) -> None:
+    s = mmdet_setup
+    FakeConfig.texts = {str(s.tmp / "atss.py"): "model = dict(type='ATSS')"}
+    s.modules["mmengine.config"] = SimpleNamespace(Config=FakeConfig)
+    lab = lab_config(s.tmp, s.body)
+    assert mmdet_module.key_parts(lab, "atss_r50")["mmcv_ext_sha256"] == ""  # no mmcv here
+    ext = s.tmp / "_ext.cpython-312-x86_64-linux-gnu.so"
+    ext.write_bytes(b"sm_120 build")
+    monkeypatch.setattr(
+        mmdet_module.importlib.util, "find_spec", lambda name: SimpleNamespace(origin=str(ext))
+    )
+    first = mmdet_module.key_parts(lab, "atss_r50")["mmcv_ext_sha256"]
+    assert first == hashlib.sha256(b"sm_120 build").hexdigest()
+    ext.write_bytes(b"sm_89 build")  # rebuilt for another architecture, same version
+    assert mmdet_module.key_parts(lab, "atss_r50")["mmcv_ext_sha256"] != first

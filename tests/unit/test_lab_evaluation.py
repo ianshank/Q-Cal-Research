@@ -28,6 +28,8 @@ from qcal_lab.fixture_eval import (
 )
 from tests.lab_support import det, fixture_ground_truth, ground_truth, image, lab_config
 
+pytestmark = pytest.mark.rule("C4")
+
 
 def _lab(root: Path, module: str, factory: str = "build", options: str = ""):
     return lab_config(root, f'[eval_loop]\nmodule = "{module}"\nfactory = "{factory}"\n{options}')
@@ -182,3 +184,39 @@ def test_repository_config_classes_handwritten_as_ian_only() -> None:
 
     policy = Policy.from_config(load_config(REPO_ROOT, environ={}))
     assert "ian_only" in policy.categories_for("src/qcal_lab/handwritten/eval_loop.py")
+
+
+# -- the fixture loop's hit IoU (tooling, read at build time) ---------------------------------
+
+
+def test_the_fixture_loop_reads_its_hit_iou_once_when_built(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qcal_lab import fixture_eval
+
+    loop = fixture_eval.build({})
+    assert loop.hit_iou == fixture_eval.tooling_hit_iou() == 0.5
+
+    def no_files() -> dict[str, object]:
+        raise AssertionError("the loop read tooling.toml while evaluating")
+
+    monkeypatch.setattr(fixture_eval, "load_tooling", no_files)
+    fixture = fixture_ground_truth()
+    loop.threshold_objective([image("1")], fixture, label=0, stage="operating")
+
+
+def test_the_hit_iou_decides_what_counts_as_found() -> None:
+    gt = ground_truth(boxes={1: [(1, [0.0, 0.0, 10.0, 10.0])]})
+    half = [image("1", det(0.9, 0, (0, 0, 10, 5)))]  # IoU 0.5 with the object
+    assert poor_or_missed_share(half, gt, 0, hit_iou=0.5) == 0.0
+    assert poor_or_missed_share(half, gt, 0, hit_iou=0.6) == 1.0  # poor, and the object missed
+    assert FixtureEvalLoop(hit_iou=0.6).hit_iou == 0.6
+
+
+@pytest.mark.parametrize("value", [0.0, -0.1, 1.5])
+def test_an_out_of_range_hit_iou_is_refused(monkeypatch: pytest.MonkeyPatch, value: float) -> None:
+    from qcal_lab import fixture_eval
+
+    monkeypatch.setattr(fixture_eval, "load_tooling", lambda: {"fixture_eval": {"hit_iou": value}})
+    with pytest.raises(ConfigError, match="hit_iou must be in"):
+        fixture_eval.build({})
