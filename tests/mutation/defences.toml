@@ -715,8 +715,8 @@ tests = [
 id = "S3-guard-standalone"
 file = "src/qcal/integrity/agent_settings.py"
 finding = "a wrapped guard is one simple command; `; true` would replace its exit status (Copilot, PR #5)"
-old = '''            return words[i + 1 :] if standalone(command) else [""]'''
-new = '''            return words[i + 1 :]'''
+old = '''    if first.startswith(prefix) and first.endswith(wrapper) and standalone(command):'''
+new = '''    if first.startswith(prefix) and first.endswith(wrapper):'''
 tests = ["tests/unit/test_agent_layer.py::test_a_guard_must_be_one_simple_command"]
 
 [[mutant]]
@@ -1149,4 +1149,29 @@ old = '''            CODE_TREE_COLUMN: self.provenance.get(CODE_TREE_COLUMN),
 new = ''''''
 tests = [
     "tests/regression/test_registry_run_gates.py::test_s6_the_runner_records_the_code_tree",
+]
+
+[[mutant]]
+id = "B2-wrapper-first"
+file = "src/qcal/integrity/agent_settings.py"
+finding = "no command or NAME= may precede the hook wrapper (panel round 2)"
+old = '''    if first.startswith(prefix) and first.endswith(wrapper) and standalone(command):
+        return words[1:]
+    return [""]'''
+new = '''    for i, word in enumerate(words):
+        if word.endswith(wrapper):
+            return words[i + 1 :] if standalone(command) else [""]
+    return None'''
+tests = [
+    "tests/unit/test_agent_layer.py::test_the_wrapper_must_be_the_projects_and_come_first",
+]
+
+[[mutant]]
+id = "B2-wrapper-prefix"
+file = "src/qcal/integrity/agent_settings.py"
+finding = "the hook wrapper must be the project's (panel round 2)"
+old = '''    if first.startswith(prefix) and first.endswith(wrapper) and standalone(command):'''
+new = '''    if first.endswith(wrapper) and standalone(command):'''
+tests = [
+    "tests/unit/test_agent_layer.py::test_the_wrapper_must_be_the_projects_and_come_first",
 ]

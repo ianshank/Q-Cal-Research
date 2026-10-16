@@ -691,6 +691,33 @@ def test_a_guard_must_be_one_simple_command(config: Config, repo: Path, hook_lin
     assert sum("has no deny-read hook covering" in e for e in errors) == 3
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        f"true {WRAPPER_CMD} deny-read ian_only ian_data",  # `true` runs; the guard never does
+        f"QCAL_PYTHON=/bin/true {WRAPPER_CMD} deny-read ian_only ian_data",  # swaps its python
+        "/tmp/elsewhere/run_hook.sh deny-read ian_only ian_data",  # not the project's wrapper
+        "run_hook.sh deny-read ian_only ian_data",  # whichever one PATH finds
+    ],
+    ids=["prefix-command", "prefix-assignment", "other-wrapper", "bare-wrapper"],
+)
+def test_the_wrapper_must_be_the_projects_and_come_first(
+    config: Config, repo: Path, command: str
+) -> None:
+    """Panel round 2: words before the wrapper decide what runs, so they are refused."""
+    _network_agent(repo, hook_line=None)
+    agent = repo / AGENT
+    text = agent.read_text().replace(
+        "tools: Read, Grep, Glob, WebSearch\n",
+        "tools: Read, Grep, Glob, WebSearch\nhooks:\n  PreToolUse:\n"
+        "    - matcher: Read|Grep|Glob\n      hooks:\n"
+        f"        - type: command\n          command: '{command}'\n",
+    )
+    agent.write_text(text)
+    errors = check_agent_layer(config).errors
+    assert sum("has no deny-read hook covering" in e for e in errors) == 3, errors
+
+
 def test_quoted_operators_are_arguments_not_operators() -> None:
     from qcal.integrity.agent_settings import standalone
 
