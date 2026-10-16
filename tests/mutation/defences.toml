@@ -600,3 +600,11 @@ finding = "a loop raising on a later call is a MUST finding, not an escaped exce
 old = '''    again = _probe("the loop's second call", lambda: outputs(loop, predictions, ground_truth))'''
 new = '''    again = outputs(loop, predictions, ground_truth)'''
 tests = ["tests/unit/test_lab_eval_contract.py"]
+
+[[mutant]]
+id = "F3-attested-class-count"
+file = "src/qcal_lab/models/mmdet.py"
+finding = "an attested nameless checkpoint must build the dataset's number of classes (Copilot, PR #5)"
+old = '''            if count != ground_truth.num_classes:'''
+new = '''            if False:'''
+tests = ["tests/unit/test_lab_models.py"]

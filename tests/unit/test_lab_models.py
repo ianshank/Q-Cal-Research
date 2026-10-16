@@ -615,6 +615,36 @@ def test_a_checkpoint_without_class_names_needs_an_attestation(mmdet_setup) -> N
         build(reordered)
 
 
+@pytest.mark.parametrize(
+    "built",
+    [
+        SimpleNamespace(dataset_meta={"classes": ("person", "car", "dog")}),  # 3 names, 2 classes
+        SimpleNamespace(bbox_head=SimpleNamespace(num_classes=80)),  # a COCO head
+        SimpleNamespace(roi_head=SimpleNamespace(bbox_head=SimpleNamespace(num_classes=1))),
+        SimpleNamespace(),  # nothing to count: refused, not assumed
+    ],
+)
+def test_an_attested_checkpoint_must_build_the_datasets_class_count(
+    mmdet_setup, built: SimpleNamespace
+) -> None:
+    """The attestation covers the label order; the built model must still predict exactly
+    the dataset's number of classes (Copilot, PR #5)."""
+    s = mmdet_setup
+    s.loader.meta = {}
+    checkpoint_sha256 = hashlib.sha256(b"weights").hexdigest()
+    digest = mmdet_module.label_order_digest(checkpoint_sha256, s.gt.category_names)
+    s.api.init_detector = lambda *args, **kwargs: built  # type: ignore[method-assign]
+    with pytest.raises(DetectorError, match="an attested label order needs the same number"):
+        build_detector(
+            lab_config(s.tmp, s.body),
+            "atss_r50",
+            s.gt,
+            precision="fp32",
+            images_dir=s.images,
+            declared=lambda: {mmdet_module.ATTESTATION_SETTING: digest},
+        )
+
+
 def test_an_attestation_needs_the_checkpoint_digest(mmdet_setup) -> None:
     s = mmdet_setup
     s.loader.meta = {}

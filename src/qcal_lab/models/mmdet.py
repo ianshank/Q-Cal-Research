@@ -166,6 +166,21 @@ def checkpoint_label_map(
     return "exact"  # pragma: no cover - check_label_map raised
 
 
+def model_num_classes(model: Any) -> int | None:
+    """How many classes a built model predicts: its (single- or two-stage) bbox head's
+    ``num_classes``, else the length of its ``dataset_meta`` names; ``None`` if neither."""
+    heads = (
+        getattr(model, "bbox_head", None),
+        getattr(getattr(model, "roi_head", None), "bbox_head", None),
+    )
+    for head in heads:
+        count = getattr(head, "num_classes", None)
+        if isinstance(count, int) and not isinstance(count, bool):
+            return count
+    names = model_classes(model)
+    return None if names is None else len(names)
+
+
 def model_classes(model: Any) -> list[str] | None:
     """The class names a built MMDetection model carries (``dataset_meta``), if any."""
     meta = getattr(model, "dataset_meta", None)
@@ -199,12 +214,23 @@ class MMDetDetector:
             device=device,
             cfg_options=dict(cfg_options) or None,
         )
-        if checkpoint_names is not None:  # attested checkpoints carry none to compare
+        if checkpoint_names is not None:
             built = model_classes(self._model)
             if built != list(checkpoint_names):
                 raise DetectorError(
                     f"{name}: the built model's classes differ from its checkpoint's "
                     f"({built!r} vs {list(checkpoint_names)!r})"
+                )
+        else:
+            # An attested checkpoint has no names to compare: MMDetection labels the model
+            # with COCO's, and Ian attested the label indices. What must still hold is the
+            # count, or labels fall outside (or short of) the dataset's categories.
+            count = model_num_classes(self._model)
+            if count != ground_truth.num_classes:
+                raise DetectorError(
+                    f"{name}: the built model has {count if count is not None else 'an unknown'}"
+                    f" number of classes, the dataset {ground_truth.num_classes}; an attested "
+                    "label order needs the same number"
                 )
 
     def _image(self, image_id: str) -> ImageDetections:
@@ -372,4 +398,5 @@ __all__ = [
     "label_order_digest",
     "mmcv_extension_digest",
     "model_classes",
+    "model_num_classes",
 ]
