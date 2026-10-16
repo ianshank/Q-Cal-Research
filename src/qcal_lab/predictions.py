@@ -16,10 +16,12 @@ re-running the detector (plan §5, Phase 3).
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import hashlib
 import json
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -65,6 +67,13 @@ _REQUIRED_SOURCE: Final = ("precision", "target", "quant_path", "shift", "score_
 
 class PredictionsError(ValueError):
     """A predictions file or a detector's output is malformed."""
+
+
+#: What a conflict reports as the cached digest when the cached bytes cannot be read.
+UNREADABLE: Final = "unreadable"
+#: Under the cache directory: unvouched bytes moved aside, as ``<key>/<sha256>.jsonl``.
+QUARANTINE_DIR: Final = "quarantine"
+_LOCK_SUFFIX: Final = ".lock"
 
 
 class CacheConflictError(PredictionsError):
@@ -316,6 +325,97 @@ class PredictionCache:
     def _sidecar(path: Path) -> Path:
         return path.with_suffix(".meta.json")
 
+    @contextlib.contextmanager
+    def lock(self, key: str) -> Iterator[None]:
+        """Hold the key's lock: reading, writing and quarantining one key never interleave
+        across runs (GPU0 and GPU1 share keys). Released by the kernel if the run dies."""
+        if self.directory is None:
+            yield
+            return
+        self.directory.mkdir(parents=True, exist_ok=True)
+        with (self.directory / f"{key}{_LOCK_SUFFIX}").open("a") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    def producers(self, key: str) -> list[str]:
+        """Every run that put the key's bytes, oldest first; ``[]`` when none can be read.
+
+        Identical bytes re-put by a later run keep the earlier producers: the first may still
+        be running, and its record will list the file.
+        """
+        path = self.path(key)
+        if path is None:
+            return []
+        try:
+            document = json.loads(self._sidecar(path).read_text("utf-8"))
+            meta = open_envelope(
+                document, CACHE_ENTRY_FORMAT, CACHE_ENTRY_VERSION, path.name, error=PredictionsError
+            )
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, PredictionsError):
+            return []
+        listed = meta.get("producers")
+        if isinstance(listed, list) and all(isinstance(r, str) for r in listed):
+            return [r for r in listed if r]
+        latest = str(meta.get("produced_by", ""))  # a sidecar written before the list existed
+        return [latest] if latest else []
+
+    def producer(self, key: str) -> str:
+        """The latest run the key's sidecar names, or ``""`` when there is none to read."""
+        return (self.producers(key) or [""])[-1]
+
+    def quarantine(self, key: str, sha256: str) -> Path | None:
+        """Move the key's bytes aside if they still hash to ``sha256``; the moved file's path.
+
+        Call it under :meth:`lock`, and only for bytes no record vouches for whose producer is
+        not running. Nothing is deleted: the bytes land at ``quarantine/<key>/<sha256>.jsonl``
+        (with their sidecar), created exclusively. An existing file there is trusted only once
+        it hashes to its name: an interrupted in-place write (no hard links) can leave it
+        short, and then the cached bytes stay where they are. ``None`` when nothing moved.
+        """
+        path = self.path(key)
+        if path is None or self.directory is None:
+            return None
+        try:
+            data = path.read_bytes()
+        except OSError:
+            return None
+        if hashlib.sha256(data).hexdigest() != sha256:
+            return None
+        target = self.directory / QUARANTINE_DIR / key / f"{sha256}.jsonl"
+        try:
+            write_bytes_exclusive(target, data)
+        except FileExistsError:
+            try:
+                kept = hashlib.sha256(target.read_bytes()).hexdigest()
+            except OSError:
+                kept = UNREADABLE
+            if kept != sha256:  # a partial earlier copy: never trade the original for it
+                _log.error(
+                    "quarantine copy %s does not hold %s; cached predictions %s kept",
+                    target,
+                    sha256[:12],
+                    path.name,
+                )
+                return None
+        sidecar = self._sidecar(path)
+        with contextlib.suppress(OSError):
+            meta = sidecar.read_bytes()
+            with contextlib.suppress(FileExistsError):
+                write_bytes_exclusive(self._sidecar(target), meta)
+            sidecar.unlink()
+        path.unlink()
+        _log.warning("quarantined cached predictions %s (%s) to %s", path.name, sha256[:12], target)
+        return target
+
+    def quarantined(self) -> list[Path]:
+        """Every quarantined predictions file, oldest key first."""
+        if self.directory is None:
+            return []
+        return sorted((self.directory / QUARANTINE_DIR).glob("*/*.jsonl"))
+
     def get(self, key: str) -> CacheEntry | None:
         """The cached entry if its bytes, key and metadata still agree."""
         path = self.path(key)
@@ -329,7 +429,11 @@ class PredictionCache:
         except (OSError, UnicodeDecodeError, json.JSONDecodeError, PredictionsError) as exc:
             _log.warning("ignoring cached predictions %s: unreadable metadata (%s)", path.name, exc)
             return None
-        actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        try:
+            actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError as exc:
+            _log.warning("ignoring cached predictions %s: unreadable (%s)", path.name, exc)
+            return None
         if not isinstance(meta, Mapping) or meta.get("sha256") != actual or meta.get("key") != key:
             _log.warning("ignoring cached predictions %s: metadata mismatch", path.name)
             return None
@@ -347,24 +451,37 @@ class PredictionCache:
     ) -> CacheEntry:
         """Cache ``images`` under ``key``, never replacing other bytes there.
 
-        Identical bytes already under the key are kept, and the sidecar names ``produced_by``
-        from now on (the earlier producer's record may be missing). Other bytes raise
-        :class:`CacheConflictError`.
+        Identical bytes already under the key are kept, and the sidecar adds ``produced_by``
+        to their producers (the earlier producer's record may be missing, or not written
+        yet). Other bytes raise :class:`CacheConflictError`. Call it under :meth:`lock`.
         """
         path = self.path(key)
         if path is None:
             raise PredictionsError("the prediction cache is disabled")
         data = dumps(header, images)
         digest = hashlib.sha256(data).hexdigest()
+        producers = [produced_by]
         try:
             write_bytes_exclusive(path, data)
         except FileExistsError:
-            existing = hashlib.sha256(path.read_bytes()).hexdigest()
+            try:
+                existing = hashlib.sha256(path.read_bytes()).hexdigest()
+            except OSError as exc:  # unreadable: never replaced, the caller keeps its own copy
+                _log.warning("cached predictions %s are unreadable (%s)", path.name, exc)
+                existing = UNREADABLE
             if existing != digest:
                 raise CacheConflictError(key, existing, digest) from None
             _log.info("cached predictions %s already hold these bytes", path.name)
+            earlier = [r for r in self.producers(key) if r != produced_by]
+            producers = [*earlier, produced_by]
         created = datetime.now(UTC).isoformat()
-        meta = {"sha256": digest, "key": key, "produced_by": produced_by, "created_at": created}
+        meta = {
+            "sha256": digest,
+            "key": key,
+            "produced_by": produced_by,
+            "producers": producers,
+            "created_at": created,
+        }
         document = envelope(CACHE_ENTRY_FORMAT, CACHE_ENTRY_VERSION, meta)
         write_bytes_atomic(self._sidecar(path), json_bytes(document))
         return CacheEntry(path, produced_by, created, digest)
@@ -375,8 +492,10 @@ __all__ = [
     "CACHE_ENTRY_VERSION",
     "DETECTION_FIELDS",
     "FORMAT",
+    "QUARANTINE_DIR",
     "RESERVED_FIELDS",
     "STAGES",
+    "UNREADABLE",
     "VERSION",
     "CacheConflictError",
     "CacheEntry",

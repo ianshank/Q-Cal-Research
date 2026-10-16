@@ -39,6 +39,11 @@ timeout_s = 60                        # every git subprocess
 
 [policy]
 case_insensitive = true
+# Clean-room matching folds text first: decompose (NFKD for "NFKC", NFD for "NFC"), drop these
+# Unicode categories (Cf: format characters such as zero-width spaces; Mn: combining marks),
+# map every dash to "-", casefold, recompose. Path categories never fold.
+unicode_normalization = "NFKC"        # NFKC | NFC | "" (off)
+strip_unicode_categories = ["Cf", "Mn"]
 clean_room_substrings = ["nbcu", "edge-dit", "edge_dit", "edgedit"]
 
 [policy.categories]
@@ -140,6 +145,9 @@ project_dir_env = "CLAUDE_PROJECT_DIR"
 edit_tools = ["Edit", "Write", "MultiEdit", "NotebookEdit"]
 path_fields = ["file_path", "path", "notebook_path"]
 deny_categories = ["ian_only", "registry_only", "enforcement_surface", "git_internals"]
+# Refuse edits and private reads of a file with more than one hard link: the other name may
+# be a protected file, and checking which would need a scan of the whole tree.
+deny_hard_links = true
 push_deny_flags = [
   "--force", "-f", "--force-with-lease", "--force-if-includes",
   "--mirror", "--all", "--delete", "-d", "--prune",
@@ -161,6 +169,11 @@ env_command_timeout_s = 10           # per external probe (nvidia-smi, nvpmodel)
 config_hash_inputs = ["configs/**/*.yaml", "configs/**/*.yml", "configs/**/*.toml"]
 max_runs_per_batch = 50
 require_clean_tree = false
+# A launcher waits this long for another launcher's lock on the same (cell, seed) before it
+# refuses the run, polling at lock_poll_s. paths.inflight_dir must be on a host-local
+# filesystem: flock over NFS without lockd, or sshfs, does not lock across hosts.
+lock_wait_s = 2.0
+lock_poll_s = 0.05
 # Refuse a registered run whose qcal is not imported from paths.source_dir, so the code
 # that writes the record is the repository's own. Off here (tests and throwaway projects
 # import an installed qcal); qcal.toml turns it on.
@@ -178,8 +191,13 @@ write_parquet = "auto"                # auto | always | never
 core_columns = [
   "run_id", "cell_id", "seed", "seed_role", "status", "supersedes",
   "started_at", "finished_at", "duration_s", "git_sha", "git_dirty", "config_hash",
-  "config_inputs_sha256", "batch_id", "failure_kind",
+  "config_inputs_sha256", "definition_sha256", "policy_sha256", "experiments_sha256",
+  "batch_id", "failure_kind",
 ]
+# Index columns every run aggregated into one table value (or claim) must agree on: seeds
+# that differ here are not draws of one experiment. Each is a core column or a prefixed one
+# (env.<key>). The default keeps the configuration files; qcal.toml sets the repository's set.
+identity_columns = ["config_inputs_sha256"]
 
 [registry.column_prefixes]
 factors = "factor."
@@ -310,6 +328,12 @@ skill_allowed_keys = [
   "background", "hooks", "paths", "shell", "metadata", "license", "compatibility",
 ]
 forbidden_permission_modes = ["bypassPermissions"]
+isolation_values = ["worktree"]       # what an agent's isolation may say
+max_turns_limit = 100                 # an agent's maxTurns must be an integer from 1 to this
+# A network agent (network tools, mcp__ tools or mcpServers) must wrap deny-read around each
+# read tool with at least these categories; qcal.toml adds the repository's own.
+network_agent_deny_read = ["ian_only"]
+read_tools = ["Read", "Grep", "Glob"]
 hook_wrapper = "run_hook.sh"          # settings commands through it must name a real qcal hook
 required_pretooluse_hooks = []        # qcal.toml lists the guards this repository must wire
 skill_required_keys = ["description"]

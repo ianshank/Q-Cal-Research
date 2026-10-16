@@ -98,6 +98,14 @@ def test_device_record_names_the_device_that_ran() -> None:
     assert len(record["torch_build_sha256"]) == 64
 
 
+def test_a_bare_cuda_device_is_torchs_current_device() -> None:
+    """``cuda`` runs on torch's current device; recording GPU 0 instead would name the wrong
+    GPU (Copilot, PR #4)."""
+    record = device_record(FakeTorch(current_device=1), "cuda")
+    assert (record["name"], record["uuid"]) == ("GPU 1", "GPU-0001")
+    assert device_record(FakeTorch(current_device=1), "cuda:0")["name"] == "GPU 0"
+
+
 @pytest.mark.parametrize(("device", "available"), [("cpu", True), ("cuda:0", False)])
 def test_device_record_without_a_gpu_keeps_the_stack(device: str, available: bool) -> None:
     record = device_record(FakeTorch(cuda_available=available), device)

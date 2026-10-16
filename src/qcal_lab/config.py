@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Final
 
 from qcal.config import Config, ConfigError, deep_merge
-from qcal.globs import first_match
+from qcal.registry.gates import hashed_input
 
 # Bootstrap constant, like qcal's REPO_CONFIG_NAME: where the repository layer lives.
 LAB_CONFIG_FILE: Final = "configs/lab.toml"
@@ -113,10 +113,11 @@ def _require_hashed_file(path: Path, qcal_config: Config, *, must_be_inside: boo
             raise ConfigError(f"{path} is outside the repository, so no run record can hash it")
         return  # an installed package: the run records the effective configuration's digest
     relative = resolved.relative_to(qcal_config.root).as_posix()
-    if first_match(relative, qcal_config.str_list("registry.config_hash_inputs")) is None:
+    # The registry's own set: never disagrees with what a run hashes (case, symlinks, specs).
+    if not hashed_input(qcal_config, path) and not hashed_input(qcal_config, resolved):
         raise ConfigError(
-            f"{relative} is not covered by registry.config_hash_inputs, so a run's science "
-            "settings would not be recorded in its config_hash"
+            f"{relative} is not covered by registry.config_hash_inputs (or is a table spec), "
+            "so a run's science settings would not be recorded in its config_hash"
         )
 
 

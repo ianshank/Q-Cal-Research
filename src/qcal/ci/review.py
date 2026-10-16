@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from qcal.ci import check_mode
 from qcal.ci.signatures import changed_between, policy_config, require_commit
 from qcal.config import Config
 from qcal.gitutil import GitError, git, show_file
@@ -31,7 +32,6 @@ from qcal.log import get_logger
 from qcal.reports import verdict
 
 _log = get_logger("ci.review")
-_MODES = ("bootstrap", "enforce")
 _FULL_SHA = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 _SLUG_UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -116,9 +116,7 @@ def check_review(
     base = require_commit(repo, base, "base")
     head = require_commit(repo, head, "head")
     config = policy_config(repo, policy_ref or base)
-    chosen = mode or config.str_value("review.mode")
-    if chosen not in _MODES:
-        raise ValueError(f"review.mode must be one of {_MODES}, got {chosen!r}")
+    chosen = check_mode(mode or config.str_value("review.mode"), "review.mode")
     reviewers = required_reviewers(config, branch)
     report = ReviewReport(mode=chosen, branch=branch, reviewers=reviewers)
     candidates = [(r, review_path(config, r, branch)) for r in reviewers]

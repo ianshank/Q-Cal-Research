@@ -19,10 +19,10 @@ import pytest
 
 from qcal.config import load_config
 from qcal_lab.config import load_lab_config
+from qcal_lab.eval_contract import fixture_inputs, must_problems
 from qcal_lab.evaluation import EvalLoop, HandwrittenMissingError, load_eval_loop
 from qcal_lab.fixture_eval import build as build_fixture_loop
 from tests.conftest import REPO_ROOT
-from tests.contract.eval_loop_checks import fixture_inputs, must_problems
 from tests.lab_support import fixture_ground_truth
 
 pytestmark = pytest.mark.rule("C4")
@@ -88,6 +88,37 @@ def test_the_loop_reads_no_files_and_opens_no_sockets(which: str) -> None:
     # manifest, annotations or socket that a loop could read at import and keep.
     unexpected = [e for e in built if not _code_or_tooling(e)]
     assert unexpected == [], unexpected
+
+
+_HOOK_PROBE = """
+import json, os, pathlib, sys
+from tests.contract._run_loop import audit_hook
+events, phase = {"build": []}, ["build"]
+sys.addaudithook(audit_hook(events, phase))
+target = sys.argv[1]
+open(os.fsencode(target), "rb").close()
+open(pathlib.Path(target), "rb").close()
+fd = os.open(target, os.O_RDONLY)
+open(fd, "rb", closefd=True).close()
+sys.stdout.write(json.dumps(events["build"]) + "\\n")
+"""
+
+
+@pytest.mark.integration
+def test_the_audit_sees_bytes_paths_path_objects_and_descriptors(tmp_path: Path) -> None:
+    """A loop must not read a file unseen by spelling its path as bytes or a descriptor."""
+    target = tmp_path / "manifest.txt"
+    target.write_text("held-out\n", "utf-8")
+    out = subprocess.run(
+        [sys.executable, "-c", _HOOK_PROBE, str(target)],
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=REPO_ROOT,
+    )
+    opened = [path for name, path in json.loads(out.stdout.strip().splitlines()[-1])]
+    assert opened.count(str(target)) >= 2  # the bytes and the Path spellings
+    assert any(p.startswith("fd:") for p in opened)  # the descriptor
 
 
 def _code_or_tooling(event: list[str]) -> bool:

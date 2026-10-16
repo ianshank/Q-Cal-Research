@@ -266,6 +266,7 @@ def test_run_records_provenance(
         "git_sha": None,
         "git_dirty": None,
         "config_hash": runner.config_hash(runner.experiments.cell("C-a"), 0),
+        "definition_sha256": runner.definition_hash(runner.experiments.cell("C-a")),
         "config_inputs_sha256": digest_of(config_inputs(config)),
         "config_sources": list(config.sources),
         "config_environment": {},
@@ -278,6 +279,7 @@ def test_run_records_provenance(
         "batch_id": None,
         "retry_of": None,
         "inputs_unverified": ["EXPERIMENTS.yaml", "qcal.toml"],  # FakeExecutor reports none
+        "log_sha256": None,  # FakeExecutor writes no log
     }
 
 
@@ -1068,3 +1070,252 @@ def test_the_marker_stays_when_the_record_cannot_be_written(
     with pytest.raises(OSError, match="no space"):
         runner.run("C-a", 0)
     assert len(list(config.path("inflight_dir").glob(f"*{MARKER_SUFFIX}"))) == 1
+
+
+# -- wave 3: a busy pair, the marker lock, late signals (docs/changes/qcal-foundations.md) -----
+
+
+class FakeTime:
+    """Injected sleep and monotonic: each sleep advances the clock and may run a callback."""
+
+    def __init__(self, on_sleep: Callable[[int], None] | None = None) -> None:
+        self.now, self.sleeps = 0.0, []  # type: ignore[var-annotated]
+        self.on_sleep = on_sleep
+
+    def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.now += seconds
+        if self.on_sleep is not None:
+            self.on_sleep(len(self.sleeps))
+
+    def monotonic(self) -> float:
+        return self.now
+
+
+def _hold_pair(config: Config, cell_id: str = "C-a", seed: int = 0) -> Any:
+    directory = config.path("inflight_dir")
+    directory.mkdir(parents=True, exist_ok=True)
+    handle = (directory / pair_lock_name(cell_id, seed)).open("a")
+    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)  # another open file description: another holder
+    return handle
+
+
+def test_a_launcher_waits_briefly_for_a_busy_pair(
+    config: Config, fake_executor: FakeExecutor
+) -> None:
+    holder = _hold_pair(config)
+    clock = FakeTime(
+        on_sleep=lambda n: holder.close() if n == 1 else None
+    )  # released after one poll
+    runner = make_runner(config, fake_executor, sleep=clock.sleep, monotonic=clock.monotonic)
+    assert runner.run("C-a", 0).status == "ok"
+    assert clock.sleeps == [config.float_value("registry.lock_poll_s")]
+
+
+def test_a_pair_busy_beyond_the_wait_is_refused(
+    config: Config, fake_executor: FakeExecutor
+) -> None:
+    from qcal.registry.runner import PairBusyError
+
+    holder = _hold_pair(config)
+    clock = FakeTime()
+    runner = make_runner(config, fake_executor, sleep=clock.sleep, monotonic=clock.monotonic)
+    try:
+        with pytest.raises(PairBusyError, match="being run by another launcher"):
+            runner.run("C-a", 0)
+    finally:
+        holder.close()
+    wait, poll = (
+        config.float_value("registry.lock_wait_s"),
+        config.float_value("registry.lock_poll_s"),
+    )
+    assert len(clock.sleeps) == round(wait / poll)
+    assert fake_executor.specs == []
+
+
+def test_without_a_wait_a_busy_pair_is_refused_at_once(
+    make_config: Callable[[str], Config], fake_executor: FakeExecutor
+) -> None:
+    from qcal.registry.runner import PairBusyError
+
+    config = make_config("[registry]\nlock_wait_s = 0\n")
+    write(config.root, "EXPERIMENTS.yaml", experiments_yaml([{"id": "C-a", "detector": "atss"}]))
+    holder = _hold_pair(config)
+    clock = FakeTime()
+    try:
+        with pytest.raises(PairBusyError):
+            make_runner(config, fake_executor, sleep=clock.sleep, monotonic=clock.monotonic).run(
+                "C-a", 0
+            )
+    finally:
+        holder.close()
+    assert clock.sleeps == []
+
+
+@pytest.mark.parametrize("settings", ["lock_wait_s = -1", "lock_poll_s = 0"])
+def test_lock_timing_is_validated(make_config: Callable[[str], Config], settings: str) -> None:
+    from qcal.config import ConfigError
+
+    config = make_config(f"[registry]\n{settings}\n")
+    with pytest.raises(ConfigError, match="lock_wait_s must be >= 0"):
+        Runner(config, load(config), RegistryStore(config.path("registry_dir")), FakeExecutor())
+
+
+def test_a_filesystem_without_locks_is_a_clear_refusal(
+    config: Config, fake_executor: FakeExecutor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import errno
+
+    from qcal.registry import runner as runner_module
+
+    def no_locks(*_: object) -> None:
+        raise OSError(errno.ENOLCK, "No locks available")
+
+    monkeypatch.setattr(runner_module.fcntl, "flock", no_locks)
+    with pytest.raises(RunRefusedError, match="must be host-local"):
+        make_runner(config, fake_executor).run("C-a", 0)
+
+
+def test_keep_going_skips_a_pair_another_launcher_is_running(
+    config: Config, fake_executor: FakeExecutor
+) -> None:
+    from qcal.registry.runner import PairBusyError
+
+    holder = _hold_pair(config, "C-a", 0)
+    clock = FakeTime()
+    runner = make_runner(config, fake_executor, sleep=clock.sleep, monotonic=clock.monotonic)
+    try:
+        batch = runner.run_batch("C-*", keep_going=True)
+        with pytest.raises(PairBusyError):
+            runner.run_batch("C-a", seeds=[0])  # without --keep-going the batch stops
+    finally:
+        holder.close()
+    assert ("C-a", 0) in {(c, s) for c, s, _ in batch.skipped}
+    assert not batch.failed
+    assert batch.completed
+
+
+def test_keep_going_skips_a_pair_completed_after_planning(
+    config: Config, fake_executor: FakeExecutor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = make_runner(config, fake_executor)
+    planned, skipped = runner.plan("C-a", seeds=[0])
+    runner.run("C-a", 0)  # another launcher finishes the pair after this batch planned it
+    monkeypatch.setattr(runner, "plan", lambda *_a, **_k: (planned, skipped))
+    batch = runner.run_batch("C-a", keep_going=True)
+    assert (len(batch.skipped), batch.failed, batch.completed) == (1, [], [])
+    assert "already completed" in batch.skipped[0][2]
+
+
+def test_the_runs_marker_is_locked_while_it_runs(config: Config) -> None:
+    from qcal.registry.audit import stale_inflight
+
+    seen: list[list[str]] = []
+    record = make_runner(
+        config, MutatingExecutor(lambda: seen.append(stale_inflight(config, [])))
+    ).run("C-a", 0)
+    assert seen == [[]]  # the audit sees a live run, not a stale marker
+    marker = config.path("inflight_dir") / f"{record.run_id}{MARKER_SUFFIX}"
+    assert not marker.exists()
+
+
+def test_the_marker_names_its_host_and_boot(config: Config) -> None:
+    import json
+
+    from qcal.registry.store import host_identity
+
+    seen: list[dict[str, Any]] = []
+
+    def read_marker() -> None:
+        (marker,) = config.path("inflight_dir").glob(f"*{MARKER_SUFFIX}")
+        seen.append(json.loads(marker.read_text()))
+
+    make_runner(config, MutatingExecutor(read_marker)).run("C-a", 0)
+    assert {k: seen[0][k] for k in ("host", "boot_id")} == host_identity()
+
+
+def test_a_signal_landing_before_the_record_hold_still_records_the_run(
+    config: Config, fake_executor: FakeExecutor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import contextlib
+
+    from qcal.registry import runner as runner_module
+
+    real_hold = runner_module._signals_held
+    entries = [0]
+
+    @contextlib.contextmanager
+    def late_signal_then_hold() -> Any:
+        entries[0] += 1
+        if entries[0] == 1:
+            raise LauncherSignal("signal SIGTERM")  # landed before the handlers were swapped
+        with real_hold():
+            yield
+
+    monkeypatch.setattr(runner_module, "_signals_held", late_signal_then_hold)
+    runner = make_runner(config, fake_executor)
+    with pytest.raises(LauncherSignal):
+        runner.run("C-a", 0)
+    (record,) = runner.store.load_all()
+    assert record.status == "ok"  # the program had finished; the signal came after
+    assert list(config.path("inflight_dir").glob(f"*{MARKER_SUFFIX}")) == []
+
+
+def test_an_error_building_the_record_propagates_as_itself(
+    config: Config, fake_executor: FakeExecutor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Not retried, and not hidden behind an IndexError (advisory review N5)."""
+    from qcal.registry import runner as runner_module
+
+    calls = [0]
+
+    def unreadable(*args: Any, **kwargs: Any) -> Any:
+        calls[0] += 1
+        raise OSError("log unreadable")
+
+    monkeypatch.setattr(runner_module.Runner, "_record", unreadable)
+    runner = make_runner(config, fake_executor)
+    with pytest.raises(OSError, match="log unreadable"):
+        runner.run("C-a", 0)
+    assert calls == [1]  # retrying is for interrupts only
+    assert runner.store.load_all() == []
+    assert len(list(config.path("inflight_dir").glob(f"*{MARKER_SUFFIX}"))) == 1  # for the audit
+
+
+def test_interrupted_on_every_attempt_raises_the_interrupt(
+    config: Config, fake_executor: FakeExecutor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import contextlib
+
+    from qcal.registry import runner as runner_module
+
+    @contextlib.contextmanager
+    def always_interrupted() -> Any:
+        raise LauncherSignal("signal SIGTERM")
+        yield  # pragma: no cover - never reached
+
+    monkeypatch.setattr(runner_module, "_signals_held", always_interrupted)
+    with pytest.raises(LauncherSignal):
+        make_runner(config, fake_executor).run("C-a", 0)
+
+
+def test_a_failed_run_still_records_which_inputs_changed(config: Config) -> None:
+    from qcal.registry.gates import INPUTS_READ_KEY
+
+    reported = {"qcal.toml": "0" * 64}
+    result = ExecutionResult(
+        1, error="crashed", failure_kind="unknown", environment={INPUTS_READ_KEY: reported}
+    )
+    record = make_runner(config, FakeExecutor([result])).run("C-a", 0)
+    assert record.failure_kind == "unknown"  # its own failure is kept
+    assert any("qcal.toml" in change for change in record.provenance["inputs_changed"])
+
+
+def test_the_log_is_vouched_for_by_its_digest(config: Config, tmp_path: Path) -> None:
+    script = experiment_script(tmp_path)
+    executor = SubprocessExecutor(
+        executor_command(script), timeout_s=None, env_prefix="QCAL_RUN_", root=config.root
+    )
+    record = make_runner(config, executor).run("C-a", 0)
+    log = config.root / str(record.log_path)
+    assert record.provenance["log_sha256"] == hashlib.sha256(log.read_bytes()).hexdigest()

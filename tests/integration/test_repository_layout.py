@@ -173,3 +173,107 @@ def test_mcp_config_is_read_only() -> None:
 def test_repository_policy_overrides(config) -> None:
     assert "civ" in config.str_list("git.protected_branches")
     assert config.str_value("signing.mode") in {"bootstrap", "enforce"}
+
+
+# --- coverage exclusions never hide a function body ------------------------------------------
+
+
+def _exclusions() -> list[str]:
+    import tomllib
+
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text("utf-8"))
+    return list(data["tool"]["coverage"]["report"]["exclude_also"])
+
+
+def _is_stub(body: list) -> bool:
+    import ast
+
+    rest = (
+        body[1:]
+        if body
+        and isinstance(body[0], ast.Expr)
+        and isinstance(body[0].value, ast.Constant)
+        and isinstance(body[0].value.value, str)
+        else body
+    )
+    return all(
+        isinstance(s, ast.Expr) and isinstance(s.value, ast.Constant) and s.value.value is ...
+        for s in rest
+    )
+
+
+def test_no_coverage_exclusion_matches_a_signature_line() -> None:
+    """coverage.py drops a whole function when any line from its first decorator to its colon
+    matches an exclusion; an unanchored pattern once hid 30 functions that way."""
+    import ast
+    import re
+
+    patterns = [re.compile(p) for p in _exclusions()]
+    hidden: list[str] = []
+    for package in ("src/qcal", "src/qcal_lab"):
+        for path in sorted((REPO_ROOT / package).rglob("*.py")):
+            source = path.read_text("utf-8").splitlines()
+            for node in ast.walk(ast.parse("\n".join(source))):
+                if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+                    continue
+                if _is_stub(node.body):
+                    continue
+                first = min([node.lineno, *(d.lineno for d in node.decorator_list)])
+                for number in range(first, node.body[0].lineno):
+                    line = source[number - 1]
+                    if any(p.search(line) for p in patterns):
+                        relative = path.relative_to(REPO_ROOT)
+                        hidden.append(f"{relative}:{number}: {line.strip()}")
+    assert hidden == []
+
+
+def test_the_exclusion_patterns_still_exclude_what_they_are_for() -> None:
+    import re
+
+    patterns = [re.compile(p) for p in _exclusions()]
+
+    def excluded(line: str) -> bool:
+        return any(p.search(line) for p in patterns)
+
+    assert excluded("    ...")
+    assert excluded("    def predict(self, ids: Sequence[str]) -> Sequence[X]: ...")
+    assert excluded("if TYPE_CHECKING:")
+    assert excluded("        raise NotImplementedError")
+    assert not excluded("def f(x: int) -> tuple[str, ...]:")
+    assert not excluded("    key: tuple[str, ...],")
+    assert not excluded('    out.write("...")')
+
+
+# --- the workflows' qcal commands exist ------------------------------------------------------
+
+
+def _workflow_commands() -> list[tuple[str, list[str]]]:
+    import shlex
+
+    found: list[tuple[str, list[str]]] = []
+    for path in sorted((REPO_ROOT / ".github/workflows").glob("*.yml")):
+        for job in yaml.safe_load(path.read_text("utf-8"))["jobs"].values():
+            for step in job.get("steps", []):
+                for line in str(step.get("run", "")).splitlines():
+                    if "-m qcal " not in line:
+                        continue
+                    words = shlex.split(line)
+                    if "qcal" in words and "-m" in words and words[words.index("qcal") - 1] == "-m":
+                        argv = words[words.index("qcal") + 1 :]
+                        found.append((path.name, [w.replace("$", "") for w in argv]))
+    return found
+
+
+def test_every_qcal_command_in_a_workflow_parses() -> None:
+    """integrity.yml runs the base branch's qcal: a flag removed or made exclusive here would
+    break the trusted job only after merge."""
+    from qcal.cli.app import build_parser
+
+    commands = _workflow_commands()
+    assert {name for name, _ in commands} == {"ci.yml", "integrity.yml"}
+    parser = build_parser()
+    for name, argv in commands:
+        try:
+            parser.parse_args(argv)
+        except SystemExit:  # pragma: no cover - the assertion below names the command
+            pytest.fail(f"{name}: qcal {' '.join(argv)} does not parse")

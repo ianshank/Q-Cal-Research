@@ -112,6 +112,28 @@ def test_unreadable_file(tmp_path: Path) -> None:
         read_predictions(path)
 
 
+def test_a_missing_file_cannot_be_read(tmp_path: Path) -> None:
+    with pytest.raises(PredictionsError, match="cannot read"):
+        read_predictions(tmp_path / "absent.jsonl")
+
+
+def test_an_unreadable_cache_entry_is_a_miss(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache = PredictionCache(tmp_path / "cache")
+    key = cache_key(detector={"name": "x"}, split_sha256="s")
+    entry = cache.put(key, HEADER, IMAGES, produced_by="R-1")
+    real_read = Path.read_bytes
+
+    def unreadable(self: Path) -> bytes:
+        if self == entry.path:
+            raise OSError("unreadable")
+        return real_read(self)
+
+    monkeypatch.setattr(Path, "read_bytes", unreadable)
+    assert cache.get(key) is None
+
+
 def test_cache_round_trip_and_tamper_detection(tmp_path: Path) -> None:
     cache = PredictionCache(tmp_path / "cache")
     key = cache_key(detector={"name": "x"}, split_sha256="s")
@@ -125,6 +147,23 @@ def test_cache_round_trip_and_tamper_detection(tmp_path: Path) -> None:
     assert meta["produced_by"] == "R-1"
     entry.path.write_bytes(entry.path.read_bytes() + b"\n")
     assert cache.get(key) is None  # digest mismatch: ignored, recomputed by the caller
+
+
+def test_identical_bytes_keep_every_producer(tmp_path: Path) -> None:
+    """The first producer may still be running when a second puts the same bytes."""
+    cache = PredictionCache(tmp_path / "cache")
+    entry = cache.put("k", HEADER, IMAGES, produced_by="R-1")
+    cache.put("k", HEADER, IMAGES, produced_by="R-2")
+    cache.put("k", HEADER, IMAGES, produced_by="R-1")  # again: moved to the end, not repeated
+    assert cache.producers("k") == ["R-2", "R-1"]
+    assert cache.producer("k") == "R-1"
+    sidecar = entry.path.with_suffix(".meta.json")
+    document = json.loads(sidecar.read_text())
+    del document["producers"]  # written before the list existed: its one producer
+    sidecar.write_text(json.dumps(document))
+    assert cache.producers("k") == ["R-1"]
+    assert PredictionCache(None).producers("k") == []
+    assert cache.producers("absent") == []
 
 
 def test_cache_metadata_must_name_the_key(tmp_path: Path) -> None:

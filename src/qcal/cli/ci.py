@@ -7,7 +7,8 @@ import json
 from pathlib import Path
 from typing import Any, TextIO
 
-from qcal.cli.common import EXIT_FAILED, EXIT_OK, SubParsers, add_json_flag, emit
+from qcal.ci import MODES
+from qcal.cli.common import EXIT_FAILED, EXIT_OK, SubParsers, emit
 from qcal.config import Config
 
 
@@ -76,12 +77,12 @@ def add_commands(sub: SubParsers) -> None:
             "--policy-ref", help="ref holding qcal.toml and allowed_signers (default: base)"
         )
         parser.add_argument("--json-out", help="also write the JSON report to this file")
-        parser.add_argument("--github", action="store_true", help="print Actions annotations")
-        add_json_flag(parser)
+        # Both print to stdout: annotations before JSON would make the JSON unparseable.
+        output = parser.add_mutually_exclusive_group()
+        output.add_argument("--github", action="store_true", help="print Actions annotations")
+        output.add_argument("--json", action="store_true", help="machine-readable output")
     for parser, key in ((sig, "signing.mode"), (rev, "review.mode")):
-        parser.add_argument(
-            "--mode", choices=["bootstrap", "enforce"], help=f"override {key} locally"
-        )
+        parser.add_argument("--mode", choices=MODES, help=f"override {key} locally")
     rev.add_argument("--branch", required=True, help="the pull request's head branch name")
     sig.set_defaults(handler=cmd_verify_signatures)
     imm.set_defaults(handler=cmd_registry_immutable)

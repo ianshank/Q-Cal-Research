@@ -5,8 +5,10 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import stat
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Final
 
 from qcal.config import Config, ConfigError
 from qcal.globs import first_match, literal_base
@@ -14,6 +16,9 @@ from qcal.hooks.bash import BranchResolver, analyze, current_branch
 from qcal.hooks.decision import Decision
 from qcal.hooks.payload import HookPayload
 from qcal.policy import Policy
+
+#: Characters ``allow-only`` refuses anywhere inside a command (after trimming its ends).
+_CONTROL: Final = re.compile(r"[\x00-\x1f\x7f]")
 
 
 def project_root(config: Config, environ: Mapping[str, str]) -> Path:
@@ -114,18 +119,47 @@ def guard_paths(payload: HookPayload, *, config: Config, policy: Policy, root: P
         )
     deny = config.str_list("hooks.deny_categories")
     for path in paths:
-        for tree in trees_for(path, root):
-            verdict = policy.evaluate(_absolute(path, root), tree)
-            if verdict.clean_room_hits:
-                return Decision.denied(
-                    f"{path} {policy.message_for('clean_room')}", "paths.clean_room"
-                )
-            blocked = verdict.blocked_by(deny)
-            if blocked:
-                return Decision.denied(
-                    f"{path} {policy.message_for(blocked[0])}", f"paths.{blocked[0]}"
-                )
+        denial = hard_link_denial(path, root, config=config) or _write_denial(
+            path, root, policy=policy, deny=deny
+        )
+        if denial is not None:
+            return denial
     return Decision.allowed("paths.ok")
+
+
+def _write_denial(path: str, root: Path, *, policy: Policy, deny: Sequence[str]) -> Decision | None:
+    for tree in trees_for(path, root):
+        verdict = policy.evaluate(_absolute(path, root), tree)
+        if verdict.clean_room_hits:
+            return Decision.denied(f"{path} {policy.message_for('clean_room')}", "paths.clean_room")
+        blocked = verdict.blocked_by(deny)
+        if blocked:
+            return Decision.denied(
+                f"{path} {policy.message_for(blocked[0])}", f"paths.{blocked[0]}"
+            )
+    return None
+
+
+def hard_link_denial(path: str, root: Path, *, config: Config) -> Decision | None:
+    """Refuse a regular file with more than one hard link (``hooks.deny_hard_links``).
+
+    Another name of the same file may be protected, and finding it would need a scan of the
+    tree. Symlinks are followed, so a symlink to a hard link is refused too. A missing file
+    (a new one being written) passes.
+    """
+    if not config.bool_value("hooks.deny_hard_links"):
+        return None
+    try:
+        info = Path(os.path.realpath(_absolute(path, root))).stat()
+    except OSError:
+        return None
+    if stat.S_ISREG(info.st_mode) and info.st_nlink > 1:
+        return Decision.denied(
+            f"{path} has {info.st_nlink} hard links; another name may be protected. Break the "
+            "link first (copy the file and move the copy over it)",
+            "paths.hard_link",
+        )
+    return None
 
 
 def guard_bash(
@@ -201,6 +235,9 @@ def deny_read(
     globs = [t for t in targets if t not in policy.category_names]
     patterns = globs + [p for c in categories for p in policy.patterns(c)]
     for path in paths:
+        linked = hard_link_denial(path, root, config=config)
+        if linked is not None:
+            return linked
         for tree in trees_for(path, root):
             decision = _deny_read_in(
                 path,
@@ -263,6 +300,13 @@ def allow_only(payload: HookPayload, *, commands: Sequence[str]) -> Decision:
     command = payload.tool_input.get("command")
     if not isinstance(command, str):
         return Decision.denied("missing command", "allow_only.missing")
+    command = command.strip()
+    if _CONTROL.search(command):
+        # shlex reads a newline as a space, but bash ends the command there: "git diff\nrm x"
+        # would tokenise like an allowed "git diff src/..." and run two commands.
+        return Decision.denied(
+            "command contains a line break or control character", "allow_only.control"
+        )
     try:
         tokens = shlex.split(command)
     except ValueError:

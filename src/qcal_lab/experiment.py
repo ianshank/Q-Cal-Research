@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import collections
 import dataclasses
+import fcntl
 import functools
 import hashlib
 import itertools
@@ -41,7 +42,7 @@ from qcal.protocols import Detector, ImageDetections
 from qcal.registry.executor import STATUS_FAILED, STATUS_OK, result_envelope, sha256_file
 from qcal.registry.experiments import Experiments, load_experiments
 from qcal.registry.gates import INPUTS_READ_KEY, code_location_problems
-from qcal.registry.records import SEED_EFFECTIVE_KEY, RunRecord, validate_run_id
+from qcal.registry.records import SEED_EFFECTIVE_KEY, RunRecord
 from qcal_lab import __version__
 from qcal_lab.calib import CALIBRATORS, build_calibrator
 from qcal_lab.calib.thresholds import threshold_grid
@@ -55,6 +56,7 @@ from qcal_lab.calib.two_threshold import (
 from qcal_lab.config import LabConfig, defaults_path, load_lab_config, require_hashed
 from qcal_lab.data.coco import GroundTruth, load_coco
 from qcal_lab.data.splits import draw, read_split, split_digest
+from qcal_lab.declarations import detector_declarations
 from qcal_lab.evaluation import EvalLoop, check_metrics, load_eval_loop
 from qcal_lab.formats import envelope, json_bytes, write_bytes_atomic
 from qcal_lab.models import (
@@ -69,6 +71,7 @@ from qcal_lab.models import (
 )
 from qcal_lab.numerics import Regime, load_regime, recorded_environment
 from qcal_lab.predictions import (
+    UNREADABLE,
     CacheConflictError,
     CacheEntry,
     PredictionCache,
@@ -93,11 +96,27 @@ PREDICTION_MODULES: Final = (
     "data/fixture.py",
     "predictions.py",
     "numerics.py",
+    "formats.py",  # predictions.py writes through it: its bytes decide the cached file's
 )
+#: Modules the prediction modules import that need not be hashed, each with the reason
+#: (tests/unit/test_lab_prediction_modules.py keeps this list complete and current).
+PREDICTION_MODULE_EXCLUSIONS: Final[Mapping[str, str]] = {
+    "config.py": "settings enter the key by value (fingerprint, source, kind parts)",
+    "__init__.py": "the package version only; the key holds the source instead",
+    "data/__init__.py": "re-exports only",
+}
 #: Where qcal.registry.store keeps a run's record, under paths.registry_dir. Science code may
 #: not import the store (it writes records), so the producer check reads this one file;
 #: tests/unit/test_lab_experiment.py pins it to the store's own layout.
 RECORD_FILE: Final = "{run_id}.json"
+#: A running launcher's in-flight marker under paths.inflight_dir, locked while it runs; the
+#: same test pins it to qcal.registry.store's layout.
+MARKER_FILE: Final = "{run_id}.inflight.json"
+#: Puts tried under one key: the second follows a quarantine of unvouched bytes.
+_PUT_ATTEMPTS: Final = 2
+#: The pessimistic envelope's failure kind and error: what a run killed outright reports.
+UNFINISHED_KIND: Final = "unknown"
+UNFINISHED_ERROR: Final = "the program ended before writing its result (killed or crashed)"
 _FACTOR_ROLES: Final = (
     "detector",
     "calibrator",
@@ -310,7 +329,11 @@ class _Context:
     build: Callable[[], Detector]
     artifacts: list[dict[str, str]] = field(default_factory=list)
     cache_use: dict[str, dict[str, Any]] = field(default_factory=dict)
+    raw_digests: dict[str, str] = field(default_factory=dict)  # split -> sha256 of its raw file
     built: Detector | None = None
+    #: Written as a failed envelope after every artifact, so a run killed outright (SIGKILL,
+    #: power) still leaves what it produced; ``write_result`` replaces it at the end.
+    partial_environment: dict[str, Any] = field(default_factory=dict)
 
     def detector(self) -> Detector:
         """The detector, built on first use: a run whose predictions are all cached builds none."""
@@ -326,6 +349,17 @@ class _Context:
         """List an artifact with the sha256 of the bytes this program wrote or read; the
         launcher fails the run if the file holds other bytes when it records it."""
         self.artifacts.append({"path": self.relative(path), "kind": kind, "sha256": sha256})
+        self.checkpoint()
+
+    def checkpoint(self) -> None:
+        """The pessimistic envelope: failed, with everything produced so far."""
+        write_failure(
+            self.request.result_path,
+            failure_kind=UNFINISHED_KIND,
+            error=UNFINISHED_ERROR,
+            artifacts=self.artifacts,
+            environment=self.partial_environment,
+        )
 
     def header(self, split: str, ids: Sequence[str], stage: str) -> PredictionsHeader:
         return PredictionsHeader(
@@ -498,29 +532,91 @@ def _cached_images(
     return images
 
 
-def _recorded_by_producer(ctx: _Context, entry: CacheEntry) -> bool:
-    """Whether the run that cached ``entry`` has a record listing it (path and sha256).
+def _vouched(ctx: _Context, path: Path, sha256: str) -> bool:
+    """Whether any run record, of any status, lists ``path`` with these bytes.
 
     The cache is gitignored and writable outside the registry, so a sidecar alone proves
-    nothing; a registered run's record does.
+    nothing; a registered run's record does. Any record counts, not only the sidecar's
+    producer: identical bytes re-put by a later run rename the producer, and a failed or
+    interrupted run's record lists the bytes it wrote as well as an ok one does.
     """
-    try:
-        name = RECORD_FILE.format(run_id=validate_run_id(entry.produced_by))
-        record_path = ctx.qcal_config.path("registry_dir") / name
-        record = RunRecord.from_dict(json.loads(record_path.read_text("utf-8")))
-    except (OSError, UnicodeDecodeError, ValueError, KeyError, TypeError):
+    listed = ctx.relative(path)
+    registry = ctx.qcal_config.path("registry_dir")
+    for record_path in sorted(registry.glob(RECORD_FILE.format(run_id="*"))):
+        try:
+            record = RunRecord.from_dict(json.loads(record_path.read_text("utf-8")))
+        except (OSError, UnicodeDecodeError, ValueError, KeyError, TypeError):
+            continue
+        if any(a.path == listed and a.sha256 == sha256 for a in record.artifacts):
+            return True
+    return False
+
+
+def _producer_running(ctx: _Context, run_id: str) -> bool:
+    """Whether ``run_id``'s launcher is alive: it holds the lock on its in-flight marker
+    until its record is written (qcal.registry.runner), so a held lock means running."""
+    if not run_id:
         return False
-    listed = ctx.relative(entry.path)
-    return any(a.path == listed and a.sha256 == entry.sha256 for a in record.artifacts)
+    marker = ctx.qcal_config.path("inflight_dir") / MARKER_FILE.format(run_id=run_id)
+    try:
+        handle = marker.open("rb")
+    except OSError:
+        return False
+    with handle:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    return False
 
 
-def prediction_key(ctx: _Context, split_sha256: str, ids: Sequence[str]) -> str:
+def _quarantine_unvouched(
+    ctx: _Context, cache: PredictionCache, key: str, conflict: CacheConflictError
+) -> dict[str, Any] | None:
+    """Move other bytes under ``key`` aside when nothing vouches for them; what moved.
+
+    Bytes a record lists are evidence and never move. Neither do bytes any of whose
+    producers is still running: its record does not exist yet, and moving its file would
+    fail that run when the launcher re-hashes its artifacts. Unreadable bytes cannot be
+    checked: kept. The producers are checked before the records: a launcher releases its
+    marker only after writing its record, so a producer that finished in between is then
+    found by :func:`_vouched` (the other order could miss both).
+    """
+    existing = conflict.existing_sha256
+    path = cache.path(key)
+    if path is None or existing == UNREADABLE:
+        return None
+    producers = cache.producers(key)
+    running = [run for run in producers if _producer_running(ctx, run)]
+    if running:
+        _log.info("cached predictions %s belong to running %s; kept", path.name, running)
+        return None
+    if _vouched(ctx, path, existing):
+        return None
+    moved = cache.quarantine(key, existing)
+    if moved is None:
+        return None
+    return {
+        "sha256": existing,
+        "produced_by": producers[-1] if producers else "",
+        "producers": producers,
+        "moved_to": ctx.relative(moved),
+    }
+
+
+def prediction_key(
+    ctx: _Context, split_sha256: str, ids: Sequence[str], header: PredictionsHeader
+) -> str:
     """The cache key: everything that decides one split's raw predictions, and nothing else.
 
     Not where the images live (their bytes count, not their path), nor this package's
-    version: the key holds the source of the modules that produce predictions.
+    version: the key holds the source of the modules that produce predictions. The header
+    the file will carry is part of the key, so code that builds it outside the prediction
+    modules cannot change the cached bytes without changing the key.
     """
     return cache_key(
+        header=header.to_dict(),
         detector=ctx.fingerprint,
         source=ctx.source.to_dict(),
         numerics={
@@ -539,21 +635,22 @@ def _raw_predictions(
     ctx: _Context, split: str, ids: Sequence[str], cache: PredictionCache
 ) -> tuple[ImageDetections, ...]:
     header = ctx.header(split, ids, "raw")
-    key = prediction_key(ctx, header.split_sha256, ids)
-    entry = cache.get(key)
+    key = prediction_key(ctx, header.split_sha256, ids, header)
     data = b""
-    if entry is not None:
-        # One read: these bytes are hashed, vouched for by the producer's record and parsed,
-        # so a file swapped after the sidecar check is never used.
-        try:
-            data = entry.path.read_bytes()
-        except OSError:
-            entry = None
+    with cache.lock(key):
+        entry = cache.get(key)
+        if entry is not None:
+            # One read: these bytes are hashed, vouched for by a record and parsed, so a
+            # file swapped after the sidecar check is never used.
+            try:
+                data = entry.path.read_bytes()
+            except OSError:
+                entry = None
     if entry is not None:
         entry = dataclasses.replace(entry, sha256=hashlib.sha256(data).hexdigest())
-        if not _recorded_by_producer(ctx, entry):
+        if not _vouched(ctx, entry.path, entry.sha256):
             _log.warning(
-                "ignoring cached predictions %s: no record of %s lists them",
+                "ignoring cached predictions %s: no record lists them (cached by %s)",
                 entry.path.name,
                 entry.produced_by,
             )
@@ -562,6 +659,7 @@ def _raw_predictions(
     if entry is not None and images is not None:
         _log.info("using raw predictions for %s cached by %s", split, entry.produced_by)
         ctx.cache_use[split] = {"hit": True, "produced_by": entry.produced_by}
+        ctx.raw_digests[split] = entry.sha256
         ctx.add_artifact(entry.path, RAW_PREDICTIONS_KIND.format(split=split), entry.sha256)
         return images
     _log.info("running %s on %d %s images", ctx.plan.detector, len(ids), split)
@@ -571,19 +669,42 @@ def _raw_predictions(
     use: dict[str, Any] = {"hit": False, "produced_by": ctx.request.run_id}
     path, digest = cache.path(key), ""
     if path is not None:
-        try:
-            written = cache.put(key, header, images, produced_by=ctx.request.run_id)
-            path, digest = written.path, written.sha256
-        except CacheConflictError as exc:
-            _log.warning("%s; this run keeps its own predictions next to it", exc)
-            use["conflict"] = {"key": key, "cached_sha256": exc.existing_sha256}
-            path = None
+        with cache.lock(key):
+            written, use_update = _put(ctx, cache, key, header, images)
+        use.update(use_update)
+        path, digest = (written.path, written.sha256) if written is not None else (None, "")
     if path is None:
         path = ctx.artifact_dir / RAW_PREDICTIONS_FILE.format(split=split)
         digest = write_predictions(path, header, images)
     ctx.cache_use[split] = use
+    ctx.raw_digests[split] = digest
     ctx.add_artifact(path, RAW_PREDICTIONS_KIND.format(split=split), digest)
     return images
+
+
+def _put(
+    ctx: _Context,
+    cache: PredictionCache,
+    key: str,
+    header: PredictionsHeader,
+    images: Sequence[ImageDetections],
+) -> tuple[CacheEntry | None, dict[str, Any]]:
+    """Cache this run's predictions; on other bytes under the key, quarantine them once if
+    nothing vouches for them, else keep them and record the conflict."""
+    use: dict[str, Any] = {}
+    for _attempt in range(_PUT_ATTEMPTS):
+        try:
+            return cache.put(key, header, images, produced_by=ctx.request.run_id), use
+        except CacheConflictError as exc:
+            if "quarantined" not in use:
+                moved = _quarantine_unvouched(ctx, cache, key, exc)
+                if moved is not None:
+                    use["quarantined"] = moved
+                    continue
+            _log.warning("%s; this run keeps its own predictions next to it", exc)
+            use["conflict"] = {"key": key, "cached_sha256": exc.existing_sha256}
+            return None, use
+    return None, use
 
 
 def _subset(images: Sequence[ImageDetections], ids: Sequence[str]) -> tuple[ImageDetections, ...]:
@@ -608,11 +729,13 @@ def run_experiment(
     lab: LabConfig | None = None,
     eval_loop: EvalLoop | None = None,
     progress: list[dict[str, str]] | None = None,
+    partial_environment: dict[str, Any] | None = None,
 ) -> ExperimentResult:
     """Run one cell and seed. ``eval_loop`` injects a loop for tests (recorded as injected).
 
-    Artifacts are appended to ``progress`` as they are written, so a run that fails part way
-    can still report what it produced.
+    Artifacts are appended to ``progress`` as they are written, and what the run knows of its
+    environment is put in ``partial_environment``, so a run that fails part way can still
+    report what it produced and what it read.
     """
     qcal_config = qcal_config or load_config(request.root)
     refused = environment_problems(qcal_config)
@@ -669,9 +792,14 @@ def run_experiment(
             dataset,
             precision=plan.precision,
             images_dir=images_dir,
+            declared=functools.partial(detector_declarations, qcal_config, plan.detector),
         ),
         artifacts=progress if progress is not None else [],
+        partial_environment=_partial_environment(
+            partial_environment, qcal_config, lab, experiments, code
+        ),
     )
+    ctx.checkpoint()
     cache = _cache(lab)
     raw = {role: _raw_predictions(ctx, roles[role], ids[role], cache) for role in ROLES}
     fit = SplitData(roles["fit"], _subset(raw["fit"], fit_ids), subsets["fit"].subset(fit_ids))
@@ -727,6 +855,9 @@ def run_experiment(
         "detector_runtime": dict(getattr(ctx.built, "runtime", {})),
         "roles": {role: dataclasses.asdict(spec) for role, spec in plan.roles().items()},
         "prediction_cache": ctx.cache_use,
+        # Per split: equal for every seed of one cell, so tables can require it to agree
+        # (registry.identity_columns); different raw predictions are a different experiment.
+        "raw_predictions_sha256": dict(sorted(ctx.raw_digests.items())),
         "calibration": {
             key: saved[key]
             for key in ("scope", "calibration_thresholds", "operating_thresholds", "provenance")
@@ -739,6 +870,27 @@ def run_experiment(
     hits = sum(bool(use.get("hit")) for use in ctx.cache_use.values())
     resources = {"cache_hits": hits, "cache_misses": len(ctx.cache_use) - hits}
     return ExperimentResult(metrics, ctx.artifacts, environment, resources)
+
+
+def _partial_environment(
+    into: dict[str, Any] | None,
+    qcal_config: Config,
+    lab: LabConfig,
+    experiments: Experiments,
+    code: Mapping[str, Any],
+) -> dict[str, Any]:
+    """What a failed run can still report: its code and the configuration it read."""
+    known = {
+        "program_python": sys.executable,
+        "qcal_lab_source_sha256": source_digest(),
+        "handwritten_sha256": handwritten_digest(),
+        "program_code": dict(code),
+        INPUTS_READ_KEY: inputs_read(qcal_config, lab, experiments),
+    }
+    if into is None:
+        return known
+    into.update(known)
+    return into
 
 
 def inputs_read(qcal_config: Config, lab: LabConfig, experiments: Experiments) -> dict[str, str]:
@@ -796,14 +948,16 @@ def write_failure(
     failure_kind: str,
     error: str,
     artifacts: Sequence[Mapping[str, str]] = (),
+    environment: Mapping[str, Any] | None = None,
 ) -> None:
-    """Write the result envelope of a failed run: no metrics, the artifacts written so far."""
+    """Write the result envelope of a failed run: no metrics, the artifacts written so far,
+    and what the run knew of its environment (at least the interpreter)."""
     envelope = result_envelope(
         STATUS_FAILED,
         failure_kind=failure_kind,
         error=error,
         artifacts=artifacts,
-        environment={"program_python": sys.executable},
+        environment={"program_python": sys.executable, **(environment or {})},
     )
     _write_envelope(path, envelope)
 
@@ -815,6 +969,7 @@ __all__ = [
     "CALIBRATION_KIND",
     "HANDWRITTEN_DIR",
     "LIVE_SOURCE",
+    "MARKER_FILE",
     "PACKAGES_FILE",
     "PACKAGES_FORMAT",
     "PACKAGES_KIND",

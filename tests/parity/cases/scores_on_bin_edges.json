@@ -1,0 +1,176 @@
+{
+  "alternatives": [
+    {
+      "predicts": {
+        "bins": {
+          "0": 1,
+          "1": 12,
+          "2": 24,
+          "3": 24
+        }
+      },
+      "rule": "left-closed bins; 1.0 in the last bin"
+    },
+    {
+      "predicts": {
+        "bins": {
+          "0": 0,
+          "1": 11,
+          "2": 23,
+          "3": 24
+        }
+      },
+      "rule": "right-closed bins"
+    }
+  ],
+  "case": "scores_on_bin_edges",
+  "detections": [
+    {
+      "bbox": [
+        0,
+        0,
+        10,
+        10
+      ],
+      "category_id": 1,
+      "image_id": 1,
+      "score": 0.04
+    },
+    {
+      "bbox": [
+        20,
+        0,
+        10,
+        10
+      ],
+      "category_id": 1,
+      "image_id": 1,
+      "score": 0.48
+    },
+    {
+      "bbox": [
+        40,
+        0,
+        10,
+        10
+      ],
+      "category_id": 1,
+      "image_id": 1,
+      "score": 0.96
+    },
+    {
+      "bbox": [
+        60,
+        0,
+        10,
+        10
+      ],
+      "category_id": 1,
+      "image_id": 1,
+      "score": 1.0
+    }
+  ],
+  "format_version": 1,
+  "ground_truth": {
+    "annotations": [
+      {
+        "area": 100,
+        "bbox": [
+          0,
+          0,
+          10,
+          10
+        ],
+        "category_id": 1,
+        "id": 1,
+        "image_id": 1,
+        "iscrowd": 0
+      },
+      {
+        "area": 100,
+        "bbox": [
+          20,
+          0,
+          10,
+          10
+        ],
+        "category_id": 1,
+        "id": 2,
+        "image_id": 1,
+        "iscrowd": 0
+      },
+      {
+        "area": 100,
+        "bbox": [
+          40,
+          0,
+          10,
+          10
+        ],
+        "category_id": 1,
+        "id": 3,
+        "image_id": 1,
+        "iscrowd": 0
+      },
+      {
+        "area": 100,
+        "bbox": [
+          60,
+          0,
+          10,
+          10
+        ],
+        "category_id": 1,
+        "id": 4,
+        "image_id": 1,
+        "iscrowd": 0
+      }
+    ],
+    "categories": [
+      {
+        "id": 1,
+        "name": "class_1"
+      }
+    ],
+    "images": [
+      {
+        "file_name": "scores_on_bin_edges.jpg",
+        "height": 240,
+        "id": 1,
+        "width": 240
+      }
+    ],
+    "info": {
+      "description": "qcal_lab protocol case scores_on_bin_edges"
+    }
+  },
+  "kind": "protocol",
+  "separates": "bins are [k/B, (k+1)/B) with 1.0 in the last, or (k/B, (k+1)/B]",
+  "settings": {
+    "bin_count": 25,
+    "iou_threshold": 0.5,
+    "max_detections": 100,
+    "threshold_grid": [
+      0.0,
+      0.05,
+      0.1,
+      0.15,
+      0.2,
+      0.25,
+      0.3,
+      0.35,
+      0.4,
+      0.45,
+      0.5,
+      0.55,
+      0.6,
+      0.65,
+      0.7,
+      0.75,
+      0.8,
+      0.85,
+      0.9,
+      0.95
+    ]
+  }
+}

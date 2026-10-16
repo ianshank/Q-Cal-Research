@@ -9,9 +9,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from qcal.config import Config
 
@@ -74,13 +75,68 @@ def _hook_names() -> set[str]:
 
 def wrapped_hook(config: Config, command: str) -> str | None:
     """The qcal hook a settings command runs through the wrapper, or ``None``."""
+    args = wrapped_hook_args(config, command)
+    if args is None:
+        return None
+    return args[0] if args else ""
+
+
+#: The wrapper option that turns hook failures into "allow" (the Stop hook's, never a guard's).
+FAIL_OPEN: Final = "--fail-open"
+#: Characters of shell operators: around the wrapper they can skip it or replace its status.
+_OPERATOR_CHARS: Final = frozenset("();<>|&")
+
+
+def standalone(command: str) -> bool:
+    """Whether ``command`` is one simple command: no operator (``;``, ``&&``, ``|``, ``>``,
+    ...), command substitution or line break outside quotes, each of which could skip the
+    wrapper or change the exit status Claude Code reads (a guard blocks only with 2)."""
+    if "\n" in command or "\r" in command or "`" in command or "$(" in command:
+        return False
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return False
+    return not any(t and set(t) <= _OPERATOR_CHARS for t in tokens)
+
+
+def _after_wrapper(config: Config, command: str) -> list[str] | None:
+    """The words after the wrapper, split as the shell splits them; ``None`` without one.
+
+    Quoting is kept: ``deny-read "ian_only ian_data"`` passes one argument at run time, so it
+    is one argument here. A command the shell cannot split, or one that is not a single
+    simple command (:func:`standalone`), yields ``[""]``: an unknown hook, guarding nothing.
+    """
     wrapper = config.str_value("agent_layer.hook_wrapper")
-    words = command.replace('"', " ").split()
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return [""] if wrapper in command else None
     for i, word in enumerate(words):
         if word.endswith(wrapper):
-            rest = [w for w in words[i + 1 :] if w != "--fail-open"]
-            return rest[0] if rest else ""
+            return words[i + 1 :] if standalone(command) else [""]
     return None
+
+
+def wrapped_hook_args(config: Config, command: str) -> list[str] | None:
+    """The hook name and its arguments after the wrapper, or ``None`` without a wrapper."""
+    words = _after_wrapper(config, command)
+    return None if words is None else [w for w in words if w != FAIL_OPEN]
+
+
+def wrapped_fail_open(config: Config, command: str) -> bool:
+    """Whether the wrapper runs this command's hook fail-open."""
+    return FAIL_OPEN in (_after_wrapper(config, command) or [])
+
+
+def mcp_server_names(config: Config) -> set[str]:
+    """Server names defined in the project's MCP file (empty when it is missing or invalid)."""
+    shown = Path(config.str_value("agent_layer.mcp_file"))
+    data = _load_json(config.root / shown, shown, lambda _: None)
+    servers = data.get("mcpServers", {}) if data else {}
+    return set(servers) if isinstance(servers, dict) else set()
 
 
 def _check_command(
@@ -104,8 +160,18 @@ def _check_command(
     elif not os.access(script, os.X_OK):
         report(f"{shown}: {event} hook script {script_shown} is not executable")
     hook = wrapped_hook(config, command)
-    if hook is not None and hook not in _hook_names():
+    if hook == "" and not standalone(command):
+        report(
+            f"{shown}: {event} hook {command!r} must run the wrapper alone: a shell operator, "
+            "substitution or line break around it can skip it or change its exit status"
+        )
+    elif hook is not None and hook not in _hook_names():
         report(f"{shown}: {event} hook {command!r} runs unknown qcal hook {hook!r}")
+    if event == "PreToolUse" and wrapped_fail_open(config, command):
+        report(
+            f"{shown}: PreToolUse hook {command!r} runs {FAIL_OPEN}: a guard that fails would "
+            "allow the call (only the Stop hook may fail open)"
+        )
     return hook
 
 
@@ -200,4 +266,13 @@ def check_mcp(config: Config, report: Report) -> int:
     return len(servers)
 
 
-__all__ = ["check_hooks", "check_mcp", "check_settings", "wrapped_hook"]
+__all__ = [
+    "check_hooks",
+    "check_mcp",
+    "check_settings",
+    "mcp_server_names",
+    "standalone",
+    "wrapped_fail_open",
+    "wrapped_hook",
+    "wrapped_hook_args",
+]

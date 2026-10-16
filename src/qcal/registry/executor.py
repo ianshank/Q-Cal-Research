@@ -32,8 +32,9 @@ import signal
 import string
 import subprocess
 import sys
+import threading
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final, Protocol, runtime_checkable
@@ -58,6 +59,9 @@ STATUSES: Final = (STATUS_OK, STATUS_FAILED)
 #: How a failure the launcher detects itself is named; it overrides the program's.
 TIMEOUT_KIND: Final = "timeout"
 UNKNOWN_KIND: Final = "unknown"
+INTERRUPTED_KIND: Final = "interrupted"
+#: Signals that, once the launcher is shutting a program down, kill its group at once.
+ESCALATION_SIGNALS: Final = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
 #: What a program may report in its envelope's ``resources``; the launcher measures time
 #: and memory itself (``os.wait4``), so a program cannot claim those.
 CHILD_RESOURCE_KEYS: Final = frozenset(
@@ -111,6 +115,8 @@ class ExecutionResult:
     failure_kind: str | None = None
     #: What the process cost, from ``os.wait4`` (wall and CPU seconds, peak RSS).
     resources: dict[str, Any] = field(default_factory=dict)
+    #: The interrupt (Ctrl-C, SIGTERM) that ended the run; the runner records, then re-raises.
+    interrupted: BaseException | None = field(default=None, repr=False, compare=False)
 
     @property
     def ok(self) -> bool:
@@ -248,6 +254,7 @@ class SubprocessExecutor:
         spec.result_path.parent.mkdir(parents=True, exist_ok=True)
         _log.info("run %s: %s", spec.run_id, " ".join(argv))
         started = time.monotonic()
+        proc: subprocess.Popen[bytes] | None = None
         try:
             with spec.log_path.open("w", encoding="utf-8") as log:
                 proc = subprocess.Popen(
@@ -258,14 +265,24 @@ class SubprocessExecutor:
                     stderr=subprocess.STDOUT,
                     start_new_session=True,  # its own process group, killed as a whole
                 )
+            returncode, usage, timed_out, interrupt = self._wait(proc)
+            if interrupt is None:
+                self._end_stragglers(proc.pid)  # before any artifact is hashed
+                result = read_result(spec.result_path, self.root, returncode)
         except OSError as exc:
+            if proc is not None:
+                raise
             return ExecutionResult(
                 -1, error=f"cannot start {argv[0]}: {exc}", failure_kind=UNKNOWN_KIND
             )
-        returncode, usage, timed_out = self._wait(proc)
-        self._end_stragglers(proc.pid)  # before any artifact is hashed
+        except KeyboardInterrupt as exc:  # Ctrl-C or LauncherSignal outside _wait
+            if proc is None:
+                raise  # nothing started: nothing to end or read
+            returncode, timed_out, interrupt = -1, False, exc
+            usage = None
+        if interrupt is not None:
+            return self._after_interrupt(proc, spec, started, interrupt, usage=usage)
         measured = _resources(time.monotonic() - started, usage)
-        result = read_result(spec.result_path, self.root, returncode)
         result.resources = {**result.resources, **measured}  # measured values always win
         if timed_out:
             result.returncode, result.metrics = -1, {}
@@ -278,25 +295,65 @@ class SubprocessExecutor:
         return result
 
     # -- the process group ------------------------------------------------------------
-    def _wait(self, proc: subprocess.Popen[bytes]) -> tuple[int, Any, bool]:
-        """Wait for the program; returns (exit code, rusage, timed out). On a timeout or any
-        exception in the launcher (Ctrl-C included) the group is terminated first."""
+    def _wait(self, proc: subprocess.Popen[bytes]) -> tuple[int, Any, bool, BaseException | None]:
+        """Wait for the program; returns (exit code, rusage, timed out, interrupt). Never
+        raises: an interrupt in the launcher (Ctrl-C, SIGTERM) is returned, and the caller
+        ends the program and still reads what it left. On a timeout the group is terminated."""
         deadline = None if self.timeout_s is None else time.monotonic() + self.timeout_s
         try:
             while True:
                 reaped = _reap(proc, block=False)
                 if reaped is not None:
-                    return (*reaped, False)
+                    return (*reaped, False, None)
                 if deadline is not None and time.monotonic() >= deadline:
                     _log.error(
                         "run timed out after %ss; terminating its process group", self.timeout_s
                     )
-                    return (*self._terminate(proc), True)
+                    return (*self._terminate(proc), True, None)
                 time.sleep(self.poll_interval_s)
-        except BaseException:
-            _log.error("launcher interrupted; terminating the program's process group")
-            self._terminate(proc)
-            raise
+        except BaseException as exc:  # noqa: BLE001 - returned, recorded, then re-raised
+            return -1, None, False, exc
+
+    def _after_interrupt(
+        self,
+        proc: subprocess.Popen[bytes],
+        spec: RunSpec,
+        started: float,
+        interrupt: BaseException,
+        *,
+        usage: Any = None,
+    ) -> ExecutionResult:
+        """End the program after the launcher was interrupted, then read what it left.
+
+        The run is failed and keeps no metrics, but its partial artifacts and environment are
+        kept, as after a timeout. While this runs, a further SIGINT, SIGTERM or SIGHUP kills
+        the group at once and is absorbed, so pressing Ctrl-C again cannot lose the envelope.
+        The interrupt may also come after the program exited (while its stragglers are ended
+        or its result is read): the leader is then already reaped, and ``usage`` is its own.
+        """
+        _log.error(
+            "launcher interrupted (%s); terminating the program's process group",
+            type(interrupt).__name__,
+        )
+        with _escalation(proc.pid) as hurry:
+            try:
+                returncode, reaped_usage = self._terminate(proc)
+            except BaseException:  # noqa: BLE001 - interrupted again: already killed and reaped
+                returncode = proc.returncode if proc.returncode is not None else -signal.SIGKILL
+                reaped_usage = None
+            usage = reaped_usage if reaped_usage is not None else usage
+            self._end_stragglers(proc.pid, hurry=hurry.is_set())
+            result = read_result(spec.result_path, self.root, returncode=-1)
+        result.resources = {**result.resources, **_resources(time.monotonic() - started, usage)}
+        detail = f": {result.error}" if result.error else ""
+        result.returncode, result.metrics = -1, {}
+        result.error = (
+            f"interrupted by {type(interrupt).__name__} (exit code {returncode}); "
+            f"see {spec.log_path}{detail}"
+        )
+        result.failure_kind = INTERRUPTED_KIND
+        result.interrupted = interrupt
+        return result
 
     def _terminate(self, proc: subprocess.Popen[bytes]) -> tuple[int, Any]:
         """SIGTERM to the whole group, SIGKILL after the grace period; returns the leader's
@@ -318,12 +375,16 @@ class SubprocessExecutor:
         _signal_group(group, signal.SIGKILL)
         return reaped if reaped is not None else _reap(proc, block=True) or (-signal.SIGKILL, None)
 
-    def _end_stragglers(self, group: int) -> None:
+    def _end_stragglers(self, group: int, *, hurry: bool = False) -> None:
         """End processes the program left in its group (DataLoader workers, a daemon): they
-        could keep the GPU, or write to an artifact after the launcher hashed it."""
+        could keep the GPU, or write to an artifact after the launcher hashed it. With
+        ``hurry`` (the launcher was told twice to stop) they are killed without a grace."""
         if not _group_alive(group):
             return
         _log.warning("process group %d outlived its leader; terminating what is left", group)
+        if hurry:
+            _signal_group(group, signal.SIGKILL)
+            return
         _signal_group(group, signal.SIGTERM)
         deadline = time.monotonic() + self.kill_grace_s
         while _group_alive(group) and time.monotonic() < deadline:
@@ -342,6 +403,36 @@ class SubprocessExecutor:
                 return reaped
             time.sleep(self.poll_interval_s)
         return reaped
+
+
+@contextlib.contextmanager
+def _escalation(group: int) -> Iterator[threading.Event]:
+    """While the block runs, :data:`ESCALATION_SIGNALS` kill ``group`` instead of raising.
+
+    The returned event is set once one arrived. Handlers are only swapped in the main thread
+    (only it may set them); elsewhere the block runs unchanged.
+    """
+    hurry = threading.Event()
+    if threading.current_thread() is not threading.main_thread():
+        yield hurry
+        return
+
+    def kill(signum: int, _frame: Any) -> None:
+        hurry.set()
+        _log.error(
+            "%s while the program shuts down; killing its process group",
+            signal.Signals(signum).name,
+        )
+        _signal_group(group, signal.SIGKILL)
+
+    previous = {s: signal.getsignal(s) for s in ESCALATION_SIGNALS}
+    for number in ESCALATION_SIGNALS:
+        signal.signal(number, kill)
+    try:
+        yield hurry
+    finally:
+        for number, handler in previous.items():
+            signal.signal(number, handler if handler is not None else signal.SIG_DFL)
 
 
 def _reap(proc: subprocess.Popen[bytes], *, block: bool) -> tuple[int, Any] | None:

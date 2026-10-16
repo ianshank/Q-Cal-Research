@@ -40,6 +40,20 @@ config_hash_inputs = [
 ]
 # A registered run's qcal must be this repository's (src/), not an installed copy.
 require_code_in_root = true
+# What a table value (or claim) averaged over seeds must agree on: the run's definition
+# without its seed (cell, factors, command, configuration files), the lab code, Ian's loop
+# and LaECE0, the dataset, the splits and the raw predictions. All seed-invariant (checked
+# by tests/e2e). The policy (qcal.toml) and pre-registration digests are left out: they
+# change no number, so the audit reports them instead. Ian's decision, by Oct 24
+# (docs/changes/qcal-foundations.md).
+identity_columns = [
+  "definition_sha256",
+  "env.qcal_lab_source_sha256",
+  "env.handwritten_sha256",
+  "env.dataset_sha256",
+  "env.splits",
+  "env.raw_predictions_sha256",
+]
 
 [executor]
 # The Phase 1 experiment program (src/qcal_lab, `python -m qcal_lab run`), run by the
@@ -55,3 +69,5 @@ dataset_denied = ["BDD100K"]
 [agent_layer]
 # The guards must stay wired as PreToolUse hooks (checked by `qcal agent-layer`).
 required_pretooluse_hooks = ["guard-paths", "guard-bash"]
+# Network agents may read neither Ian's documents nor his data.
+network_agent_deny_read = ["ian_only", "ian_data"]

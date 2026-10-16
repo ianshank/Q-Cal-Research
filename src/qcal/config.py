@@ -56,6 +56,7 @@ CATEGORY_LISTS: Final = (
     "signing.signed_categories",
     "hooks.deny_categories",
     "claims.escape_hatch_categories",
+    "agent_layer.network_agent_deny_read",
 )
 REMOVED_KEYS: Final[dict[str, str]] = {
     "registry.schema_version": (
@@ -308,7 +309,9 @@ def config_key_problems(
     a policy key (``signing.signed_categories``) that quietly weakens the policy.
     """
     problems: list[str] = []
-    _check_table(data, load_defaults() if defaults is None else defaults, "", problems)
+    defaults = load_defaults() if defaults is None else defaults
+    _check_table(data, defaults, "", problems)
+    problems.extend(_identity_problems(data, defaults))
     categories = data.get("policy", {}).get("categories", {})
     if isinstance(categories, Mapping):
         for dotted in CATEGORY_LISTS:
@@ -322,6 +325,27 @@ def config_key_problems(
                     f"(known: {sorted(categories)})"
                 )
     return problems
+
+
+def _identity_problems(data: Mapping[str, Any], defaults: Mapping[str, Any]) -> list[str]:
+    """``registry.identity_columns`` entries that no index row can hold."""
+    from qcal.integrity.aggregates import identity_column_problems
+
+    def merged(key: str) -> Any:
+        section = data.get("registry", {})
+        value = section.get(key) if isinstance(section, Mapping) else None
+        return value if value is not None else defaults.get("registry", {}).get(key)
+
+    columns, core, prefixes = (
+        merged("identity_columns"),
+        merged("core_columns"),
+        merged("column_prefixes"),
+    )
+    if not (isinstance(columns, list) and isinstance(core, list) and isinstance(prefixes, Mapping)):
+        return []  # mistyped: reported by the type check
+    return identity_column_problems(
+        [str(c) for c in columns], [str(c) for c in core], [str(v) for v in prefixes.values()]
+    )
 
 
 def _check_table(

@@ -76,6 +76,9 @@ device = "cuda:0"
 # configs/lab.toml (max_per_image is pinned there; score_threshold is Ian's, F10).
 # score_threshold = 0.0
 # max_per_image = 100
+# A checkpoint without class names (MMDetection would label it with COCO's) is refused unless
+# Ian attests its label order in his declarations file, which agents cannot write
+# (qcal_lab.declarations; D2). checkpoint_sha256 must then be set: the attestation names it.
 
 [calibrators]
 probability_epsilon = 1e-7        # scores are clipped into [eps, 1 - eps] before the logit

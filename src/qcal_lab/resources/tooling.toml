@@ -22,3 +22,22 @@ env_collectors = ["python", "packages"]
 [fixture_eval]
 # The fixture loop's notion of "found": a fixture-only stand-in, not an evaluation threshold.
 hit_iou = 0.5
+
+[protocol_cases]
+# Synthetic, protocol-separating inputs (`python -m qcal_lab protocol-cases`): Ian runs the
+# oracle on them (tests/parity/cases/README.md). Tooling: they change no run. Set
+# iou_threshold, max_detections and bin_count to the oracle's before it runs; the threshold
+# grid comes from [calibration] in defaults.toml.
+directory = "tests/parity/cases"
+image_width = 240
+image_height = 240
+iou_threshold = 0.5
+max_detections = 100
+bin_count = 25
+
+[declarations]
+# Ian's declarations (D2; src/qcal_lab/declarations.py): the detector sanity check's zoo AP,
+# tolerance and source, and the attested label order of a checkpoint without class names.
+# The file must be one qcal.toml keeps edit tools out of and requires signed commits for
+# (here ian_data), or it is refused. Ian creates it; until then nothing is declared.
+file = "docs/reference/declarations.toml"

@@ -14,7 +14,7 @@ hooks:
     - matcher: Bash
       hooks:
         - type: command
-          command: '"$CLAUDE_PROJECT_DIR"/.claude/hooks/run_hook.sh allow-only "make smoke" "make parity" "make test-unit" "make lint" "make typecheck" "make check" "git status" "git diff"'
+          command: '"$CLAUDE_PROJECT_DIR"/.claude/hooks/run_hook.sh allow-only "make smoke" "make parity" "make test-unit" "make lint" "make typecheck" "make check" "git status" "git diff" "git diff src/qcal_lab" "git diff tests" "git diff configs" "git diff --stat" "git log --oneline -20"'
 ---
 You reproduce published baselines for Q-Cal. You start with Kuzucu et al., ECCV 2024
 (arXiv:2405.20459):

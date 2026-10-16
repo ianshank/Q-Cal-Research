@@ -1,0 +1,629 @@
+# Each defence below is broken on purpose by scripts/mutation_check.py, in a copy of the
+# repository; the named tests must then fail (KILLED). Report-only: not part of `make check`.
+# `old` must occur exactly once in `file` (tests/unit/test_mutation_check.py keeps it so).
+#
+#   python3 scripts/mutation_check.py --only <id>
+
+[[mutant]]
+id = "lab-cache-unreadable-get"
+file = "src/qcal_lab/predictions.py"
+finding = "an unreadable cache entry is a miss, never a crash (wave-3 coverage baseline)"
+old = """        try:
+            actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError as exc:
+            _log.warning("ignoring cached predictions %s: unreadable (%s)", path.name, exc)
+            return None"""
+new = """        actual = hashlib.sha256(path.read_bytes()).hexdigest()"""
+tests = ["tests/unit/test_lab_predictions.py"]
+
+[[mutant]]
+id = "lab-cache-unreadable-put"
+file = "src/qcal_lab/predictions.py"
+finding = "unreadable bytes under a key are kept and reported as a conflict, never replaced"
+old = """            except OSError as exc:  # unreadable: never replaced, the caller keeps its own copy
+                _log.warning("cached predictions %s are unreadable (%s)", path.name, exc)
+                existing = UNREADABLE"""
+new = """            except OSError:
+                path.write_bytes(data)
+                existing = digest"""
+tests = ["tests/unit/test_lab_experiment.py"]
+
+[[mutant]]
+id = "S1-anchored-exclusion"
+file = "pyproject.toml"
+finding = "coverage exclusions are anchored, so no function body is hidden"
+old = ''''^\s*\.\.\.\s*$','''
+new = ''''\.\.\.','''
+tests = ["tests/integration/test_repository_layout.py"]
+
+[[mutant]]
+id = "S1-github-json"
+file = "src/qcal/cli/ci.py"
+finding = "--github and --json together are a usage error, not unparseable JSON"
+old = '''output.add_argument("--json", action="store_true", help="machine-readable output")'''
+new = '''parser.add_argument("--json", action="store_true", help="machine-readable output")'''
+tests = ["tests/integration/test_cli_ci.py"]
+
+[[mutant]]
+id = "S1-mode"
+file = "src/qcal/ci/__init__.py"
+finding = "a misspelt signing.mode or review.mode is a configuration error (exit 2)"
+old = '''        raise ConfigError(f"{key} must be one of {MODES}, got {value!r}")'''
+new = '''        return MODES[0]'''
+tests = ["tests/integration/test_cli_ci.py", "tests/integration/test_ci_signatures.py"]
+
+[[mutant]]
+id = "S1-split-digest-newline"
+file = "src/qcal/integrity/leakage.py"
+finding = "an id with a line break would hash like two ids; it is refused"
+old = '''    bad = sorted(i for i in unique if "\n" in i or "\r" in i)'''
+new = '''    bad: list[str] = []'''
+tests = ["tests/unit/test_leakage.py"]
+
+[[mutant]]
+id = "S1-tables-message"
+file = "src/qcal/registry/tables.py"
+finding = "the repeated-seed message names a command that exists"
+old = '''"<cell> --seed <n> --supersedes <run_id> --reason <text>`"'''
+new = '''"--rerun`"'''
+tests = ["tests/unit/test_tables.py"]
+
+[[mutant]]
+id = "S1-immutability-log"
+file = "src/qcal/ci/immutability.py"
+finding = "registry-immutable logs each violation"
+old = '''        _log.warning("registry immutability: %s", violation)'''
+new = '''        pass'''
+tests = ["tests/integration/test_cli_ci.py"]
+
+[[mutant]]
+id = "S2-control"
+file = "src/qcal/hooks/guards.py"
+finding = "allow-only refuses control characters (a newline tokenises like a space)"
+old = '''    if _CONTROL.search(command):'''
+new = '''    if False:'''
+tests = ["tests/security/test_foundations_guards.py"]
+
+[[mutant]]
+id = "S2-hard-link"
+file = "src/qcal/hooks/guards.py"
+finding = "a file with more than one hard link cannot be edited"
+old = '''    if stat.S_ISREG(info.st_mode) and info.st_nlink > 1:'''
+new = '''    if stat.S_ISREG(info.st_mode) and info.st_nlink > 2:'''
+tests = ["tests/security/test_foundations_guards.py"]
+
+[[mutant]]
+id = "S2-hard-link-over-block"
+file = "src/qcal/hooks/guards.py"
+finding = "only hard-linked files are refused, not every existing file"
+old = '''    if stat.S_ISREG(info.st_mode) and info.st_nlink > 1:'''
+new = '''    if stat.S_ISREG(info.st_mode) and info.st_nlink >= 1:'''
+tests = ["tests/security/test_foundations_guards.py"]
+
+[[mutant]]
+id = "S2-hard-link-read"
+file = "src/qcal/hooks/guards.py"
+finding = "a hard link cannot be read privately either"
+old = '''    for path in paths:
+        linked = hard_link_denial(path, root, config=config)
+        if linked is not None:
+            return linked'''
+new = '''    for path in paths:'''
+tests = ["tests/security/test_foundations_guards.py"]
+
+[[mutant]]
+id = "S2-fold"
+file = "src/qcal/policy.py"
+finding = "clean-room matching folds the text it searches"
+old = '''        haystack = self.fold(text)'''
+new = '''        haystack = text.lower()'''
+tests = ["tests/security/test_foundations_guards.py", "tests/unit/test_policy.py"]
+
+[[mutant]]
+id = "S2-strip"
+file = "src/qcal/policy.py"
+finding = "format characters and combining marks are stripped before matching"
+old = '''        kept = (c for c in text if unicodedata.category(c) not in self._strip)'''
+new = '''        kept = (c for c in text)'''
+tests = ["tests/security/test_foundations_guards.py"]
+
+[[mutant]]
+id = "S2-scout-ian-data"
+file = ".claude/agents/prior-art-scout.md"
+finding = "the prior-art scout cannot read ian_data"
+old = '''run_hook.sh deny-read ian_only ian_data'''
+new = '''run_hook.sh deny-read ian_only'''
+tests = ["tests/security/test_foundations_guards.py"]
+
+[[mutant]]
+id = "S3-max-turns-bool"
+file = "src/qcal/integrity/agent_layer.py"
+finding = "maxTurns: true is not a turn count (a bool is an int in Python)"
+old = '''if isinstance(turns, bool) or not isinstance(turns, int)'''
+new = '''if not isinstance(turns, int)'''
+tests = ["tests/unit/test_agent_layer.py"]
+
+[[mutant]]
+id = "S3-inline-mcp"
+file = "src/qcal/integrity/agent_layer.py"
+finding = "an inline mcpServers definition is refused (it escapes the project MCP checks)"
+old = '''    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):'''
+new = '''    if not isinstance(value, list):'''
+tests = ["tests/unit/test_agent_layer.py"]
+
+[[mutant]]
+id = "S3-mcp-network"
+file = "src/qcal/integrity/agent_layer.py"
+finding = "an agent's MCP servers count as network tools"
+old = '''        tools += [f"mcp__{name}" for name in _mcp_servers(shown, data, servers, report)]'''
+new = '''        _mcp_servers(shown, data, servers, report)'''
+tests = ["tests/unit/test_agent_layer.py"]
+
+[[mutant]]
+id = "S3-network-deny-read"
+file = "src/qcal/integrity/agent_layer.py"
+finding = "a network agent must deny-read the configured categories on every read tool"
+old = '''        if not guarded:'''
+new = '''        if False:'''
+tests = ["tests/unit/test_agent_layer.py"]
+
+[[mutant]]
+id = "S4-wait-reraises"
+file = "src/qcal/registry/executor.py"
+finding = "an interrupted run keeps the program's envelope (artifacts, environment)"
+old = '''        if interrupt is not None:
+            return self._after_interrupt(proc, spec, started, interrupt, usage=usage)'''
+new = '''        if interrupt is not None:
+            self._terminate(proc)
+            raise interrupt'''
+tests = ["tests/unit/test_executor.py"]
+
+[[mutant]]
+id = "S4-no-escalation"
+file = "src/qcal/registry/executor.py"
+finding = "further signals while the program shuts down are absorbed, not raised"
+old = '''    for number in ESCALATION_SIGNALS:
+        signal.signal(number, kill)'''
+new = '''    for number in ():
+        signal.signal(number, kill)'''
+tests = ["tests/unit/test_executor.py"]
+
+[[mutant]]
+id = "S4-audit-pair-lock"
+file = "src/qcal/registry/audit.py"
+finding = "the audit judges a marker by its own lock, never by the pair lock a launcher needs"
+old = '''        live = _locked(marker)'''
+new = '''        live = any(_locked(lock) for lock in directory.glob("*.lock"))'''
+tests = ["tests/unit/test_audit.py"]
+
+[[mutant]]
+id = "S4-marker-unlocked"
+file = "src/qcal/registry/runner.py"
+finding = "a launcher locks its own marker while it runs, so the audit sees it live"
+old = '''            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)  # before the content: never unlocked'''
+new = '''            pass'''
+tests = ["tests/unit/test_runner.py"]
+
+[[mutant]]
+id = "S4-no-retry"
+file = "src/qcal/registry/runner.py"
+finding = "a launcher waits briefly for a busy pair instead of refusing at once"
+old = '''                if self.monotonic() >= deadline:'''
+new = '''                if True:'''
+tests = ["tests/unit/test_runner.py"]
+
+[[mutant]]
+id = "S4-keep-going-busy"
+file = "src/qcal/registry/runner.py"
+finding = "run-batch --keep-going skips a pair another launcher holds"
+old = '''            except (PairBusyError, PairDoneError) as exc:
+                if not keep_going:'''
+new = '''            except (PairBusyError, PairDoneError) as exc:
+                if True:'''
+tests = ["tests/unit/test_runner.py"]
+
+[[mutant]]
+id = "S4-late-signal"
+file = "src/qcal/registry/runner.py"
+finding = "a signal landing before the record hold still leaves a record"
+old = '''        for _attempt in range(_RECORD_ATTEMPTS):'''
+new = '''        for _attempt in range(1):'''
+tests = ["tests/unit/test_runner.py"]
+
+[[mutant]]
+id = "S4-log-digest"
+file = "src/qcal/registry/runner.py"
+finding = "the run's log is vouched for by its sha256"
+old = '''        provenance["log_sha256"] = sha256_file(spec.log_path) if spec.log_path.is_file() else None'''
+new = '''        provenance["log_sha256"] = None'''
+tests = ["tests/unit/test_runner.py"]
+
+[[mutant]]
+id = "S5-identity-skip"
+file = "src/qcal/integrity/aggregates.py"
+finding = "tables and claims refuse runs that differ in an identity column"
+old = '''    problem = identity_problem(rows, identity, core=core)'''
+new = '''    problem = None'''
+tests = ["tests/regression/test_registry_run_gates.py"]
+
+[[mutant]]
+id = "S5-missing-column"
+file = "src/qcal/integrity/aggregates.py"
+finding = "a core identity column missing from the index is refused, not treated as equal"
+old = '''        if all(column not in row for row in rows):'''
+new = '''        if False:'''
+tests = ["tests/regression/test_registry_run_gates.py"]
+
+[[mutant]]
+id = "S5-config-check"
+file = "src/qcal/config.py"
+finding = "config --check rejects an identity column no index can hold"
+old = '''    problems.extend(_identity_problems(data, defaults))'''
+new = '''    problems.extend([])'''
+tests = ["tests/regression/test_registry_run_gates.py"]
+
+[[mutant]]
+id = "S5-hashed-input"
+file = "src/qcal/registry/gates.py"
+finding = "hashed_input is membership in config_inputs (case, symlinks, table specs)"
+old = '''    return absolute.relative_to(config.root).as_posix() in config_inputs(config)'''
+new = '''    return absolute.is_file()'''
+tests = ["tests/regression/test_registry_run_gates.py"]
+
+[[mutant]]
+id = "F3-formats-hashed"
+file = "src/qcal_lab/experiment.py"
+finding = "formats.py, through which predictions are written, is in the cache key's code digest"
+old = '''    "formats.py",  # predictions.py writes through it: its bytes decide the cached file's'''
+new = '''    # formats.py dropped'''
+tests = ["tests/unit/test_lab_prediction_modules.py"]
+
+[[mutant]]
+id = "F3-header-in-key"
+file = "src/qcal_lab/experiment.py"
+finding = "the predictions header is part of the cache key"
+old = '''        header=header.to_dict(),'''
+new = '''        header=None,'''
+tests = ["tests/unit/test_lab_prediction_modules.py"]
+
+[[mutant]]
+id = "F3-pessimistic-envelope"
+file = "src/qcal_lab/experiment.py"
+finding = "a run killed outright leaves a failed envelope listing what it produced"
+old = '''        self.artifacts.append({"path": self.relative(path), "kind": kind, "sha256": sha256})
+        self.checkpoint()'''
+new = '''        self.artifacts.append({"path": self.relative(path), "kind": kind, "sha256": sha256})'''
+tests = ["tests/regression/test_run_identity_and_formats.py"]
+
+[[mutant]]
+id = "F3-lab-hashed-input"
+file = "src/qcal_lab/config.py"
+finding = "the lab refuses a configuration file the registry does not hash"
+old = '''    if not hashed_input(qcal_config, path) and not hashed_input(qcal_config, resolved):'''
+new = '''    if False:'''
+tests = ["tests/regression/test_run_identity_and_formats.py"]
+
+[[mutant]]
+id = "F3-vouched-never-move"
+file = "src/qcal_lab/experiment.py"
+finding = "cache bytes a record lists are evidence and are never quarantined"
+old = '''    if _vouched(ctx, path, existing):
+        return None
+    moved = cache.quarantine(key, existing)'''
+new = '''    moved = cache.quarantine(key, existing)'''
+tests = ["tests/regression/test_run_identity_and_formats.py"]
+
+[[mutant]]
+id = "F3-running-producer"
+file = "src/qcal_lab/experiment.py"
+finding = "a running producer's cached bytes are kept (its record does not exist yet)"
+old = '''    if running:'''
+new = '''    if False:'''
+tests = ["tests/regression/test_run_identity_and_formats.py"]
+
+[[mutant]]
+id = "F3-quarantine-rehash"
+file = "src/qcal_lab/predictions.py"
+finding = "quarantine moves only the bytes that were checked"
+old = '''        if hashlib.sha256(data).hexdigest() != sha256:'''
+new = '''        if False:'''
+tests = ["tests/regression/test_run_identity_and_formats.py"]
+
+[[mutant]]
+id = "F3-quarantine-overwrite"
+file = "src/qcal_lab/predictions.py"
+finding = "a quarantined file is never overwritten"
+old = '''            write_bytes_exclusive(target, data)'''
+new = '''            write_bytes_atomic(target, data)'''
+tests = ["tests/regression/test_run_identity_and_formats.py"]
+
+[[mutant]]
+id = "F3-attestation"
+file = "src/qcal_lab/models/mmdet.py"
+finding = "a checkpoint without class names needs Ian's attestation of the label order"
+old = '''        if attested() == label_order_digest(checkpoint_sha256, expected):'''
+new = '''        if True:'''
+tests = ["tests/unit/test_lab_models.py"]
+
+[[mutant]]
+id = "F3-label-order"
+file = "src/qcal_lab/models/mmdet.py"
+finding = "class names must match in label order, not as a set"
+old = '''    if _folded(classes) == _folded(expected):'''
+new = '''    if sorted(_folded(classes)) == sorted(_folded(expected)):'''
+tests = ["tests/unit/test_lab_models.py"]
+
+[[mutant]]
+id = "F3-mmcv-in-key"
+file = "src/qcal_lab/models/mmdet.py"
+finding = "the cache key holds mmcv's compiled ops, not only its version string"
+old = '''        "mmcv_ext_sha256": mmcv_extension_digest(),'''
+new = '''        "mmcv_ext_sha256": "",'''
+tests = ["tests/unit/test_lab_models.py"]
+
+[[mutant]]
+id = "PRF-not-assessed"
+file = "src/qcal_lab/eval_contract.py"
+finding = "an absent loop is NOT ASSESSED, never PASS"
+old = '''            return ContractReport(name, NOT_ASSESSED)'''
+new = '''            return ContractReport(name, PASS)'''
+tests = ["tests/unit/test_lab_eval_contract.py"]
+
+[[mutant]]
+id = "PRF-strict-exit"
+file = "src/qcal_lab/cli.py"
+finding = "check-eval-loop --strict fails unless the contract passed"
+old = '''    failed = report.verdict == FAIL or (args.strict and not report.passed)'''
+new = '''    failed = report.verdict == FAIL'''
+tests = ["tests/unit/test_lab_eval_contract.py"]
+
+[[mutant]]
+id = "PRF-must-stability"
+file = "src/qcal_lab/eval_contract.py"
+finding = "two calls on the same loop must agree"
+old = '''        problems.append("two calls on the same loop disagree")'''
+new = '''        pass'''
+tests = ["tests/unit/test_lab_eval_contract.py", "tests/contract/test_eval_loop_contract.py"]
+
+[[mutant]]
+id = "PRF-must-mutation"
+file = "src/qcal_lab/eval_contract.py"
+finding = "a loop may not mutate its inputs"
+old = '''        problems.append("the loop mutated its inputs")'''
+new = '''        pass'''
+tests = ["tests/unit/test_lab_eval_contract.py"]
+
+[[mutant]]
+id = "PRF-second-build"
+file = "src/qcal_lab/eval_contract.py"
+finding = "two loops from the same factory must agree"
+old = '''        problems.append("two loops from the same factory disagree")'''
+new = '''        pass'''
+tests = ["tests/unit/test_lab_eval_contract.py"]
+
+[[mutant]]
+id = "PRF-iou-exact"
+file = "src/qcal_lab/protocol_cases.py"
+finding = "the IoU case sits exactly on the threshold"
+old = '''    found = case.det([_UNIT, _UNIT, _UNIT * ratio.numerator, _UNIT], 0.9)'''
+new = '''    found = case.det([_UNIT, _UNIT, _UNIT * ratio.numerator + 1, _UNIT], 0.9)'''
+tests = ["tests/unit/test_lab_protocol_cases.py"]
+
+[[mutant]]
+id = "PRF-rank-tie"
+file = "src/qcal_lab/protocol_cases.py"
+finding = "the last kept and the first cut detection share a score"
+old = '''    scores[-1] = scores[-2]  # ranks max_detections and max_detections + 1 tie'''
+new = '''    pass'''
+tests = ["tests/unit/test_lab_protocol_cases.py"]
+
+[[mutant]]
+id = "PRF-drift-extra"
+file = "src/qcal_lab/protocol_cases.py"
+finding = "a case file the generator does not write is drift"
+old = '''    problems += [f"{name}: not generated" for name in sorted(present - set(files))]'''
+new = '''    problems += []'''
+tests = ["tests/unit/test_lab_protocol_cases.py"]
+
+[[mutant]]
+id = "PRF-drift-bytes"
+file = "src/qcal_lab/protocol_cases.py"
+finding = "a hand-edited case is drift"
+old = '''        if (directory / name).read_bytes() != files[name]'''
+new = '''        if not (directory / name).is_file()'''
+tests = ["tests/unit/test_lab_protocol_cases.py"]
+
+[[mutant]]
+id = "PRF-sanity-tolerance"
+file = "src/qcal_lab/sanity.py"
+finding = "the sanity tolerance is inclusive"
+old = '''    if abs(measured - zoo_ap) <= tolerance:'''
+new = '''    if abs(measured - zoo_ap) < tolerance:'''
+tests = ["tests/unit/test_lab_sanity.py"]
+
+[[mutant]]
+id = "PRF-sanity-d8"
+file = "src/qcal_lab/sanity.py"
+finding = "no AP is measured until D8"
+old = '''    if not AP_MEASUREMENT_ENABLED:'''
+new = '''    if False:'''
+tests = ["tests/unit/test_lab_sanity.py"]
+
+[[mutant]]
+id = "PRF-sanity-declared"
+file = "src/qcal_lab/status.py"
+finding = "a registered run waits for the sanity check's declaration"
+old = '''    ok = sanity.declared and sanity.verdict != FAIL'''
+new = '''    ok = sanity.verdict != FAIL'''
+tests = ["tests/unit/test_lab_sanity.py"]
+
+[[mutant]]
+id = "S4-post-exit-interrupt"
+file = "src/qcal/registry/executor.py"
+finding = "an interrupt after the program exited still ends its stragglers and reads its envelope (review B2)"
+old = '''        except KeyboardInterrupt as exc:  # Ctrl-C or LauncherSignal outside _wait'''
+new = '''        except ZeroDivisionError as exc:  # Ctrl-C or LauncherSignal outside _wait'''
+tests = ["tests/unit/test_executor.py"]
+
+[[mutant]]
+id = "S4-record-error-not-retried"
+file = "src/qcal/registry/runner.py"
+finding = "an error building the record propagates as itself, once (review N5)"
+old = '''            except KeyboardInterrupt as late:  # re-raised below, after the record'''
+new = '''            except BaseException as late:  # re-raised below, after the record'''
+tests = ["tests/unit/test_runner.py"]
+
+[[mutant]]
+id = "S5-absent-prefixed-identity"
+file = "src/qcal/integrity/aggregates.py"
+finding = "an identity column no run recorded is refused, never matched (review B3)"
+old = '''        if all(column not in row for row in rows):'''
+new = '''        if column in core and all(column not in row for row in rows):'''
+tests = ["tests/regression/test_registry_run_gates.py"]
+
+[[mutant]]
+id = "S3-hook-args-shell-split"
+file = "src/qcal/integrity/agent_settings.py"
+finding = "hook arguments are split as the shell splits them, quoting kept (review B6)"
+old = '''        words = shlex.split(command)'''
+new = '''        words = command.replace('"', " ").replace("'", " ").split()'''
+tests = ["tests/unit/test_agent_layer.py", "tests/unit/test_agent_policy.py"]
+
+[[mutant]]
+id = "S3-no-fail-open-guard"
+file = "src/qcal/integrity/agent_settings.py"
+finding = "a PreToolUse guard may not run fail-open (review B6)"
+old = '''    if event == "PreToolUse" and wrapped_fail_open(config, command):'''
+new = '''    if False:'''
+tests = ["tests/unit/test_agent_layer.py", "tests/unit/test_agent_policy.py"]
+
+[[mutant]]
+id = "F3-producers-before-records"
+file = "src/qcal_lab/experiment.py"
+finding = "producers are checked before records, so one finishing in between is vouched for (review B4)"
+old = '''    if path is None or existing == UNREADABLE:
+        return None
+    producers = cache.producers(key)
+    running = [run for run in producers if _producer_running(ctx, run)]
+    if running:
+        _log.info("cached predictions %s belong to running %s; kept", path.name, running)
+        return None
+    if _vouched(ctx, path, existing):
+        return None'''
+new = '''    if path is None or existing == UNREADABLE or _vouched(ctx, path, existing):
+        return None
+    producers = cache.producers(key)
+    running = [run for run in producers if _producer_running(ctx, run)]
+    if running:
+        _log.info("cached predictions %s belong to running %s; kept", path.name, running)
+        return None'''
+tests = ["tests/regression/test_run_identity_and_formats.py"]
+
+[[mutant]]
+id = "F3-every-producer"
+file = "src/qcal_lab/experiment.py"
+finding = "any live producer of the bytes keeps them, not only the latest (review B4)"
+old = '''    running = [run for run in producers if _producer_running(ctx, run)]'''
+new = '''    running = [run for run in producers[-1:] if _producer_running(ctx, run)]'''
+tests = ["tests/regression/test_run_identity_and_formats.py"]
+
+[[mutant]]
+id = "F3-put-keeps-producers"
+file = "src/qcal_lab/predictions.py"
+finding = "re-putting identical bytes keeps the earlier producers (review B4)"
+old = '''            producers = [*earlier, produced_by]'''
+new = '''            producers = [produced_by]'''
+tests = ["tests/unit/test_lab_predictions.py"]
+
+[[mutant]]
+id = "PRF-equal-score-separates"
+file = "src/qcal_lab/protocol_cases.py"
+finding = "equal_score_order separates input order, higher IoU and reversed input order (review B5)"
+old = '''    b_better = case.det([side + _UNIT, 0, side, side], 0.8)
+    b_worse = case.det([side + _UNIT, 0, side, worse], 0.8)'''
+new = '''    b_worse = case.det([side + _UNIT, 0, side, worse], 0.8)
+    b_better = case.det([side + _UNIT, 0, side, side], 0.8)'''
+tests = ["tests/unit/test_lab_protocol_cases.py"]
+
+[[mutant]]
+id = "PRF-crowd-iof"
+file = "src/qcal_lab/protocol_cases.py"
+finding = "crowd_only_overlap separates IoF from IoU against crowd regions (review N7)"
+old = '''    inside = case.det([_UNIT, _UNIT, _UNIT, _UNIT], 0.7)'''
+new = '''    inside = case.det([0, 0, region, region], 0.7)'''
+tests = ["tests/unit/test_lab_protocol_cases.py"]
+
+[[mutant]]
+id = "F3-attestation-bound"
+file = "src/qcal_lab/models/mmdet.py"
+finding = "an attestation names the checkpoint it is for (review B1)"
+old = '''    return hashlib.sha256("\n".join([checkpoint_sha256, *names]).encode("utf-8")).hexdigest()'''
+new = '''    return hashlib.sha256("\n".join(names).encode("utf-8")).hexdigest()'''
+tests = ["tests/unit/test_lab_models.py"]
+
+[[mutant]]
+id = "F3-declarations-protected"
+file = "src/qcal_lab/declarations.py"
+finding = "Ian's declarations are read only from a file agents cannot write (review B1)"
+old = '''    if not (denied & signed):'''
+new = '''    if False:'''
+tests = ["tests/unit/test_lab_declarations.py"]
+
+[[mutant]]
+id = "PRF-sanity-declared-field"
+file = "src/qcal_lab/sanity.py"
+finding = "an undeclared sanity check is not declared (review B1)"
+old = '''        return SanityReport(expected.detector, NOT_ASSESSED, missing, declared=False)'''
+new = '''        return SanityReport(expected.detector, NOT_ASSESSED, missing)'''
+tests = ["tests/unit/test_lab_sanity.py"]
+
+[[mutant]]
+id = "S3-guard-standalone"
+file = "src/qcal/integrity/agent_settings.py"
+finding = "a wrapped guard is one simple command; `; true` would replace its exit status (Copilot, PR #5)"
+old = '''            return words[i + 1 :] if standalone(command) else [""]'''
+new = '''            return words[i + 1 :]'''
+tests = ["tests/unit/test_agent_layer.py"]
+
+[[mutant]]
+id = "F3-quarantine-copy-verified"
+file = "src/qcal_lab/predictions.py"
+finding = "an existing quarantine copy is trusted only once it hashes to its name (Copilot, PR #5)"
+old = '''            if kept != sha256:  # a partial earlier copy: never trade the original for it'''
+new = '''            if False:  # a partial earlier copy: never trade the original for it'''
+tests = ["tests/regression/test_run_identity_and_formats.py"]
+
+[[mutant]]
+id = "PRF-later-call-probed"
+file = "src/qcal_lab/eval_contract.py"
+finding = "a loop raising on a later call is a MUST finding, not an escaped exception (Copilot, PR #5)"
+old = '''    again = _probe("the loop's second call", lambda: outputs(loop, predictions, ground_truth))'''
+new = '''    again = outputs(loop, predictions, ground_truth)'''
+tests = ["tests/unit/test_lab_eval_contract.py"]
+
+[[mutant]]
+id = "F3-attested-class-count"
+file = "src/qcal_lab/models/mmdet.py"
+finding = "an attested nameless checkpoint must build the dataset's number of classes (Copilot, PR #5)"
+old = '''            if count != ground_truth.num_classes:'''
+new = '''            if False:'''
+tests = ["tests/unit/test_lab_models.py"]
+
+[[mutant]]
+id = "F3-envelope-write-guarded"
+file = "src/qcal_lab/cli.py"
+finding = "the success envelope is written under the SIGTERM handler (Copilot, PR #4)"
+old = '''            write_result(args.result_path, result)
+    except BaseException as exc:'''
+new = '''            signal.signal(signal.SIGTERM, signal.SIG_DFL)  # the old, unguarded write
+            write_result(args.result_path, result)
+    except BaseException as exc:'''
+tests = ["tests/unit/test_lab_cli.py"]
+
+[[mutant]]
+id = "F3-current-cuda-device"
+file = "src/qcal_lab/numerics.py"
+finding = "a bare cuda device records torch's current GPU, not GPU 0 (Copilot, PR #4)"
+old = '''    return int(index) if index.isdigit() else int(torch.cuda.current_device())'''
+new = '''    return int(index) if index.isdigit() else 0'''
+tests = ["tests/unit/test_lab_numerics.py"]

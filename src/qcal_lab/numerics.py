@@ -126,9 +126,10 @@ def apply_regime(torch: Any, regime: Regime, environ: Mapping[str, str]) -> dict
     }
 
 
-def _cuda_index(device: str) -> int:
+def _cuda_index(torch: Any, device: str) -> int:
+    """The index ``device`` names; a bare ``cuda`` means torch's current device, not 0."""
     _, _, index = device.partition(":")
-    return int(index) if index.isdigit() else 0
+    return int(index) if index.isdigit() else int(torch.cuda.current_device())
 
 
 def device_record(torch: Any, device: str) -> dict[str, Any]:
@@ -145,7 +146,7 @@ def device_record(torch: Any, device: str) -> dict[str, Any]:
         "torch_build_sha256": hashlib.sha256(str(torch.__config__.show()).encode()).hexdigest(),
     }
     if device.startswith("cuda") and torch.cuda.is_available():
-        props = torch.cuda.get_device_properties(_cuda_index(device))
+        props = torch.cuda.get_device_properties(_cuda_index(torch, device))
         record.update(
             name=str(props.name),
             uuid=str(getattr(props, "uuid", "")),

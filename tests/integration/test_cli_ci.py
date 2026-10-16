@@ -48,6 +48,26 @@ def test_verify_signatures_as_integrity_yml_runs_it(history, tmp_path: Path) -> 
     assert data["violations"][0]["files"] == ["CLAIMS.md", "runs/registry/R1.json"]
 
 
+def test_a_misspelt_mode_in_the_base_policy_is_a_usage_error(git_repo: Path) -> None:
+    write(git_repo, "qcal.toml", '[signing]\nmode = "enforced"\n')
+    run_git(git_repo, "commit", "-qam", "misspelt mode")
+    head = run_git(git_repo, "rev-parse", "HEAD")
+
+    code, _ = ci(git_repo, "verify-signatures", "--base", head, "--head", head)
+    assert code == 2  # a configuration error, not a failed check
+
+
+@pytest.mark.parametrize("command", ["verify-signatures", "registry-immutable"])
+def test_github_annotations_and_json_together_are_a_usage_error(
+    history, command: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo, base, head = history
+    with pytest.raises(SystemExit) as exit_info:
+        ci(repo, command, "--base", base, "--head", head, "--github", "--json")
+    assert exit_info.value.code == 2
+    assert "not allowed with argument" in capsys.readouterr().err
+
+
 def test_verify_signatures_enforce_override_fails(history) -> None:
     repo, base, head = history
 
@@ -80,7 +100,9 @@ def test_registry_immutable_as_integrity_yml_runs_it(history, tmp_path: Path) ->
     assert json.loads(report_file.read_text())["added"] == ["runs/registry/R1.json"]
 
 
-def test_registry_immutable_reports_violations_as_errors(history) -> None:
+def test_registry_immutable_reports_violations_as_errors(
+    history, caplog: pytest.LogCaptureFixture
+) -> None:
     repo, _base, head = history
     write(repo, "runs/registry/R1.json", "{}")
     run_git(repo, "commit", "-q", "-am", "rewrite a record")
@@ -90,6 +112,8 @@ def test_registry_immutable_reports_violations_as_errors(history) -> None:
 
     assert code == 1
     assert "::error::registry: runs/registry/R1.json: status M" in out
+    logged = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert "registry immutability: runs/registry/R1.json: status M" in " ".join(logged)
 
 
 def test_immutability_fails_closed_on_unparseable_diff_output(

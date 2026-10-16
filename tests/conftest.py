@@ -65,6 +65,22 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             item.add_marker(getattr(pytest.mark, suite))
 
 
+def require_hard_links(directory: Path) -> None:
+    """Skip locally on a filesystem without hard links; fail on CI, like :func:`require_tool`."""
+    probe, link = directory / ".hard-link-probe", directory / ".hard-link-probe-2"
+    probe.write_text("")
+    try:
+        os.link(probe, link)
+    except OSError as exc:
+        message = f"{directory} has no hard links ({exc})"
+        if os.environ.get(REQUIRE_TOOLS_ENV, "").lower() in {"1", "true", "yes"}:
+            pytest.fail(f"{message}, and {REQUIRE_TOOLS_ENV} requires every tool-backed test")
+        pytest.skip(message)
+    finally:
+        link.unlink(missing_ok=True)
+        probe.unlink()
+
+
 def require_tool(name: str) -> str:
     """Path of ``name``; skip locally when it is missing, fail on CI."""
     import shutil

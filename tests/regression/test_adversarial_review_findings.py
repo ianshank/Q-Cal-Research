@@ -170,6 +170,22 @@ def test_b4_a_table_row_may_not_pool_cells(seeds: Config) -> None:
         build_tables(seeds)
 
 
+def test_b4_a_table_row_may_pool_cells_when_allowed(make_config: Callable[[str], Config]) -> None:
+    config = make_config("[tables]\nallow_pooled_cells = true\n")
+    store = RegistryStore(config.path("registry_dir"))
+    store.write(make_record("R1", cell_id="C-a", metrics={"AP": 40.0}))
+    store.write(make_record("R2", cell_id="C-b", metrics={"AP": 50.0}))
+    write_index(config, store)
+    write(
+        config.root,
+        "configs/tables/t.toml",
+        'name = "t"\nrows = ["detector"]\n[[columns]]\nmetric = "AP"\n',
+    )
+
+    (result,) = build_tables(config)
+    assert "agg:mean:AP:R1+R2" in result.path.read_text()
+
+
 # --- N1: a merge that only changes a protected file's mode is a change ---------------------
 
 

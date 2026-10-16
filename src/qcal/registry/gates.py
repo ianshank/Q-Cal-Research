@@ -199,6 +199,19 @@ def config_inputs(config: Config) -> dict[str, str]:
     }
 
 
+def hashed_input(config: Config, path: Path | str) -> bool:
+    """Whether ``path`` is one of the files :func:`config_inputs` hashes into a run.
+
+    Membership in the real set, so a caller (the lab's ``require_hashed``) can never disagree
+    with what is hashed: not on case, symlinks or the table-spec exclusion.
+    """
+    candidate = Path(path)
+    absolute = candidate if candidate.is_absolute() else config.root / candidate
+    if not absolute.is_relative_to(config.root):
+        return False
+    return absolute.relative_to(config.root).as_posix() in config_inputs(config)
+
+
 def digest_of(mapping: Mapping[str, Any]) -> str:
     canonical = json.dumps(mapping, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(canonical.encode()).hexdigest()

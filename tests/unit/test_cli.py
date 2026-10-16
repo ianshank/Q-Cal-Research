@@ -77,6 +77,18 @@ def test_index_write_and_check(registered: Path) -> None:
     assert "unchanged" in qcal(registered, "registry", "index")[1]
 
 
+def test_index_and_tables_outside_the_root_are_shown_by_their_full_path(
+    registered: Path, tmp_path: Path
+) -> None:
+    outside = tmp_path / "elsewhere"
+    with (registered / "qcal.toml").open("a") as handle:
+        handle.write(f'\n[paths]\nindex_csv = "{outside}/index.csv"\n')
+    RegistryStore(registered / "runs/registry").write(make_record("R1"))
+    code, text = qcal(registered, "registry", "index")
+    assert code == 0
+    assert text.startswith(f"{outside}/index.csv: 1 rows")
+
+
 def test_tables_without_specs(repo: Path) -> None:
     assert qcal(repo, "registry", "tables") == (0, "no table specs found\n")
     assert qcal_json(repo, "registry", "tables", "--check") == (0, [])
@@ -119,6 +131,10 @@ def test_cells_summary_emit_and_missing_design(repo: Path) -> None:
     assert emitted.startswith("cells:")
     assert emitted.count("id: C-") == 3
     assert "3 cells" in qcal(repo, "registry", "cells")[1]
+    code, as_json = qcal_json(repo, "registry", "cells", "--emit")
+    assert code == 0
+    assert isinstance(as_json, dict)
+    assert len(as_json["cells"]) == 3  # --emit --json: the same entries, as JSON
     write(repo, "EXPERIMENTS.yaml", experiments_yaml([]))
     assert qcal(repo, "registry", "cells")[0] == cli.EXIT_USAGE
 

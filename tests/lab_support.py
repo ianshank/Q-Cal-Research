@@ -116,7 +116,7 @@ class FakeTorch:
     """Enough of torch for the numerics regimes and the device record; torch is not a test
     dependency. Switches start at torch's defaults (TF32 on for cuDNN, off for matmul)."""
 
-    def __init__(self, *, cuda_available: bool = True) -> None:
+    def __init__(self, *, cuda_available: bool = True, current_device: int = 0) -> None:
         self.__version__ = "2.9.0+cu128"
         self.version = SimpleNamespace(cuda="12.8")
         self.__config__ = SimpleNamespace(show=lambda: "PyTorch built with: CUDA 12.8")
@@ -128,6 +128,7 @@ class FakeTorch:
         )
         self.cuda = SimpleNamespace(
             is_available=lambda: cuda_available,
+            current_device=lambda: current_device,
             get_device_properties=lambda index: SimpleNamespace(
                 name=f"GPU {index}", uuid=f"GPU-{index:04d}", major=12, minor=0, total_memory=2**34
             ),

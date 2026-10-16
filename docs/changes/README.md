@@ -18,5 +18,9 @@ A proposal that edits the enforcement surface (`.claude/`, `.github/`, `Makefile
 | [guard-bash-redirection-segments](guard-bash-redirection-segments.md) | G0 | enforcement | proposed (PR #4); needs Ian's signature |
 | [run-identity-and-formats](run-identity-and-formats.md) | G1 | `src/qcal_lab`, `configs/` | proposed (PR #4) |
 | [evalloop-v2](evalloop-v2.md) | G1 | `src/qcal_lab`, docs; one signed `qcal.toml` line | proposed (PR #4); interface for Ian to accept |
+| [qcal-foundations](qcal-foundations.md) | G1 | enforcement + `src/qcal_lab`, tests, scripts | proposed (wave 3, `claude/qcal-foundations-wip`); needs Ian's signature (session 2) |
+
+Release notes for proposals after PR #4 are fragments under [fragments/](fragments/), assembled
+into `CHANGELOG.md` at a tag, so parallel branches do not conflict.
 
 Status values, as in the template: proposed, accepted (Ian), implemented, superseded by another proposal.

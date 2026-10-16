@@ -8,16 +8,18 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from qcal.config import Config, ConfigError
 from qcal.integrity.leakage import check_leakage
 from qcal.registry.executor import sha256_file
-from qcal.reports import verdict
+from qcal.reports import FAIL, verdict
 from qcal_lab.config import LabConfig
 from qcal_lab.evaluation import HandwrittenMissingError, load_eval_loop
 from qcal_lab.models import detector_problems
 from qcal_lab.parity import KINDS, ParityError, load_cases
+from qcal_lab.predictions import PredictionCache
 
 
 @dataclass
@@ -54,7 +56,7 @@ def _setting_file(lab: LabConfig, dotted: str) -> tuple[bool, str]:
     return path.exists(), str(path) if path.exists() else f"{path} does not exist"
 
 
-def _detectors(report: StatusReport, lab: LabConfig) -> None:
+def _detectors(report: StatusReport, lab: LabConfig, qcal_config: Config) -> None:
     detectors = lab.config.get("detectors", {})
     for name, settings in sorted(detectors.items() if isinstance(detectors, Mapping) else []):
         if not isinstance(settings, Mapping) or settings.get("kind") == "fixture":
@@ -77,6 +79,53 @@ def _detectors(report: StatusReport, lab: LabConfig) -> None:
         except ConfigError as exc:
             problems.append(str(exc))
         report.add(f"detector {name}", ok=not problems, detail="; ".join(problems) or "configured")
+        _sanity(report, name, qcal_config)
+
+
+def _contract(report: StatusReport, lab: LabConfig, qcal_config: Config) -> None:
+    """The EvalLoop contract on Ian's loop, as ``python -m qcal_lab check-eval-loop`` runs it."""
+    from qcal_lab.eval_contract import check_eval_loop
+    from qcal_lab.smoke import smoke_settings
+
+    contract = check_eval_loop(lab, qcal_config, smoke_settings())
+    detail = contract.verdict + (f": {contract.must[0]}" if contract.must else "")
+    report.add("evaluation loop contract", ok=contract.passed, detail=detail)
+
+
+def _sanity(report: StatusReport, name: str, qcal_config: Config) -> None:
+    """Ian's sanity-check declaration (D2) must precede a registered run, so the value cannot
+    be chosen after the fact. The item says "declared", not "passed": until D8 enables the
+    measurement the check itself stays NOT ASSESSED, and the detail says so."""
+    from qcal_lab.declarations import DeclarationsError, detector_declarations
+    from qcal_lab.sanity import SanityError, check_detector
+
+    item = f"detector sanity check {name} declared"
+    try:
+        sanity = check_detector(name, detector_declarations(qcal_config, name))
+    except (DeclarationsError, SanityError) as exc:
+        report.add(item, ok=False, detail=str(exc))
+        return
+    ok = sanity.declared and sanity.verdict != FAIL
+    report.add(item, ok=ok, detail=sanity.render_text())
+
+
+def _quarantine(report: StatusReport, lab: LabConfig) -> None:
+    """Quarantined predictions are a conflict nobody explained: a detector that is not
+    deterministic, or a key that misses an input. Ian looks before registered runs."""
+    configured = lab.config.str_value("predictions.cache_dir")
+    if not configured:
+        report.add("prediction cache", ok=True, detail="disabled")
+        return
+    directory = Path(configured)
+    moved = PredictionCache(
+        directory if directory.is_absolute() else lab.config.root / directory
+    ).quarantined()
+    detail = (
+        f"{len(moved)} quarantined under {moved[0].parent.parent}: unexplained conflicts"
+        if moved
+        else "no quarantined predictions"
+    )
+    report.add("prediction cache", ok=not moved, detail=detail)
 
 
 def build_status(qcal_config: Config, lab: LabConfig) -> StatusReport:
@@ -102,12 +151,14 @@ def build_status(qcal_config: Config, lab: LabConfig) -> StatusReport:
     try:
         load_eval_loop(lab, qcal_config)
         report.add("evaluation loop (Ian)", ok=True, detail=lab.text("eval_loop.module"))
+        _contract(report, lab, qcal_config)
     except HandwrittenMissingError:
         missing = f"{lab.text('eval_loop.module')} not written"
         report.add("evaluation loop (Ian)", ok=False, detail=missing)
     except (ConfigError, ImportError) as exc:
         report.add("evaluation loop (Ian)", ok=False, detail=f"cannot load: {exc}")
-    _detectors(report, lab)
+    _detectors(report, lab, qcal_config)
+    _quarantine(report, lab)
     try:
         cases = load_cases(lab.config.root / lab.text("parity.fixtures_dir"))
     except ParityError as exc:
