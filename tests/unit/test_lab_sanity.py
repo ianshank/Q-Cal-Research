@@ -245,6 +245,8 @@ def test_status_needs_the_declaration(
     assert item["ready"] is ready
     if ready:
         assert item["detail"].startswith("NOT ASSESSED")  # declared, never "passed"
+        # the repository's qcal.toml is still in bootstrap mode: nobody checked who signed it
+        assert item["detail"].endswith("its signer is not checked)")
 
 
 def test_status_reports_an_unprotected_declarations_file(monkeypatch: pytest.MonkeyPatch) -> None:

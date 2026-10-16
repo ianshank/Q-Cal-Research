@@ -696,7 +696,7 @@ tests = [
 id = "F3-declarations-protected"
 file = "src/qcal_lab/declarations.py"
 finding = "Ian's declarations are read only from a file agents cannot write (review B1)"
-old = '''    if not (denied & signed):'''
+old = '''    if not (denied & signed) - set(MACHINE_WRITTEN):'''
 new = '''    if False:'''
 tests = ["tests/unit/test_lab_declarations.py::test_a_file_agents_could_write_is_refused"]
 
@@ -1057,4 +1057,54 @@ old = '''    problems = nullable_column_problems(nullable, identity_columns(conf
 new = '''    problems: list[str] = []'''
 tests = [
     "tests/regression/test_registry_run_gates.py::test_s6_identity_nullable_must_name_identity_columns",
+]
+
+[[mutant]]
+id = "S6-declarations-machine-written"
+file = "src/qcal_lab/declarations.py"
+finding = "a registry-only path (runs/cache) is never a declarations file (panel round 2)"
+old = '''    if not (denied & signed) - set(MACHINE_WRITTEN):'''
+new = '''    if not (denied & signed):'''
+tests = [
+    "tests/unit/test_lab_declarations.py::test_a_file_agents_could_write_is_refused",
+]
+
+[[mutant]]
+id = "S6-declarations-symlink"
+file = "src/qcal_lab/declarations.py"
+finding = "declarations are not read through a symbolic link (panel round 2)"
+old = '''    if os.path.realpath(path) != os.path.normpath(path):'''
+new = '''    if False:'''
+tests = [
+    "tests/unit/test_lab_declarations.py::test_a_path_through_a_symlink_is_refused",
+]
+
+[[mutant]]
+id = "S6-declarations-committed"
+file = "src/qcal_lab/declarations.py"
+finding = "declarations are read only as committed (panel round 2)"
+old = '''    if committed != sha256_file(path):'''
+new = '''    if False:'''
+tests = [
+    "tests/unit/test_lab_declarations.py::test_declarations_that_differ_from_head_are_refused",
+]
+
+[[mutant]]
+id = "S6-declarations-tracked"
+file = "src/qcal_lab/declarations.py"
+finding = "untracked declarations declare nothing (panel round 2)"
+old = '''    if committed is None:'''
+new = '''    if False:'''
+tests = [
+    "tests/unit/test_lab_declarations.py::test_uncommitted_declarations_are_refused",
+]
+
+[[mutant]]
+id = "S6-symlink-signed"
+file = "src/qcal/ci/signatures.py"
+finding = "a commit adding a symlink anywhere needs a signature (panel round 2)"
+old = '''        return links and (trees.entry(ref, path) or "").startswith(SYMLINK_MODE)'''
+new = '''        return False'''
+tests = [
+    "tests/integration/test_ci_signatures.py::test_adding_a_symlink_anywhere_needs_a_signature",
 ]

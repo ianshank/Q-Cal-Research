@@ -2,9 +2,10 @@
 
 The detector sanity check's expectation, and the attested label order of a checkpoint that
 carries no class names, are Ian's decisions. A value an agent could write would declare
-nothing, so they live in ``[declarations] file`` (``tooling.toml``), and that file is accepted
-only where ``qcal.toml``'s policy both keeps edit tools out of it (``hooks.deny_categories``)
-and requires a signed commit for it (``signing.signed_categories``). A missing file declares
+nothing, so they live in the file signed ``qcal.toml`` names (``paths.declarations``). It is
+accepted only where ``qcal.toml``'s policy both keeps edit tools out of it
+(``hooks.deny_categories``) and requires a signed commit for it (``signing.signed_categories``),
+reached through no symbolic link, and committed exactly as read. A missing file declares
 nothing, and a non-fixture detector then does not run (:func:`qcal_lab.sanity.require_declared`).
 
 The file's layout, one table per detector; every value is Ian's, so the template is empty::
@@ -23,20 +24,26 @@ The file's layout, one table per detector; every value is Ian's, so the template
 
 from __future__ import annotations
 
+import os
 import tomllib
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Final
 
+from qcal import gitutil
 from qcal.config import Config
 from qcal.log import get_logger
 from qcal.policy import Policy
-from qcal_lab.config import load_tooling
+from qcal.registry.executor import sha256_file
 
 _log = get_logger("lab.declarations")
 
 SECTION: Final = "declarations"
 DETECTORS: Final = "detectors"
+#: ``paths.<PATH_KEY>`` in signed qcal.toml names the file.
+PATH_KEY: Final = "declarations"
+#: Categories whose files machines write (and some are untracked): never a declaration.
+MACHINE_WRITTEN: Final = ("registry_only",)
 
 
 class DeclarationsError(ValueError):
@@ -44,22 +51,51 @@ class DeclarationsError(ValueError):
 
 
 def declarations_path(qcal_config: Config, tooling: Mapping[str, Any] | None = None) -> Path:
-    """The declarations file, refused unless only Ian's signed commits can change it."""
-    settings = (tooling if tooling is not None else load_tooling()).get(SECTION, {})
-    relative = str(settings.get("file", "")) if isinstance(settings, Mapping) else ""
+    """The declarations file, refused unless only Ian's signed commits can change it.
+
+    Its path is ``paths.declarations`` in signed ``qcal.toml``, so an agent cannot point it
+    elsewhere. The path must be inside the repository with no symbolic link in it (a link
+    would read bytes no signed commit chose), in a category ``qcal.toml`` both denies to edit
+    tools and signs, and not a registry-only one (those are machine-written and some are
+    untracked). ``tooling`` is accepted for compatibility and ignored.
+    """
+    del tooling
+    relative = qcal_config.str_value(f"paths.{PATH_KEY}")
     if not relative.strip() or Path(relative).is_absolute() or ".." in Path(relative).parts:
         raise DeclarationsError(
-            f"{SECTION}.file must be a path inside the repository, got {relative!r}"
+            f"paths.{PATH_KEY} must be a path inside the repository, got {relative!r}"
         )
-    categories = set(Policy.from_config(qcal_config).categories_for(Path(relative).as_posix()))
+    shown = Path(relative).as_posix()
+    categories = set(Policy.from_config(qcal_config).categories_for(shown))
     denied = categories & set(qcal_config.str_list("hooks.deny_categories"))
     signed = categories & set(qcal_config.str_list("signing.signed_categories"))
-    if not (denied & signed):
+    if not (denied & signed) - set(MACHINE_WRITTEN):
         raise DeclarationsError(
-            f"{relative} is not a file agents are kept out of and only signed commits change "
+            f"{shown} is not a file agents are kept out of and only signed commits change "
             f"(its categories: {sorted(categories) or 'none'}); Ian's declarations must be"
         )
-    return qcal_config.root / relative
+    root = qcal_config.root.resolve()
+    path = root / relative
+    if os.path.realpath(path) != os.path.normpath(path):
+        raise DeclarationsError(f"{shown} goes through a symbolic link; declarations may not")
+    return path
+
+
+def committed_problem(qcal_config: Config, path: Path) -> str | None:
+    """Why the declarations file is not exactly what ``HEAD`` holds, or ``None``.
+
+    Outside a git repository nothing can be compared (registered runs refuse that already).
+    """
+    root = qcal_config.root.resolve()
+    if gitutil.git_marker(root) is None:
+        return None
+    relative = path.relative_to(root).as_posix()
+    committed = gitutil.blob_sha256("HEAD", relative, root)
+    if committed is None:
+        return f"{relative} is not committed: a declaration is the signed commit that adds it"
+    if committed != sha256_file(path):
+        return f"{relative} differs from HEAD: commit it (signed) or restore it"
+    return None
 
 
 def load_declarations(
@@ -74,6 +110,9 @@ def load_declarations(
         return {}
     except (OSError, UnicodeDecodeError) as exc:
         raise DeclarationsError(f"cannot read {path}: {exc}") from exc
+    problem = committed_problem(qcal_config, path)
+    if problem:
+        raise DeclarationsError(problem)
     try:
         return tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:
@@ -93,8 +132,11 @@ def detector_declarations(
 
 __all__ = [
     "DETECTORS",
+    "MACHINE_WRITTEN",
+    "PATH_KEY",
     "SECTION",
     "DeclarationsError",
+    "committed_problem",
     "declarations_path",
     "detector_declarations",
     "load_declarations",

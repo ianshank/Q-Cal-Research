@@ -35,13 +35,6 @@ iou_threshold = 0.5
 max_detections = 100
 bin_count = 25
 
-[declarations]
-# Ian's declarations (D2; src/qcal_lab/declarations.py): the detector sanity check's zoo AP,
-# tolerance and source, and the attested label order of a checkpoint without class names.
-# The file must be one qcal.toml keeps edit tools out of and requires signed commits for
-# (here ian_data), or it is refused. Ian creates it; until then nothing is declared.
-file = "docs/reference/declarations.toml"
-
 [sanity]
 # A plausibility cap on the tolerance Ian declares for a detector sanity check
 # (qcal_lab.sanity), as a fraction of AP: it catches a value typed in the wrong units, and

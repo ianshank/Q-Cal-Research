@@ -36,7 +36,7 @@ from qcal_lab.experiment import (
 from qcal_lab.fixture_eval import FixtureEvalLoop
 from qcal_lab.models import KIND_SCORE_DEFINITIONS
 from qcal_lab.predictions import read_predictions
-from tests.conftest import write
+from tests.conftest import run_git, write
 from tests.lab_support import fixture_project, ians_loop_absent, lab_config, register
 
 pytestmark = pytest.mark.rule("C3")
@@ -570,6 +570,8 @@ BOUND_DECLARATION = (
 
 
 IAN_DATA_POLICY = """
+[paths]
+declarations = "docs/reference/declarations.toml"
 [signing]
 signed_categories = ["ian_only", "ian_data", "enforcement_surface", "registry_only"]
 [policy.categories]
@@ -579,6 +581,15 @@ ian_data = "is Ian's."
 [hooks]
 deny_categories = ["ian_only", "ian_data", "registry_only", "enforcement_surface"]
 """
+
+
+def _declare(root: Path, text: str) -> Path:
+    """Ian's signed commit adding the declarations: read only as committed."""
+    path = write(root, "docs/reference/declarations.toml", text)
+    if (root / ".git").exists():
+        run_git(root, "add", "docs/reference/declarations.toml")
+        run_git(root, "commit", "-q", "-m", "declare")
+    return path
 
 
 def _atss_cell(root: Path) -> str:
@@ -607,7 +618,7 @@ def test_a_detector_runs_only_after_its_sanity_declaration(
     root, _ = project
     cell = _atss_cell(root)
     if declaration is not None:
-        write(root, "docs/reference/declarations.toml", declaration)
+        _declare(root, declaration)
     with pytest.raises(PlanError, match=message):
         run_experiment(_request(root, cell))
     assert not (root / "runs/cache").exists()
@@ -618,7 +629,7 @@ def test_a_bound_declaration_lets_the_run_go_on_and_is_recorded_as_read(
 ) -> None:
     root, _ = project
     cell = _atss_cell(root)
-    path = write(root, "docs/reference/declarations.toml", BOUND_DECLARATION)
+    path = _declare(root, BOUND_DECLARATION)
 
     class PastTheDeclaration(Exception):
         pass

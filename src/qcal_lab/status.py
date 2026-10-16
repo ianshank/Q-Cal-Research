@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from qcal.config import Config, ConfigError
 from qcal.integrity.leakage import check_leakage
@@ -46,6 +46,10 @@ class StatusReport:
             f"  {'ok ' if ok else 'TODO'} {name}: {detail}" for name, ok, detail in self.items
         ]
         return "\n".join(lines)
+
+
+#: The signing mode in which signatures are reported, not required (qcal.toml).
+BOOTSTRAP_MODE: Final = "bootstrap"
 
 
 def _setting_file(lab: LabConfig, dotted: str) -> tuple[bool, str]:
@@ -108,7 +112,10 @@ def _sanity(report: StatusReport, lab: LabConfig, name: str, qcal_config: Config
         report.add(item, ok=False, detail=str(exc))
         return
     ok = sanity.declared and sanity.verdict != FAIL
-    report.add(item, ok=ok, detail=sanity.render_text())
+    detail = sanity.render_text()
+    if declared and qcal_config.str_value("signing.mode") == BOOTSTRAP_MODE:
+        detail += " (unverified: signing.mode is bootstrap, so its signer is not checked)"
+    report.add(item, ok=ok, detail=detail)
 
 
 def _quarantine(report: StatusReport, lab: LabConfig) -> None:
