@@ -10,11 +10,11 @@ Rev. 2 of the plan, after a four-seat review (ML research, MLOps/reproducibility
 architecture, architecture/SDLC/security). Every seat blocked rev. 1; the findings that changed
 the plan are named in **Decisions**.
 
-The work sits on `claude/qcal-foundations-wip`, a draft pull request against PR #4's branch
-marked "CI only, do not merge". Its integrity check judges nothing: it runs PR #4's bootstrap
-policy, which has no signer keys. When PR #4 is on `civ`, the agent's own commits are rebased
-onto `civ` under a new name, `claude/qcal-foundations`, and the real pull request opens against
-`civ`, where the integrity check runs with `civ`'s policy.
+The work was developed on `claude/qcal-foundations-wip` (draft PR #5, "CI only"). On Oct 16
+PR #5 was merged into PR #4's branch, so wave 3 now rides PR #4 and is signed with it: PR-B1
+(S1, S4, S5 and their follow-ups) and PR-B2 (S2, S3 and the guard follow-ups) are signing
+ranges within PR #4, not separate pull requests. Rev. 3 follow-ups, including the signed S6,
+are on `claude/qcal-foundations-r3`, a CI-only draft against PR #4's branch.
 
 ## Gate served
 G1 (Nov 8; freeze Oct 31). The first registered run (Nov 1) must not:
@@ -288,6 +288,8 @@ Verified against `50efe97`:
 
 ## Ian hours
 About 1.8: S1 0.2, S2 0.3, S3 0.2, S4 0.5, S5 0.2, agent-owned commits 0.25, signing 0.15.
+Measured after the review fixes: 874+/144- lines on the signed surface, about 1.6 h at
+~650 lines/h (PR-B1 about 1.1 h, PR-B2 about 0.5 h), plus S6.
 
 ## Acceptance
 - [ ] `make check` green with the anchored exclusion (coverage ≥ 95)
