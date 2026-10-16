@@ -79,7 +79,7 @@ def _detectors(report: StatusReport, lab: LabConfig, qcal_config: Config) -> Non
         except ConfigError as exc:
             problems.append(str(exc))
         report.add(f"detector {name}", ok=not problems, detail="; ".join(problems) or "configured")
-        _sanity(report, name, qcal_config)
+        _sanity(report, lab, name, qcal_config)
 
 
 def _contract(report: StatusReport, lab: LabConfig, qcal_config: Config) -> None:
@@ -92,16 +92,18 @@ def _contract(report: StatusReport, lab: LabConfig, qcal_config: Config) -> None
     report.add("evaluation loop contract", ok=contract.passed, detail=detail)
 
 
-def _sanity(report: StatusReport, name: str, qcal_config: Config) -> None:
+def _sanity(report: StatusReport, lab: LabConfig, name: str, qcal_config: Config) -> None:
     """Ian's sanity-check declaration (D2) must precede a registered run, so the value cannot
-    be chosen after the fact. The item says "declared", not "passed": until D8 enables the
-    measurement the check itself stays NOT ASSESSED, and the detail says so."""
+    be chosen after the fact; a run refuses without it. The item says "declared", not
+    "passed": until D8 enables the measurement the check itself stays NOT ASSESSED, and the
+    detail says so. A declaration about another checkpoint or other settings is not one."""
     from qcal_lab.declarations import DeclarationsError, detector_declarations
-    from qcal_lab.sanity import SanityError, check_detector
+    from qcal_lab.sanity import SanityError, check_detector, configured
 
     item = f"detector sanity check {name} declared"
     try:
-        sanity = check_detector(name, detector_declarations(qcal_config, name))
+        declared = detector_declarations(qcal_config, name)
+        sanity = check_detector(name, declared, configured(lab, name))
     except (DeclarationsError, SanityError) as exc:
         report.add(item, ok=False, detail=str(exc))
         return

@@ -75,6 +75,21 @@ def test_an_entry_whose_text_moved_is_reported(tmp_path: Path) -> None:
         "a: 'old' must occur exactly once in src/qcal/__init__.py (found 2 times)",
         "a: test file tests/test_f.py does not exist",
     ]
+    write(tmp_path, "tests/test_f.py", "def test_renamed():\n    pass\n")
+    assert mc.applicability_problems(tmp_path, [mutant])[1:] == [
+        "a: tests/test_f.py::test_one is not defined in its file"
+    ]
+    write(tmp_path, "tests/test_f.py", "class TestF:\n    def test_one(self):\n        pass\n")
+    (in_class,) = mc.load(
+        write(
+            tmp_path,
+            "c.toml",
+            ENTRY.format(id="c", old="x = 1", new="y").replace(
+                "test_f.py::test_one", "test_f.py::TestF::test_one[p]"
+            ),
+        )
+    )
+    assert mc.applicability_problems(tmp_path, [in_class])[1:] == []
 
 
 @pytest.mark.parametrize(

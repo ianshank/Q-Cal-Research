@@ -56,7 +56,7 @@ from qcal_lab.calib.two_threshold import (
 from qcal_lab.config import LabConfig, defaults_path, load_lab_config, require_hashed
 from qcal_lab.data.coco import GroundTruth, load_coco
 from qcal_lab.data.splits import draw, read_split, split_digest
-from qcal_lab.declarations import detector_declarations
+from qcal_lab.declarations import DeclarationsError, declarations_path, detector_declarations
 from qcal_lab.evaluation import EvalLoop, check_metrics, load_eval_loop
 from qcal_lab.formats import envelope, json_bytes, write_bytes_atomic
 from qcal_lab.models import (
@@ -83,6 +83,7 @@ from qcal_lab.predictions import (
     read_predictions,
     write_predictions,
 )
+from qcal_lab.sanity import SanityError, configured, needs_declaration, require_declared
 
 _log = get_logger("lab.experiment")
 
@@ -750,15 +751,7 @@ def run_experiment(
     plan = resolve_plan(cell.factors, lab)
     code = program_code(qcal_config)
     regime = load_regime(lab, plan.precision)  # refuses a precision without a regime
-    missing = detector_problems(lab, plan.detector)
-    if missing:
-        raise ConfigError(f"{'; '.join(missing)}; set it in configs/lab.toml")
-    produced = detector_targets(lab, plan.detector)
-    if plan.target not in produced:
-        raise PlanError(
-            f"detector {plan.detector!r} does not produce target {plan.target!r} "
-            f"(it produces: {sorted(produced)}); refusing rather than relabelling its predictions"
-        )
+    declarations_read = _check_detector(qcal_config, lab, plan)
     roles = split_roles(lab, qcal_config)
     if eval_loop is None:  # fail before any detector work if Ian's loop is missing
         loaded = load_eval_loop(lab, qcal_config)
@@ -796,7 +789,7 @@ def run_experiment(
         ),
         artifacts=progress if progress is not None else [],
         partial_environment=_partial_environment(
-            partial_environment, qcal_config, lab, experiments, code
+            partial_environment, qcal_config, lab, experiments, code, extra=declarations_read
         ),
     )
     ctx.checkpoint()
@@ -865,11 +858,45 @@ def run_experiment(
         "evaluate_retained_detections": _retained(evaluated),
         "program_python": sys.executable,
         "program_python_version": platform.python_version(),
-        INPUTS_READ_KEY: inputs_read(qcal_config, lab, experiments),
+        INPUTS_READ_KEY: inputs_read(qcal_config, lab, experiments, declarations_read),
     }
     hits = sum(bool(use.get("hit")) for use in ctx.cache_use.values())
     resources = {"cache_hits": hits, "cache_misses": len(ctx.cache_use) - hits}
     return ExperimentResult(metrics, ctx.artifacts, environment, resources)
+
+
+def _check_detector(qcal_config: Config, lab: LabConfig, plan: RunPlan) -> dict[Path, str]:
+    """Refuse a detector that is not fully configured, lacks the target, or is undeclared."""
+    missing = detector_problems(lab, plan.detector)
+    if missing:
+        raise ConfigError(f"{'; '.join(missing)}; set it in configs/lab.toml")
+    produced = detector_targets(lab, plan.detector)
+    if plan.target not in produced:
+        raise PlanError(
+            f"detector {plan.detector!r} does not produce target {plan.target!r} "
+            f"(it produces: {sorted(produced)}); refusing rather than relabelling its predictions"
+        )
+    return _require_sanity_declaration(qcal_config, lab, plan.detector)
+
+
+def _require_sanity_declaration(
+    qcal_config: Config, lab: LabConfig, detector: str
+) -> dict[Path, str]:
+    """Refuse a detector whose sanity declaration (D2) is incomplete or about something else.
+
+    Runs before any detector work, so the expectation is fixed before a result exists.
+    Returns the declarations file and its digest, for ``inputs_read``.
+    """
+    if not needs_declaration(lab, detector):
+        return {}
+    try:
+        path = declarations_path(qcal_config)
+        require_declared(
+            detector, detector_declarations(qcal_config, detector), configured(lab, detector)
+        )
+    except (DeclarationsError, SanityError) as exc:
+        raise PlanError(str(exc)) from exc
+    return {path: sha256_file(path)} if path.is_file() else {}
 
 
 def _partial_environment(
@@ -878,6 +905,8 @@ def _partial_environment(
     lab: LabConfig,
     experiments: Experiments,
     code: Mapping[str, Any],
+    *,
+    extra: Mapping[Path, str] | None = None,
 ) -> dict[str, Any]:
     """What a failed run can still report: its code and the configuration it read."""
     known = {
@@ -885,7 +914,7 @@ def _partial_environment(
         "qcal_lab_source_sha256": source_digest(),
         "handwritten_sha256": handwritten_digest(),
         "program_code": dict(code),
-        INPUTS_READ_KEY: inputs_read(qcal_config, lab, experiments),
+        INPUTS_READ_KEY: inputs_read(qcal_config, lab, experiments, extra),
     }
     if into is None:
         return known
@@ -893,11 +922,17 @@ def _partial_environment(
     return into
 
 
-def inputs_read(qcal_config: Config, lab: LabConfig, experiments: Experiments) -> dict[str, str]:
+def inputs_read(
+    qcal_config: Config,
+    lab: LabConfig,
+    experiments: Experiments,
+    extra: Mapping[Path, str] | None = None,
+) -> dict[str, str]:
     """The sha256 of each configuration file this run read, by repository-relative path.
 
     The registry compares these with the digests it took at launch and fails the run when a
-    file changed in between (``qcal.registry.gates.input_mismatches``).
+    file changed in between (``qcal.registry.gates.input_mismatches``). ``extra`` adds other
+    files the run read, such as Ian's declarations, so the record names the bytes it used.
     """
     root = qcal_config.root
     files: dict[Path, str | None] = {
@@ -907,6 +942,7 @@ def inputs_read(qcal_config: Config, lab: LabConfig, experiments: Experiments) -
     }
     if lab.path is not None:
         files[lab.path] = lab.sha256
+    files.update(extra or {})
     reported: dict[str, str] = {}
     for path, digest in files.items():
         absolute = path if path.is_absolute() else root / path  # not resolved: symlinks are

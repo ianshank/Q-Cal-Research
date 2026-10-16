@@ -204,11 +204,24 @@ Verified against `50efe97`:
 
     ```toml
     [detectors.atss_r50]
-    zoo_ap = 0.0          # pycocotools units: 39.4 AP is 0.394
-    tolerance = 0.0
-    source = ""           # where the zoo value is published
+    zoo_ap = ""             # the published value, in `units`
+    tolerance = ""          # in `units`
+    units = ""              # "fraction" (pycocotools) or "percent"
+    source = ""             # where the zoo value is published
+    checkpoint_sha256 = ""  # must equal detectors.atss_r50.checkpoint_sha256
+    image_set = ""          # the images the zoo value was measured on
+    test_cfg = {}           # must equal the configured score_threshold and max_per_image
+    on_fail = ""            # "stop": stop and debug; never swap the checkpoint
     label_order_attested_sha256 = ""   # only for a checkpoint without class names
     ```
+12. **The sanity declaration is enforced and bound** (panel round 2, rev. 3). A non-fixture
+    detector does not run until its declaration is complete, names the configured
+    checkpoint's sha256 and test-time settings, and states `on_fail = "stop"`; the refusal
+    comes before any detector work. Values are compared as written (decimal), in the declared
+    units, so 0.8 is within 0.1 of 0.7 and a percent value cannot pass as a fraction; a
+    tolerance above `[sanity] max_tolerance_fraction` (`tooling.toml`, a plausibility cap) is
+    refused. The declarations file's digest is recorded in `inputs_read`. *Alternative:*
+    enforcement only in `lab-status`, which a launch never consults.
 
 ## Compatibility
 - **Exit codes.**

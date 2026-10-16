@@ -126,12 +126,20 @@ def applicability_problems(root: Path, mutants: Sequence[Mutant]) -> list[str]:
         if count != 1:
             found = "file missing" if count < 0 else f"found {count} times"
             problems.append(f"{m.id}: 'old' must occur exactly once in {m.file} ({found})")
-        problems.extend(
-            f"{m.id}: test file {test_file(test)} does not exist"
-            for test in m.tests
-            if not (root / test_file(test)).is_file()
-        )
+        for test in m.tests:
+            path = root / test_file(test)
+            if not path.is_file():
+                problems.append(f"{m.id}: test file {test_file(test)} does not exist")
+            elif not _defines(path.read_text("utf-8"), test):
+                problems.append(f"{m.id}: {test} is not defined in its file")
     return problems
+
+
+def _defines(source: str, node: str) -> bool:
+    """Whether the test (or class) a node names is defined in ``source``: renames are caught
+    here, by the unit test of this file, not later as an ERROR of the mutation run."""
+    name = node.split(NODE)[1].split("[", 1)[0]
+    return f"def {name}(" in source or f"class {name}" in source
 
 
 def test_file(node: str) -> str:

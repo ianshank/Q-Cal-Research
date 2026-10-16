@@ -1,19 +1,24 @@
 """Ian's declarations: values only Ian sets (D2), read from a file agents cannot write.
 
-The detector sanity check's zoo AP, tolerance and source, and the attested label order of a
-checkpoint that carries no class names, are Ian's decisions. A value an agent could write
-would declare nothing, so they live in ``[declarations] file`` (``tooling.toml``), and that
-file is accepted only where ``qcal.toml``'s policy both keeps edit tools out of it
-(``hooks.deny_categories``) and requires a signed commit for it
-(``signing.signed_categories``). A missing file declares nothing.
+The detector sanity check's expectation, and the attested label order of a checkpoint that
+carries no class names, are Ian's decisions. A value an agent could write would declare
+nothing, so they live in ``[declarations] file`` (``tooling.toml``), and that file is accepted
+only where ``qcal.toml``'s policy both keeps edit tools out of it (``hooks.deny_categories``)
+and requires a signed commit for it (``signing.signed_categories``). A missing file declares
+nothing, and a non-fixture detector then does not run (:func:`qcal_lab.sanity.require_declared`).
 
-The file's layout, one table per detector::
+The file's layout, one table per detector; every value is Ian's, so the template is empty::
 
     [detectors.atss_r50]
-    zoo_ap = 0.394          # pycocotools units: 39.4 AP is 0.394
-    tolerance = 0.005
-    source = "<where the zoo value is published>"
-    label_order_attested_sha256 = "<only for a checkpoint without class names>"
+    zoo_ap = ""             # the published value, in `units`
+    tolerance = ""          # in `units`
+    units = ""              # "fraction" (pycocotools) or "percent"
+    source = ""             # where the zoo value is published
+    checkpoint_sha256 = ""  # the checkpoint it was published for: must equal the configured one
+    image_set = ""          # the images the zoo value was measured on
+    test_cfg = {}           # its test-time settings: must equal the configured ones
+    on_fail = ""            # "stop": a failed check stops for debugging, never swaps checkpoints
+    label_order_attested_sha256 = ""  # only for a checkpoint without class names
 """
 
 from __future__ import annotations

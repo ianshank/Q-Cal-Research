@@ -542,9 +542,9 @@ tests = [
 id = "PRF-sanity-tolerance"
 file = "src/qcal_lab/sanity.py"
 finding = "the sanity tolerance is inclusive"
-old = '''    if abs(measured - zoo_ap) <= tolerance:'''
-new = '''    if abs(measured - zoo_ap) < tolerance:'''
-tests = ["tests/unit/test_lab_sanity.py::test_the_tolerance_is_inclusive"]
+old = '''    if abs(value * scale - zoo_ap) <= tolerance:'''
+new = '''    if abs(value * scale - zoo_ap) < tolerance:'''
+tests = ["tests/unit/test_lab_sanity.py::test_the_tolerance_is_inclusive_in_the_declared_units"]
 
 [[mutant]]
 id = "PRF-sanity-d8"
@@ -707,7 +707,7 @@ finding = "an undeclared sanity check is not declared (review B1)"
 old = '''        return SanityReport(expected.detector, NOT_ASSESSED, missing, declared=False)'''
 new = '''        return SanityReport(expected.detector, NOT_ASSESSED, missing)'''
 tests = [
-    "tests/unit/test_lab_sanity.py::test_an_undeclared_check_is_not_assessed_and_names_what_is_missing",
+    "tests/unit/test_lab_sanity.py::test_an_incomplete_declaration_is_not_assessed_and_names_what_is_missing",
     "tests/unit/test_lab_sanity.py::test_status_needs_the_declaration",
 ]
 
@@ -770,4 +770,85 @@ old = '''    return int(index) if index.isdigit() else int(torch.cuda.current_de
 new = '''    return int(index) if index.isdigit() else 0'''
 tests = [
     "tests/unit/test_lab_numerics.py::test_a_bare_cuda_device_is_torchs_current_device",
+]
+
+[[mutant]]
+id = "PRF-sanity-decimal"
+file = "src/qcal_lab/sanity.py"
+finding = "values are compared as written: 0.8 is within 0.1 of 0.7 (panel round 2)"
+old = '''        value = Decimal(repr(measured))'''
+new = '''        value = Decimal(measured)'''
+tests = [
+    "tests/unit/test_lab_sanity.py::test_the_tolerance_is_inclusive_in_the_declared_units",
+]
+
+[[mutant]]
+id = "PRF-sanity-units"
+file = "src/qcal_lab/sanity.py"
+finding = "the measured fraction is compared in the declared units (panel round 2)"
+old = '''    if abs(value * scale - zoo_ap) <= tolerance:'''
+new = '''    if abs(value - zoo_ap) <= tolerance:'''
+tests = [
+    "tests/unit/test_lab_sanity.py::test_the_tolerance_is_inclusive_in_the_declared_units",
+]
+
+[[mutant]]
+id = "PRF-sanity-bound"
+file = "src/qcal_lab/sanity.py"
+finding = "a declaration about another checkpoint or settings is not one (panel round 2)"
+old = '''    unbound = binding_problems(expected, configured) if configured is not None else []'''
+new = '''    unbound: list[str] = []'''
+tests = [
+    "tests/unit/test_lab_sanity.py::test_a_declaration_about_something_else_is_not_one",
+]
+
+[[mutant]]
+id = "PRF-sanity-test-cfg"
+file = "src/qcal_lab/sanity.py"
+finding = "the declared test-time settings must be the configured ones (panel round 2)"
+old = '''    if expected.test_cfg is not None and dict(expected.test_cfg) != dict(configured.test_cfg):'''
+new = '''    if False:'''
+tests = [
+    "tests/unit/test_lab_sanity.py::test_a_declaration_about_something_else_is_not_one",
+]
+
+[[mutant]]
+id = "PRF-sanity-on-fail"
+file = "src/qcal_lab/sanity.py"
+finding = "a FAIL can only stop the work, never select another checkpoint (panel round 2)"
+old = '''    if on_fail and on_fail not in ON_FAIL:'''
+new = '''    if False:'''
+tests = [
+    "tests/unit/test_lab_sanity.py::test_bad_values_are_refused",
+]
+
+[[mutant]]
+id = "PRF-sanity-cap"
+file = "src/qcal_lab/sanity.py"
+finding = "a tolerance above the plausibility cap is refused (panel round 2)"
+old = '''        limit = (cap if cap is not None else max_tolerance()) * scale'''
+new = '''        limit = scale'''
+tests = [
+    "tests/unit/test_lab_sanity.py::test_bad_values_are_refused",
+]
+
+[[mutant]]
+id = "PRF-sanity-enforced"
+file = "src/qcal_lab/experiment.py"
+finding = "a non-fixture detector runs only after its sanity declaration (panel round 2)"
+old = '''    if not needs_declaration(lab, detector):'''
+new = '''    if True:'''
+tests = [
+    "tests/unit/test_lab_experiment.py::test_a_detector_runs_only_after_its_sanity_declaration",
+]
+
+[[mutant]]
+id = "PRF-sanity-recorded"
+file = "src/qcal_lab/experiment.py"
+finding = "the declarations file's digest is recorded in inputs_read (panel round 2)"
+old = '''    files.update(extra or {})
+'''
+new = ''''''
+tests = [
+    "tests/unit/test_lab_experiment.py::test_a_bound_declaration_lets_the_run_go_on_and_is_recorded_as_read",
 ]
