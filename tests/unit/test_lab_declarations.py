@@ -8,11 +8,13 @@ from pathlib import Path
 import pytest
 
 from qcal.config import Config, load_config
+from qcal_lab import declarations
 from qcal_lab.declarations import (
     DeclarationsError,
     declarations_path,
     detector_declarations,
     load_declarations,
+    read_declarations,
 )
 from tests.conftest import REPO_ROOT, run_git, write
 
@@ -134,3 +136,34 @@ def test_an_unreadable_file_is_refused(project: Config) -> None:
     (project.root / FILE).mkdir(parents=True)  # a directory
     with pytest.raises(DeclarationsError, match="cannot read"):
         load_declarations(project)
+
+
+def test_one_read_serves_the_check_the_parse_and_the_digest(
+    committed: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Panel round 3: the bytes compared with HEAD are the bytes parsed and recorded, even if
+    the file is replaced between the steps."""
+    import hashlib
+
+    path = committed.root / FILE
+    original = path.read_bytes()
+    real_read = declarations._read_once
+
+    def swap_after_reading(where: Path) -> bytes | None:
+        data = real_read(where)
+        path.write_text(DECLARED.replace('"card"', '"forged"'))  # replaced right after the read
+        return data
+
+    monkeypatch.setattr(declarations, "_read_once", swap_after_reading)
+    declared, _, digest = read_declarations(committed)
+    assert declared["detectors"]["atss_r50"]["source"] == "card"
+    assert digest == hashlib.sha256(original).hexdigest()
+
+
+def test_a_link_swapped_in_after_the_path_check_is_not_followed(project: Config) -> None:
+    write(project.root, "notes/forged.toml", DECLARED)
+    link = project.root / FILE
+    link.parent.mkdir(parents=True)
+    link.symlink_to(project.root / "notes/forged.toml")
+    with pytest.raises(DeclarationsError, match="cannot read"):
+        declarations._read_once(link)  # what read_declarations opens after the check

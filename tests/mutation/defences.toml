@@ -1083,7 +1083,7 @@ tests = [
 id = "S6-declarations-committed"
 file = "src/qcal_lab/declarations.py"
 finding = "declarations are read only as committed (panel round 2)"
-old = '''    if committed != sha256_file(path):'''
+old = '''    if committed != sha256:'''
 new = '''    if False:'''
 tests = [
     "tests/unit/test_lab_declarations.py::test_declarations_that_differ_from_head_are_refused",
@@ -1288,4 +1288,24 @@ new = '''        if False:
             raise RunRefusedError(f"cannot run {cell.id}: " + "; ".join(changed))'''
 tests = [
     "tests/regression/test_registry_run_gates.py::test_s6_code_changed_after_the_gates_is_refused_before_it_runs",
+]
+
+[[mutant]]
+id = "S6-declarations-one-read"
+file = "src/qcal_lab/declarations.py"
+finding = "the bytes compared with HEAD are the bytes parsed and recorded (panel round 3)"
+old = '''    problem = committed_problem(qcal_config, path, digest)'''
+new = '''    problem = committed_problem(qcal_config, path, hashlib.sha256(path.read_bytes()).hexdigest())'''
+tests = [
+    "tests/unit/test_lab_declarations.py::test_one_read_serves_the_check_the_parse_and_the_digest",
+]
+
+[[mutant]]
+id = "S6-declarations-nofollow"
+file = "src/qcal_lab/declarations.py"
+finding = "the declarations open follows no link swapped in after the check (panel round 3)"
+old = '''        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)'''
+new = '''        descriptor = os.open(path, os.O_RDONLY)'''
+tests = [
+    "tests/unit/test_lab_declarations.py::test_a_link_swapped_in_after_the_path_check_is_not_followed",
 ]

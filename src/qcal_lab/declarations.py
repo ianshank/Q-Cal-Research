@@ -24,7 +24,9 @@ The file's layout, one table per detector; every value is Ian's, so the template
 
 from __future__ import annotations
 
+import hashlib
 import os
+import stat
 import tomllib
 from collections.abc import Mapping
 from pathlib import Path
@@ -34,7 +36,6 @@ from qcal import gitutil
 from qcal.config import Config
 from qcal.log import get_logger
 from qcal.policy import Policy
-from qcal.registry.executor import sha256_file
 
 _log = get_logger("lab.declarations")
 
@@ -81,8 +82,8 @@ def declarations_path(qcal_config: Config, tooling: Mapping[str, Any] | None = N
     return path
 
 
-def committed_problem(qcal_config: Config, path: Path) -> str | None:
-    """Why the declarations file is not exactly what ``HEAD`` holds, or ``None``.
+def committed_problem(qcal_config: Config, path: Path, sha256: str) -> str | None:
+    """Why the declarations bytes read (``sha256``) are not exactly what ``HEAD`` holds.
 
     Outside a git repository nothing can be compared (registered runs refuse that already).
     """
@@ -93,41 +94,70 @@ def committed_problem(qcal_config: Config, path: Path) -> str | None:
     committed = gitutil.blob_sha256("HEAD", relative, root)
     if committed is None:
         return f"{relative} is not committed: a declaration is the signed commit that adds it"
-    if committed != sha256_file(path):
+    if committed != sha256:
         return f"{relative} differs from HEAD: commit it (signed) or restore it"
     return None
+
+
+def _read_once(path: Path) -> bytes | None:
+    """The file's bytes from one open that follows no link; ``None`` when it does not exist."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:  # ELOOP: the last component became a link after the check
+        raise DeclarationsError(f"cannot read {path}: {exc}") from exc
+    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+        os.close(descriptor)
+        raise DeclarationsError(f"cannot read {path}: not a regular file")
+    with os.fdopen(descriptor, "rb") as handle:
+        return handle.read()
+
+
+def read_declarations(
+    qcal_config: Config, tooling: Mapping[str, Any] | None = None
+) -> tuple[dict[str, Any], Path, str | None]:
+    """Everything Ian declared, the file, and the sha256 of the bytes parsed (``None``, and
+    ``{}``, while the file does not exist). One read serves the parse, the comparison with
+    ``HEAD`` and the digest a run records, so they all describe the same bytes."""
+    path = declarations_path(qcal_config, tooling)
+    data = _read_once(path)
+    if data is None:
+        _log.debug("no declarations at %s yet", path)
+        return {}, path, None
+    digest = hashlib.sha256(data).hexdigest()
+    problem = committed_problem(qcal_config, path, digest)
+    if problem:
+        raise DeclarationsError(problem)
+    try:
+        return tomllib.loads(data.decode("utf-8")), path, digest
+    except UnicodeDecodeError as exc:
+        raise DeclarationsError(f"cannot read {path}: {exc}") from exc
+    except tomllib.TOMLDecodeError as exc:
+        raise DeclarationsError(f"{path} is not valid TOML: {exc}") from exc
 
 
 def load_declarations(
     qcal_config: Config, tooling: Mapping[str, Any] | None = None
 ) -> dict[str, Any]:
     """Everything Ian declared; ``{}`` while the file does not exist."""
-    path = declarations_path(qcal_config, tooling)
-    try:
-        text = path.read_text("utf-8")
-    except FileNotFoundError:
-        _log.debug("no declarations at %s yet", path)
-        return {}
-    except (OSError, UnicodeDecodeError) as exc:
-        raise DeclarationsError(f"cannot read {path}: {exc}") from exc
-    problem = committed_problem(qcal_config, path)
-    if problem:
-        raise DeclarationsError(problem)
-    try:
-        return tomllib.loads(text)
-    except tomllib.TOMLDecodeError as exc:
-        raise DeclarationsError(f"{path} is not valid TOML: {exc}") from exc
+    return read_declarations(qcal_config, tooling)[0]
+
+
+def detector_table(declared: Mapping[str, Any], name: str) -> Mapping[str, Any]:
+    """Detector ``name``'s table (``[detectors.<name>]``) in parsed declarations."""
+    detectors = declared.get(DETECTORS, {})
+    table = detectors.get(name, {}) if isinstance(detectors, Mapping) else {}
+    if not isinstance(table, Mapping):
+        raise DeclarationsError(f"{DETECTORS}.{name} must be a table")
+    return table
 
 
 def detector_declarations(
     qcal_config: Config, name: str, tooling: Mapping[str, Any] | None = None
 ) -> Mapping[str, Any]:
     """What Ian declared for detector ``name`` (``[detectors.<name>]``); ``{}`` if nothing."""
-    detectors = load_declarations(qcal_config, tooling).get(DETECTORS, {})
-    declared = detectors.get(name, {}) if isinstance(detectors, Mapping) else {}
-    if not isinstance(declared, Mapping):
-        raise DeclarationsError(f"{DETECTORS}.{name} must be a table")
-    return declared
+    return detector_table(load_declarations(qcal_config, tooling), name)
 
 
 __all__ = [
@@ -139,5 +169,7 @@ __all__ = [
     "committed_problem",
     "declarations_path",
     "detector_declarations",
+    "detector_table",
     "load_declarations",
+    "read_declarations",
 ]

@@ -641,7 +641,8 @@ def test_a_bound_declaration_lets_the_run_go_on_and_is_recorded_as_read(
     with pytest.raises(PastTheDeclaration):
         run_experiment(_request(root, cell))
     qcal_config, lab = load_config(root), load_lab_config(root)
-    declarations_read = experiment._require_sanity_declaration(qcal_config, lab, "atss_r50")
+    declarations_read, table = experiment._require_sanity_declaration(qcal_config, lab, "atss_r50")
+    assert table["on_fail"] == "stop"  # the same read the detector is given
     read = experiment.inputs_read(
         qcal_config, lab, load_experiments(qcal_config), declarations_read
     )
@@ -651,7 +652,7 @@ def test_a_bound_declaration_lets_the_run_go_on_and_is_recorded_as_read(
 def test_the_fixture_detector_needs_no_declaration(project: tuple[Path, list[str]]) -> None:
     root, _ = project
     lab = load_lab_config(root)
-    assert experiment._require_sanity_declaration(load_config(root), lab, "fixture") == {}
+    assert experiment._require_sanity_declaration(load_config(root), lab, "fixture") == ({}, {})
 
 
 def test_code_from_outside_the_source_directory_is_refused(

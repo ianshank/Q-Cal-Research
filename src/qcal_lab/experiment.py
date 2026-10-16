@@ -56,7 +56,7 @@ from qcal_lab.calib.two_threshold import (
 from qcal_lab.config import LabConfig, defaults_path, load_lab_config, require_hashed
 from qcal_lab.data.coco import GroundTruth, load_coco
 from qcal_lab.data.splits import draw, read_split, split_digest
-from qcal_lab.declarations import DeclarationsError, declarations_path, detector_declarations
+from qcal_lab.declarations import DeclarationsError, detector_table, read_declarations
 from qcal_lab.evaluation import EvalLoop, check_metrics, load_eval_loop
 from qcal_lab.formats import envelope, json_bytes, write_bytes_atomic
 from qcal_lab.models import (
@@ -751,7 +751,7 @@ def run_experiment(
     plan = resolve_plan(cell.factors, lab)
     code = program_code(qcal_config)
     regime = load_regime(lab, plan.precision)  # refuses a precision without a regime
-    declarations_read = _check_detector(qcal_config, lab, plan)
+    declarations_read, declared = _check_detector(qcal_config, lab, plan)
     roles = split_roles(lab, qcal_config)
     if eval_loop is None:  # fail before any detector work if Ian's loop is missing
         loaded = load_eval_loop(lab, qcal_config)
@@ -785,7 +785,7 @@ def run_experiment(
             dataset,
             precision=plan.precision,
             images_dir=images_dir,
-            declared=functools.partial(detector_declarations, qcal_config, plan.detector),
+            declared=lambda: declared,  # read once, before any detector work
         ),
         artifacts=progress if progress is not None else [],
         partial_environment=_partial_environment(
@@ -865,7 +865,9 @@ def run_experiment(
     return ExperimentResult(metrics, ctx.artifacts, environment, resources)
 
 
-def _check_detector(qcal_config: Config, lab: LabConfig, plan: RunPlan) -> dict[Path, str]:
+def _check_detector(
+    qcal_config: Config, lab: LabConfig, plan: RunPlan
+) -> tuple[dict[Path, str], Mapping[str, Any]]:
     """Refuse a detector that is not fully configured, lacks the target, or is undeclared."""
     missing = detector_problems(lab, plan.detector)
     if missing:
@@ -881,22 +883,23 @@ def _check_detector(qcal_config: Config, lab: LabConfig, plan: RunPlan) -> dict[
 
 def _require_sanity_declaration(
     qcal_config: Config, lab: LabConfig, detector: str
-) -> dict[Path, str]:
+) -> tuple[dict[Path, str], Mapping[str, Any]]:
     """Refuse a detector whose sanity declaration (D2) is incomplete or about something else.
 
-    Runs before any detector work, so the expectation is fixed before a result exists.
-    Returns the declarations file and its digest, for ``inputs_read``.
+    Runs before any detector work, so the expectation is fixed before a result exists. The
+    declarations are read once: the same bytes are checked against ``HEAD``, parsed, given to
+    the detector (its label-order attestation) and recorded in ``inputs_read`` by digest.
+    Returns ``({file: sha256}, the detector's table)``.
     """
     if not needs_declaration(lab, detector):
-        return {}
+        return {}, {}
     try:
-        path = declarations_path(qcal_config)
-        require_declared(
-            detector, detector_declarations(qcal_config, detector), configured(lab, detector)
-        )
+        declared, path, digest = read_declarations(qcal_config)
+        table = detector_table(declared, detector)
+        require_declared(detector, table, configured(lab, detector))
     except (DeclarationsError, SanityError) as exc:
         raise PlanError(str(exc)) from exc
-    return {path: sha256_file(path)} if path.is_file() else {}
+    return ({path: digest} if digest else {}), table
 
 
 def _partial_environment(
