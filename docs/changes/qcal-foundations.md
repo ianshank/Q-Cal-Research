@@ -222,6 +222,19 @@ Verified against `50efe97`:
     tolerance above `[sanity] max_tolerance_fraction` (`tooling.toml`, a plausibility cap) is
     refused. The declarations file's digest is recorded in `inputs_read`. *Alternative:*
     enforcement only in `lab-status`, which a launch never consults.
+13. **Contract additions** (panel round 2, rev. 3).
+    - **MUST:** the loop's results do not depend on the order the images are listed in.
+    - **SHOULD** (reported, never a failure; the objective is Ian's):
+      - an objective under which keeping no detections beats keeping them all, which drifts
+        a threshold search to the top of its grid;
+      - all-zero targets;
+      - results that change when images without detections are left out.
+
+      The panel proposed the last one as a MUST. It is a SHOULD here because the pipeline
+      always passes every image (`keep_class`), so a loop that relies on that is correct
+      under the contract. Requiring it would test a call the pipeline never makes.
+    - The fixture loop now counts missed objects and images from the ground truth, so it
+      is clean under all three; its values on the smoke project are unchanged.
 
 ## Compatibility
 - **Exit codes.**

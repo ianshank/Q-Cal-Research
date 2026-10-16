@@ -174,8 +174,8 @@ def test_metric_cases_through_the_repository_loop(
                 "oracle": ORACLE,
                 "predictions": "p.jsonl",
                 "ground_truth": "gt.json",
-                "metric": "smoke_images",
-                "expected": 0.0,
+                "metric": "smoke_images",  # every image of the ground truth, listed or not
+                "expected": float(len(fixture_document()["images"])),
             },
         )
     )

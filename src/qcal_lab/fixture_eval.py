@@ -68,12 +68,14 @@ def poor_or_missed_share(
     poor = sum(t < threshold for values in targets.values() for t in values)
     detections = sum(len(v) for v in targets.values())
     objects = missed = 0
-    for image in predictions:
-        for gt in ground_truth.boxes.get(image.image_id, ()):
+    detected = {image.image_id: image.detections for image in predictions}
+    for image_id in sorted(ground_truth.images):  # an image left out still has its objects
+        for gt in ground_truth.boxes.get(image_id, ()):
             if gt.label != label:
                 continue
             objects += 1
-            if all(box_iou(d.box_xyxy, gt.box_xyxy) < threshold for d in image.detections):
+            found = detected.get(image_id, ())
+            if all(box_iou(d.box_xyxy, gt.box_xyxy) < threshold for d in found):
                 missed += 1
     total = detections + objects
     return (poor + missed) / total if total else float("nan")
@@ -89,7 +91,7 @@ def smoke_metrics(
         for d, t in zip(image.detections, targets[image.image_id], strict=True)
     ]
     return {
-        "smoke_images": float(len(predictions)),
+        "smoke_images": float(len(ground_truth.images)),  # every image, listed or not
         "smoke_detections": float(len(gaps)),
         "smoke_mean_abs_gap": sum(gaps) / len(gaps) if gaps else 0.0,
     }

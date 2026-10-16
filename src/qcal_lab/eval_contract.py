@@ -154,6 +154,12 @@ def _must(
     again = _probe("the loop's second call", lambda: outputs(loop, predictions, ground_truth))
     if canonical(again) != canonical(first):
         problems.append("two calls on the same loop disagree")
+    reordered = tuple(reversed(predictions))  # the same images, listed in another order
+    shuffled = _probe(
+        "the loop on reordered images", lambda: outputs(loop, reordered, ground_truth)
+    )
+    if canonical(shuffled) != canonical(first):
+        problems.append("the loop's results depend on the order the images are listed in")
     second = _probe("the factory's second call", build)
     if not isinstance(second, EvalLoop):
         problems.append("the factory's second call did not return an EvalLoop")
@@ -163,16 +169,57 @@ def _must(
         problems.append("two loops from the same factory disagree")
 
 
+def _without_empty_images(
+    predictions: Sequence[ImageDetections],
+) -> tuple[tuple[ImageDetections, ...], tuple[ImageDetections, ...]]:
+    """The predictions with at least one image holding no detections, listed and left out."""
+    listed = tuple(predictions)
+    if listed and all(image.detections for image in listed):
+        listed = (ImageDetections(listed[0].image_id), *listed[1:])
+    return listed, tuple(image for image in listed if image.detections)
+
+
 def should_findings(
     loop: EvalLoop, predictions: Sequence[ImageDetections], ground_truth: GroundTruth
 ) -> list[str]:
-    """What the contract allows but Ian should know of: reported, never a failure."""
+    """What the contract allows but Ian should know of: reported, never a failure.
+
+    No value is printed: the inputs are synthetic, and a finding says what, not how much.
+    """
     findings: list[str] = []
     result = outputs(loop, predictions, ground_truth)
-    for key, value in result["objectives"].items():
+    objectives = result["objectives"]
+    for key, value in objectives.items():
         if key.endswith(":all") and isinstance(value, float) and not math.isfinite(value):
             findings.append(f"objective {key} is {value!r} on a class with detections")
+    for key, everything in objectives.items():
+        if not key.endswith(":all"):
+            continue
+        nothing = objectives[key.removesuffix(":all") + ":empty"]
+        if _finite(everything) and _finite(nothing) and nothing < everything:
+            findings.append(
+                f"objective {key.removesuffix(':all')}: keeping no detections scores better "
+                "than keeping them all, so a threshold search drifts to the top of its grid"
+            )
+    targets = [t for values in result["targets"].values() for t in values]
+    if targets and not any(targets):
+        findings.append("every target is 0: calibrators would learn to output 0")
+    listed, absent = _without_empty_images(predictions)
+    with_empty, without_empty = (outputs(loop, p, ground_truth) for p in (listed, absent))
+    if canonical(_scores(with_empty)) != canonical(_scores(without_empty)):
+        findings.append(
+            "objectives or metrics change when images without detections are left out: the "
+            "pipeline passes every image, so this matters only to a caller that does not"
+        )
     return findings
+
+
+def _finite(value: object) -> bool:
+    return isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _scores(result: Mapping[str, Any]) -> dict[str, Any]:
+    return {"objectives": result["objectives"], "metrics": result["metrics"]}
 
 
 @dataclass

@@ -9,6 +9,7 @@ from __future__ import annotations
 import io
 import json
 import math
+import re
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -87,6 +88,69 @@ def test_should_findings_are_reported_not_failed(monkeypatch: pytest.MonkeyPatch
     report = _check()
     assert report.verdict == "PASS"
     assert any("is nan on a class with detections" in f for f in report.should)
+
+
+def test_a_loop_depending_on_the_image_order_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FirstImageOnly(NaNObjective):
+        def metrics(self, predictions, ground_truth):  # type: ignore[no-untyped-def]
+            return {"n": float(len(predictions[0].detections))}  # order matters
+
+    _with_loop(monkeypatch, FirstImageOnly)
+    report = _check()
+    assert report.verdict == "FAIL"
+    assert report.must == ["the loop's results depend on the order the images are listed in"]
+
+
+class Fixture(NaNObjective):
+    """The fixture loop's objective too: SHOULD-clean unless a test overrides a part."""
+
+    def threshold_objective(self, predictions, ground_truth, *, label, stage):  # type: ignore[no-untyped-def]
+        return self.inner.threshold_objective(predictions, ground_truth, label=label, stage=stage)
+
+
+@pytest.mark.parametrize(
+    ("override", "finding"),
+    [
+        (
+            {
+                "threshold_objective": lambda self, predictions, ground_truth, *, label, stage: (
+                    float(sum(len(i.detections) for i in predictions))  # nothing kept is best
+                )
+            },
+            "keeping no detections scores better than keeping them all",
+        ),
+        (
+            {
+                "targets": lambda self, predictions, ground_truth: {
+                    i.image_id: [0.0] * len(i.detections) for i in predictions
+                }
+            },
+            "every target is 0",
+        ),
+        (
+            {
+                "metrics": lambda self, predictions, ground_truth: {
+                    "images_listed": float(len(predictions))
+                }
+            },
+            "change when images without detections are left out",
+        ),
+    ],
+)
+def test_degenerate_but_allowed_loops_are_reported(
+    monkeypatch: pytest.MonkeyPatch, override: dict[str, Any], finding: str
+) -> None:
+    loop = type("Degenerate", (Fixture,), override)
+    _with_loop(monkeypatch, loop)
+    report = _check()
+    assert report.verdict == "PASS"  # SHOULD findings never fail the contract
+    assert [f for f in report.should if finding in f]
+    assert not [f for f in report.should if re.search(r"\d\.\d", f)]  # no value printed
+
+
+def test_a_clean_loop_has_no_should_findings(monkeypatch: pytest.MonkeyPatch) -> None:
+    _with_loop(monkeypatch, Fixture)
+    assert _check().should == []
 
 
 def test_a_loop_without_metrics_fails(monkeypatch: pytest.MonkeyPatch) -> None:

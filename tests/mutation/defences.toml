@@ -852,3 +852,63 @@ new = ''''''
 tests = [
     "tests/unit/test_lab_experiment.py::test_a_bound_declaration_lets_the_run_go_on_and_is_recorded_as_read",
 ]
+
+[[mutant]]
+id = "PRF-must-order"
+file = "src/qcal_lab/eval_contract.py"
+finding = "a loop whose results depend on the image order fails the contract (panel round 2)"
+old = '''    if canonical(shuffled) != canonical(first):'''
+new = '''    if False:'''
+tests = [
+    "tests/unit/test_lab_eval_contract.py::test_a_loop_depending_on_the_image_order_fails",
+]
+
+[[mutant]]
+id = "PRF-should-empty-wins"
+file = "src/qcal_lab/eval_contract.py"
+finding = "an objective that prefers keeping nothing is reported (panel round 2)"
+old = '''        if _finite(everything) and _finite(nothing) and nothing < everything:'''
+new = '''        if False:'''
+tests = [
+    "tests/unit/test_lab_eval_contract.py::test_degenerate_but_allowed_loops_are_reported",
+]
+
+[[mutant]]
+id = "PRF-should-zero-targets"
+file = "src/qcal_lab/eval_contract.py"
+finding = "all-zero targets are reported (panel round 2)"
+old = '''    if targets and not any(targets):'''
+new = '''    if False:'''
+tests = [
+    "tests/unit/test_lab_eval_contract.py::test_degenerate_but_allowed_loops_are_reported",
+]
+
+[[mutant]]
+id = "PRF-should-empty-images"
+file = "src/qcal_lab/eval_contract.py"
+finding = "results that change when empty images are left out are reported (panel round 2)"
+old = '''    if canonical(_scores(with_empty)) != canonical(_scores(without_empty)):'''
+new = '''    if False:'''
+tests = [
+    "tests/unit/test_lab_eval_contract.py::test_degenerate_but_allowed_loops_are_reported",
+]
+
+[[mutant]]
+id = "PRF-should-forced-empty"
+file = "src/qcal_lab/eval_contract.py"
+finding = "the empty-image probe has an empty image even when every image has detections"
+old = '''    if listed and all(image.detections for image in listed):'''
+new = '''    if False:'''
+tests = [
+    "tests/unit/test_lab_eval_contract.py::test_degenerate_but_allowed_loops_are_reported",
+]
+
+[[mutant]]
+id = "PRF-fixture-gt-images"
+file = "src/qcal_lab/fixture_eval.py"
+finding = "the fixture loop counts every ground-truth image, listed or not"
+old = '''    for image_id in sorted(ground_truth.images):  # an image left out still has its objects'''
+new = '''    for image_id in [i.image_id for i in predictions]:'''
+tests = [
+    "tests/unit/test_lab_eval_contract.py::test_a_clean_loop_has_no_should_findings",
+]
