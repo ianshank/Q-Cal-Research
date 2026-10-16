@@ -182,6 +182,21 @@ def test_n2_a_running_producers_bytes_are_kept(project: tuple[Path, list[str]]) 
     assert path.is_file()
 
 
+def test_n2_a_stale_marker_does_not_keep_unvouched_bytes(project: tuple[Path, list[str]]) -> None:
+    """A marker its launcher no longer locks (it died before recording) is not a live run."""
+    root, cells = project
+    first = run_experiment(_request(root, cells[0], 0, "R-a"))
+    path, forged = _forge_cached_val(root, first)
+    marker = root / "runs/inflight/R-a.inflight.json"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("{}")  # left behind, unlocked
+    second = run_experiment(_request(root, cells[0], 0, "R-b"))
+    use = second.environment["prediction_cache"]["val"]
+    assert use["quarantined"]["sha256"] == forged
+    assert __import__("hashlib").sha256(path.read_bytes()).hexdigest() != forged  # recomputed
+    assert marker.is_file()  # the lab never removes a launcher's marker
+
+
 def test_n2_a_producer_finishing_during_the_check_is_vouched_for(
     project: tuple[Path, list[str]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -251,15 +266,17 @@ def test_n2_quarantine_moves_only_the_bytes_it_checked(tmp_path: Path) -> None:
     assert cache.quarantined() == [moved]
     # the same bytes again: the existing quarantined copy is kept, nothing overwritten
     again = cache.put(key, predictions_header(), [image("a")], produced_by="R-2")
-    before = moved.stat().st_mtime_ns
+    before = moved.stat()
     assert cache.quarantine(key, again.sha256) == moved
-    assert moved.stat().st_mtime_ns == before
+    after = moved.stat()  # the same file, not a replacement written in the same tick
+    assert (after.st_ino, after.st_mtime_ns) == (before.st_ino, before.st_mtime_ns)
     assert cache.quarantine(key, again.sha256) is None  # nothing left under the key
 
 
 def test_n2_a_short_quarantine_copy_never_replaces_the_cached_bytes(tmp_path: Path) -> None:
     """An earlier quarantine interrupted mid-write (no hard links) left a short copy; the
-    retry must not delete the intact cached file on the strength of the copy's name."""
+    retry must not delete the intact cached file on the strength of the copy's name. The short
+    copy is set aside, never deleted, and the move is made again."""
     import hashlib
 
     from qcal_lab.predictions import QUARANTINE_DIR, PredictionCache, cache_key
@@ -270,10 +287,59 @@ def test_n2_a_short_quarantine_copy_never_replaces_the_cached_bytes(tmp_path: Pa
     entry = cache.put(key, predictions_header(), [image("a")], produced_by="R-1")
     target = tmp_path / "cache" / QUARANTINE_DIR / key / f"{entry.sha256}.jsonl"
     target.parent.mkdir(parents=True)
-    target.write_bytes(entry.path.read_bytes()[:10])  # truncated
+    original = entry.path.read_bytes()
+    target.write_bytes(original[:10])  # truncated
+    assert cache.quarantine(key, entry.sha256) == target
+    assert hashlib.sha256(target.read_bytes()).hexdigest() == entry.sha256
+    assert (target.parent / f"{entry.sha256}.partial.0").read_bytes() == original[:10]
+    assert not entry.path.exists()
+    assert cache.quarantined() == [target]  # the partial copy is not an entry
+
+
+def test_n2_a_quarantine_copy_that_stays_short_keeps_the_cached_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the second copy is short too (the filesystem keeps failing), nothing moves."""
+    import hashlib
+
+    from qcal_lab import predictions
+    from qcal_lab.predictions import QUARANTINE_DIR, PredictionCache, cache_key
+    from tests.lab_support import image, predictions_header
+
+    cache = PredictionCache(tmp_path / "cache")
+    key = cache_key(detector={"name": "x"}, split_sha256="s")
+    entry = cache.put(key, predictions_header(), [image("a")], produced_by="R-1")
+    target = tmp_path / "cache" / QUARANTINE_DIR / key / f"{entry.sha256}.jsonl"
+
+    def short_write(path: Path, data: bytes) -> str:
+        if path.exists():
+            raise FileExistsError(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data[:5])
+        raise FileExistsError(path)  # as a racing writer that left a short file would
+
+    monkeypatch.setattr(predictions, "write_bytes_exclusive", short_write)
     assert cache.quarantine(key, entry.sha256) is None
-    assert entry.path.is_file()
     assert hashlib.sha256(entry.path.read_bytes()).hexdigest() == entry.sha256
+    assert (target.parent / f"{entry.sha256}.partial.0").is_file()
+    assert not (target.parent / f"{entry.sha256}.partial.1").exists()  # one retry, no churn
+    assert target.read_bytes() == entry.path.read_bytes()[:5]  # left for Ian to look at
+
+
+def test_n2_a_cache_on_a_filesystem_without_locks_is_refused_clearly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import errno
+
+    from qcal_lab.predictions import PredictionCache, PredictionsError
+
+    def no_locks(_fd: int, _op: int) -> None:
+        raise OSError(errno.ENOLCK, "No locks available")
+
+    monkeypatch.setattr("qcal_lab.predictions.fcntl.flock", no_locks)
+    cache = PredictionCache(tmp_path / "cache")
+    with pytest.raises(PredictionsError, match="must be on a local filesystem"), cache.lock("k"):
+        pass
 
 
 def test_n2_status_lists_quarantined_predictions(project: tuple[Path, list[str]]) -> None:

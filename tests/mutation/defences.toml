@@ -723,8 +723,10 @@ tests = ["tests/unit/test_agent_layer.py::test_a_guard_must_be_one_simple_comman
 id = "F3-quarantine-copy-verified"
 file = "src/qcal_lab/predictions.py"
 finding = "an existing quarantine copy is trusted only once it hashes to its name (Copilot, PR #5)"
-old = '''            if kept != sha256:  # a partial earlier copy: never trade the original for it'''
-new = '''            if False:  # a partial earlier copy: never trade the original for it'''
+old = '''                if kept == sha256:
+                    return True'''
+new = '''                if True:
+                    return True'''
 tests = [
     "tests/regression/test_run_identity_and_formats.py::test_n2_a_short_quarantine_copy_never_replaces_the_cached_bytes",
 ]
@@ -911,4 +913,58 @@ old = '''    for image_id in sorted(ground_truth.images):  # an image left out s
 new = '''    for image_id in [i.image_id for i in predictions]:'''
 tests = [
     "tests/unit/test_lab_eval_contract.py::test_a_clean_loop_has_no_should_findings",
+]
+
+[[mutant]]
+id = "F3-stale-marker"
+file = "src/qcal_lab/experiment.py"
+finding = "an unlocked marker is not a live producer (panel round 2)"
+old = '''        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    return False'''
+new = '''        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    return True'''
+tests = [
+    "tests/regression/test_run_identity_and_formats.py::test_n2_a_stale_marker_does_not_keep_unvouched_bytes",
+]
+
+[[mutant]]
+id = "F3-partial-aside"
+file = "src/qcal_lab/predictions.py"
+finding = "a short quarantine copy is set aside and the copy retried (panel round 2)"
+old = '''                target.rename(aside)  # under the key's lock: no other writer
+                continue'''
+new = '''                return False'''
+tests = [
+    "tests/regression/test_run_identity_and_formats.py::test_n2_a_short_quarantine_copy_never_replaces_the_cached_bytes",
+]
+
+[[mutant]]
+id = "F3-partial-retry-once"
+file = "src/qcal_lab/predictions.py"
+finding = "a copy that stays short after one retry keeps the cached bytes"
+old = '''                if attempt or kept == UNREADABLE:'''
+new = '''                if kept == UNREADABLE:'''
+tests = [
+    "tests/regression/test_run_identity_and_formats.py::test_n2_a_quarantine_copy_that_stays_short_keeps_the_cached_bytes",
+]
+
+[[mutant]]
+id = "F3-enolck"
+file = "src/qcal_lab/predictions.py"
+finding = "a cache on a filesystem without locks is refused with the reason (panel round 2)"
+old = '''                if exc.errno != errno.ENOLCK:'''
+new = '''                if True:'''
+tests = [
+    "tests/regression/test_run_identity_and_formats.py::test_n2_a_cache_on_a_filesystem_without_locks_is_refused_clearly",
+]
+
+[[mutant]]
+id = "F3-unpickling"
+file = "src/qcal_lab/models/mmdet.py"
+finding = "a checkpoint that does not unpickle is a detector error (panel round 2)"
+old = '''        pickle.UnpicklingError,
+'''
+new = ''''''
+tests = [
+    "tests/unit/test_lab_models.py::test_an_unreadable_checkpoint_is_a_detector_error",
 ]

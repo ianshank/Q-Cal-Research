@@ -17,8 +17,10 @@ re-running the detector (plan §5, Phase 3).
 from __future__ import annotations
 
 import contextlib
+import errno
 import fcntl
 import hashlib
+import itertools
 import json
 import math
 from collections.abc import Iterator, Mapping, Sequence
@@ -334,7 +336,16 @@ class PredictionCache:
             return
         self.directory.mkdir(parents=True, exist_ok=True)
         with (self.directory / f"{key}{_LOCK_SUFFIX}").open("a") as handle:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            except OSError as exc:
+                if exc.errno != errno.ENOLCK:
+                    raise
+                raise PredictionsError(
+                    f"cannot lock the prediction cache in {self.directory}: its filesystem "
+                    "does not support locks (ENOLCK); predictions.cache_dir must be on a "
+                    "local filesystem of this host"
+                ) from exc
             try:
                 yield
             finally:
@@ -385,21 +396,14 @@ class PredictionCache:
         if hashlib.sha256(data).hexdigest() != sha256:
             return None
         target = self.directory / QUARANTINE_DIR / key / f"{sha256}.jsonl"
-        try:
-            write_bytes_exclusive(target, data)
-        except FileExistsError:
-            try:
-                kept = hashlib.sha256(target.read_bytes()).hexdigest()
-            except OSError:
-                kept = UNREADABLE
-            if kept != sha256:  # a partial earlier copy: never trade the original for it
-                _log.error(
-                    "quarantine copy %s does not hold %s; cached predictions %s kept",
-                    target,
-                    sha256[:12],
-                    path.name,
-                )
-                return None
+        if not self._copy_verified(target, data, sha256):
+            _log.error(
+                "quarantine copy %s does not hold %s; cached predictions %s kept",
+                target,
+                sha256[:12],
+                path.name,
+            )
+            return None
         sidecar = self._sidecar(path)
         with contextlib.suppress(OSError):
             meta = sidecar.read_bytes()
@@ -409,6 +413,37 @@ class PredictionCache:
         path.unlink()
         _log.warning("quarantined cached predictions %s (%s) to %s", path.name, sha256[:12], target)
         return target
+
+    @staticmethod
+    def _copy_verified(target: Path, data: bytes, sha256: str) -> bool:
+        """Whether ``target`` holds ``data`` (named by ``sha256``) after copying it there.
+
+        A copy already there is kept when it hashes to its name. One that does not (an
+        earlier quarantine interrupted mid-write, without hard links) is set aside as
+        ``<sha256>.partial.<n>``, never deleted, and the copy is made again, once.
+        """
+        for attempt in range(2):
+            try:
+                write_bytes_exclusive(target, data)
+            except FileExistsError:
+                try:
+                    kept = hashlib.sha256(target.read_bytes()).hexdigest()
+                except OSError:
+                    kept = UNREADABLE
+                if kept == sha256:
+                    return True
+                if attempt or kept == UNREADABLE:
+                    return False
+                aside = next(
+                    target.with_name(f"{target.stem}.partial.{n}")
+                    for n in itertools.count()
+                    if not target.with_name(f"{target.stem}.partial.{n}").exists()
+                )
+                _log.warning("setting aside a partial quarantine copy as %s", aside.name)
+                target.rename(aside)  # under the key's lock: no other writer
+                continue
+            return True
+        return False  # pragma: no cover - the loop returns on every path
 
     def quarantined(self) -> list[Path]:
         """Every quarantined predictions file, oldest key first."""
