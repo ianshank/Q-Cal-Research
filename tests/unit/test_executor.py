@@ -830,6 +830,39 @@ def test_a_launcher_failure_while_waiting_kills_the_program_and_propagates(
 
 
 @pytest.mark.integration
+@pytest.mark.skipif(not Path("/proc").is_dir(), reason="needs /proc (Linux)")
+def test_a_signal_before_the_escalation_handlers_are_in_place_still_kills_the_program(
+    tmp_path: Path, config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Panel round 3: a second SIGTERM while _escalation installs its handlers propagated
+    out of execute() with the program's group still running."""
+    import contextlib
+
+    program = script(tmp_path, SPAWNS_A_GRANDCHILD)
+    pid_file = tmp_path / "grandchild.pid"
+    executor = make_executor(config.root, [sys.executable, str(program), str(pid_file)])
+    real_sleep = time.sleep
+    fired = [False]
+
+    def interrupt_once_the_grandchild_exists(seconds: float) -> None:
+        if not fired[0] and pid_file.is_file() and pid_file.read_text():
+            fired[0] = True
+            raise KeyboardInterrupt
+        real_sleep(seconds)
+
+    @contextlib.contextmanager
+    def signalled_while_installing(_group: int) -> Any:
+        raise KeyboardInterrupt  # the second signal, before any handler is in place
+        yield  # pragma: no cover - never reached
+
+    monkeypatch.setattr(executor_module.time, "sleep", interrupt_once_the_grandchild_exists)
+    monkeypatch.setattr(executor_module, "_escalation", signalled_while_installing)
+    with pytest.raises(KeyboardInterrupt):
+        executor.execute(make_spec(config.root))
+    assert _wait_until_dead(int(pid_file.read_text()))
+
+
+@pytest.mark.integration
 def test_a_failure_reading_an_interrupted_run_keeps_the_interrupt(
     tmp_path: Path, config: Config, monkeypatch: pytest.MonkeyPatch
 ) -> None:

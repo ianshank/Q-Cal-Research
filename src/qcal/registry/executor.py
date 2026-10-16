@@ -285,7 +285,11 @@ class SubprocessExecutor:
                 _kill_now(proc)
             raise
         if interrupt is not None:
-            return self._after_interrupt(proc, spec, started, interrupt, usage=usage)
+            try:
+                return self._after_interrupt(proc, spec, started, interrupt, usage=usage)
+            except BaseException:  # another signal before every escalation handler was in place
+                _kill_now(proc)
+                raise
         measured = _resources(time.monotonic() - started, usage)
         result.resources = {**result.resources, **measured}  # measured values always win
         if timed_out:
