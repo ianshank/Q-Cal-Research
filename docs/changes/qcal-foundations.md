@@ -303,6 +303,22 @@ Verified against `50efe97`:
 - **N6.** A marker is created before it is locked, so an audit in that instant can report a
   live run as stale. The audit only reports; creating the marker as temp, lock, then link
   would close the window (WP3b).
+- **Panel round 3, not fixed here:**
+  - **Bootstrap signing.** While `signing.mode` is bootstrap, an agent's *unsigned* commit
+    of `docs/reference/declarations.toml` passes the "committed exactly as read" check;
+    `lab-status` says "unverified" until enforce. Switching to enforce closes it.
+  - **Symlink targets.** `signing.protect_symlinks` signs a link, not what it points to: a
+    signed link in a protected category pointing at an agent-owned file lets that file
+    change unsigned. No such link exists; refusing protected links whose targets leave
+    their category is a follow-up.
+  - **Bytecode.** A hand-made `__pycache__/*.pyc` that copies its source's mtime and size is
+    loaded instead of the source, and `code_tree` allows `__pycache__/`. Running with a
+    fresh `pycache_prefix` would close it.
+  - **`image_set`** is free text: a sanity measurement on val2017 would read evaluate-split
+    images. It only stops or continues a run, and `test_cfg` is bound; binding it to a
+    manifest digest is Ian's decision before D8. Requiring the declared `test_cfg` to equal
+    the run's means a zoo value measured with another score threshold cannot be declared
+    truthfully: also Ian's (D2, F10).
 
 ## Ian decisions requested
 1. **By Oct 24:** the identity set in `qcal.toml` (`registry.identity_columns`). Keep the
