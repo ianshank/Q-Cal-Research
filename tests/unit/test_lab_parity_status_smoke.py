@@ -25,7 +25,7 @@ from qcal_lab.parity import (
 from qcal_lab.predictions import write_predictions
 from qcal_lab.smoke import SmokeReport, expected_artifacts, run_smoke, smoke_settings
 from qcal_lab.status import build_status
-from tests.lab_support import det, image, lab_config, predictions_header
+from tests.lab_support import det, ians_loop_absent, image, lab_config, predictions_header
 
 ORACLE = {
     "repository": "fiveai/detection_calibration",
@@ -151,7 +151,9 @@ def test_status_of_an_empty_repository(repo: Path) -> None:
     assert report.to_dict()["ready"] is False
 
 
-def test_metric_cases_through_the_repository_loop(repo: Path) -> None:
+def test_metric_cases_through_the_repository_loop(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The path tests/parity uses for metric cases (it skips until oracle outputs exist)."""
     from qcal_lab.data.fixture import write_fixture
     from qcal_lab.evaluation import HandwrittenMissingError
@@ -178,6 +180,7 @@ def test_metric_cases_through_the_repository_loop(repo: Path) -> None:
         )
     )
     qcal_config = load_config(repo, environ={})
+    ians_loop_absent(monkeypatch)
     with pytest.raises(HandwrittenMissingError):
         check_metric_case_with_repository_loop(case, lab_config(repo), qcal_config)
     fixture_loop = lab_config(repo, '[eval_loop]\nmodule = "qcal_lab.fixture_eval"\n')

@@ -17,7 +17,7 @@ from qcal.registry.records import FAILURE_KINDS
 from qcal_lab import cli
 from qcal_lab.experiment import PlanError
 from tests.conftest import write
-from tests.lab_support import coco_doc, fixture_project
+from tests.lab_support import coco_doc, fixture_project, ians_loop_absent
 
 
 def lab(*args: str) -> tuple[int, str]:
@@ -79,8 +79,11 @@ def test_configuration_errors_exit_2(project: tuple[Path, list[str]]) -> None:
     assert json.loads((root / "r.json").read_text())["failure_kind"] == "config"
 
 
-def test_status(project: tuple[Path, list[str]], repo: Path) -> None:
+def test_status(
+    project: tuple[Path, list[str]], repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     root, _ = project
+    ians_loop_absent(monkeypatch)
     code, text = lab("--root", str(root), "status")
     assert code == cli.EXIT_OK
     assert "TODO oracle parity cases: none yet" in text

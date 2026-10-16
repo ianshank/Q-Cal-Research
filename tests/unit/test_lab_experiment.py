@@ -34,7 +34,7 @@ from qcal_lab.experiment import (
 from qcal_lab.fixture_eval import FixtureEvalLoop
 from qcal_lab.models import KIND_SCORE_DEFINITIONS
 from qcal_lab.predictions import read_predictions
-from tests.lab_support import fixture_project, lab_config, register
+from tests.lab_support import fixture_project, ians_loop_absent, lab_config, register
 
 pytestmark = pytest.mark.rule("C3")
 
@@ -593,9 +593,10 @@ def test_unregistered_seed_or_cell_is_refused(project: tuple[Path, list[str]]) -
 
 
 def test_a_missing_handwritten_loop_fails_before_any_detector_work(
-    project: tuple[Path, list[str]],
+    project: tuple[Path, list[str]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root, cells = project
+    ians_loop_absent(monkeypatch)
     (root / "configs/lab.toml").write_text(
         '[datasets.id]\nannotations = "data/fixture/annotations.json"\nimages_dir = ""\n'
     )

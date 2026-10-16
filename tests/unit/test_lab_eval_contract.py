@@ -21,6 +21,7 @@ from qcal_lab.config import load_lab_config
 from qcal_lab.fixture_eval import build as build_fixture_loop
 from qcal_lab.smoke import smoke_settings
 from tests.conftest import REPO_ROOT
+from tests.lab_support import ians_loop_absent
 
 pytestmark = pytest.mark.rule("C4")
 
@@ -59,7 +60,8 @@ def test_the_fixture_stand_in_passes_the_contract() -> None:
     assert report.version == eval_contract.CONTRACT_VERSION == 1
 
 
-def test_ians_loop_is_not_assessed_until_it_exists() -> None:
+def test_ians_loop_is_not_assessed_until_it_exists(monkeypatch: pytest.MonkeyPatch) -> None:
+    ians_loop_absent(monkeypatch)
     report = _check()
     assert report.verdict == eval_contract.NOT_ASSESSED
     assert report.loop == load_lab_config(REPO_ROOT).text("eval_loop.module")
@@ -204,6 +206,7 @@ def _lab(*args: str) -> tuple[int, str]:
 
 
 def test_the_command_exits_by_verdict(monkeypatch: pytest.MonkeyPatch) -> None:
+    ians_loop_absent(monkeypatch)
     code, text = _lab("check-eval-loop")
     assert (code, "NOT ASSESSED" in text) == (cli.EXIT_OK, True)
     assert _lab("check-eval-loop", "--strict")[0] == cli.EXIT_FAILED
