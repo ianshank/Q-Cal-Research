@@ -1113,8 +1113,10 @@ tests = [
 id = "S6-code-tree-dirty"
 file = "src/qcal/registry/gates.py"
 finding = "a code tree with uncommitted changes is refused (panel round 2)"
-old = '''        if status is None or status:'''
-new = '''        if False:'''
+old = '''    if status:
+        problems.append("has uncommitted changes; registered runs execute committed code")'''
+new = '''    if False:
+        problems.append("has uncommitted changes; registered runs execute committed code")'''
 tests = [
     "tests/regression/test_registry_run_gates.py::test_s6_a_registered_run_refuses_code_git_does_not_describe",
 ]
@@ -1234,4 +1236,56 @@ old = '''        importer(MMCV_EXT)'''
 new = '''        pass'''
 tests = [
     "tests/unit/test_lab_preflight.py::test_a_detector_runtime_is_checked",
+]
+
+[[mutant]]
+id = "S6-code-tree-isolated"
+file = "src/qcal/registry/gates.py"
+finding = "the code tree is read from git isolated from user configuration (panel round 3)"
+old = '''        return gitutil.try_git([*args, "--", path], root, isolated=True)'''
+new = '''        return gitutil.try_git([*args, "--", path], root)'''
+tests = [
+    "tests/regression/test_registry_run_gates.py::test_s6_the_code_tree_ignores_the_users_git_configuration",
+]
+
+[[mutant]]
+id = "S6-code-tree-index-flags"
+file = "src/qcal/registry/gates.py"
+finding = "edits hidden by --skip-worktree or --assume-unchanged are refused (panel round 3)"
+old = '''    if hidden:'''
+new = '''    if False:'''
+tests = [
+    "tests/regression/test_registry_run_gates.py::test_s6_a_registered_run_refuses_code_git_does_not_describe",
+]
+
+[[mutant]]
+id = "S6-code-tree-ignored"
+file = "src/qcal/registry/gates.py"
+finding = "ignored files Python may import are refused (panel round 3)"
+old = '''    if extra:'''
+new = '''    if False:'''
+tests = [
+    "tests/regression/test_registry_run_gates.py::test_s6_a_registered_run_refuses_code_git_does_not_describe",
+]
+
+[[mutant]]
+id = "S6-code-tree-pycache"
+file = "src/qcal/registry/gates.py"
+finding = "a bytecode cache is not a problem"
+old = '''    extra = [f for f in ignored.splitlines() if CODE_CACHE_DIR not in Path(f).parts]'''
+new = '''    extra = ignored.splitlines()'''
+tests = [
+    "tests/regression/test_registry_run_gates.py::test_s6_a_bytecode_cache_is_not_a_problem",
+]
+
+[[mutant]]
+id = "S6-code-tree-under-lock"
+file = "src/qcal/registry/runner.py"
+finding = "code changed after the gates is refused before it runs (panel round 3)"
+old = '''        if changed:
+            raise RunRefusedError(f"cannot run {cell.id}: " + "; ".join(changed))'''
+new = '''        if False:
+            raise RunRefusedError(f"cannot run {cell.id}: " + "; ".join(changed))'''
+tests = [
+    "tests/regression/test_registry_run_gates.py::test_s6_code_changed_after_the_gates_is_refused_before_it_runs",
 ]

@@ -352,8 +352,45 @@ def test_s6_the_code_tree_is_read_from_head(coded: Path) -> None:
             lambda root: write(root, "qcal.toml", '[registry]\ncode_tree_paths = ["src/gone"]\n'),
             "src/gone is not in HEAD",
         ),
+        # Panel round 3: what git status does not show, Python still imports.
+        (
+            lambda root: (
+                run_git(root, "update-index", "--skip-worktree", "src/pkg/model.py")
+                or write(root, "src/pkg/model.py", "WEIGHT = 2\n")
+            ),
+            "has edits the index hides: src/pkg/model.py",
+        ),
+        (
+            lambda root: (
+                run_git(root, "update-index", "--assume-unchanged", "src/pkg/model.py")
+                or write(root, "src/pkg/model.py", "WEIGHT = 2\n")
+            ),
+            "has edits the index hides",
+        ),
+        (
+            lambda root: (
+                write(root, ".gitignore", "*.pyc\nbuild/\n")
+                and write(root, "src/pkg/build/__init__.py", "X = 1\n")
+            ),
+            "holds ignored files Python may import: src/pkg/build/__init__.py",
+        ),
+        (
+            lambda root: (
+                write(root, ".gitignore", "*.pyc\n")
+                and (root / "src/pkg/sourceless.pyc").write_bytes(b"\0" * 16)
+            ),
+            "holds ignored files Python may import: src/pkg/sourceless.pyc",
+        ),
     ],
-    ids=["edited", "untracked", "missing"],
+    ids=[
+        "edited",
+        "untracked",
+        "missing",
+        "skip-worktree",
+        "assume-unchanged",
+        "ignored-package",
+        "sourceless-pyc",
+    ],
 )
 def test_s6_a_registered_run_refuses_code_git_does_not_describe(
     coded: Path, change: Any, message: str
@@ -363,6 +400,30 @@ def test_s6_a_registered_run_refuses_code_git_does_not_describe(
     change(coded)
     config = load_config(coded, environ={})
     assert any(message in p for p in code_tree(config)[1])
+
+
+def test_s6_the_code_tree_ignores_the_users_git_configuration(
+    coded: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A global core.excludesFile must not hide an untracked module (git queried isolated)."""
+    from qcal.registry.gates import code_tree
+
+    excludes = write(tmp_path, "excludes", "helper.py\n")
+    write(tmp_path, "gitconfig", f"[core]\n\texcludesFile = {excludes}\n")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "gitconfig"))
+    write(coded, "src/pkg/helper.py", "X = 1\n")
+    assert any("uncommitted changes" in p for p in code_tree(load_config(coded, environ={}))[1])
+
+
+def test_s6_a_bytecode_cache_is_not_a_problem(coded: Path) -> None:
+    from qcal.registry.gates import code_tree
+
+    write(coded, ".gitignore", "__pycache__/\n")
+    run_git(coded, "add", ".gitignore")
+    run_git(coded, "commit", "-q", "-m", "ignore caches")
+    (coded / "src/pkg/__pycache__").mkdir()
+    (coded / "src/pkg/__pycache__/model.cpython-313.pyc").write_bytes(b"\0" * 16)
+    assert code_tree(load_config(coded, environ={}))[1] == []
 
 
 def test_s6_the_run_gates_include_the_code_tree(coded: Path) -> None:
@@ -406,3 +467,32 @@ def test_s6_the_runner_records_the_code_tree(coded: Path) -> None:
     assert record.provenance["code_tree"] == trees
     assert record.provenance["code_tree_sha256"] == code_tree_digest(trees) != ""
     assert record.flat({})["code_tree_sha256"] == code_tree_digest(trees)  # an index column
+
+
+def test_s6_code_changed_after_the_gates_is_refused_before_it_runs(
+    coded: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The trees are taken again under the pair lock; a change since the gates refuses."""
+    from qcal.registry import runner as runner_module
+    from qcal.registry.experiments import load_experiments
+    from qcal.registry.runner import Runner, RunRefusedError
+    from qcal.registry.store import RegistryStore
+    from tests.conftest import FakeExecutor
+
+    write(coded, "EXPERIMENTS.yaml", experiments_yaml([{"id": "C-a"}], seeds=[0]))
+    run_git(coded, "add", "-A")
+    run_git(coded, "commit", "-q", "-m", "pre-register")
+    config = load_config(coded, environ={})
+    monkeypatch.setattr(runner_module, "run_input_problems", lambda *_, **__: [])  # gates passed
+    write(coded, "src/pkg/model.py", "WEIGHT = 4\n")  # ...then the code changed
+    executor = FakeExecutor()
+    runner = Runner(
+        config,
+        load_experiments(config),
+        RegistryStore(config.path("registry_dir")),
+        executor,
+        collectors=[],
+    )
+    with pytest.raises(RunRefusedError, match="src/pkg has uncommitted changes"):
+        runner.run("C-a", 0)
+    assert executor.specs == []  # nothing ran

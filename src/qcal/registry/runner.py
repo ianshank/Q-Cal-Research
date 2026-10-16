@@ -322,7 +322,9 @@ class Runner:
             python=sys.executable,
         )
         launch = launch_digests(self.config, self.experiments, policy, inputs)
-        trees = code_tree(self.config)[0]
+        trees, changed = code_tree(self.config)  # again under the pair lock, right before it runs
+        if changed:
+            raise RunRefusedError(f"cannot run {cell.id}: " + "; ".join(changed))
         provenance = {
             "git_sha": gitutil.head_sha(root),
             "git_dirty": dirty,
