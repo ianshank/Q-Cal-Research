@@ -273,6 +273,8 @@ def test_run_records_provenance(
         "policy_source": "worktree",
         "policy_sha256": hashlib.sha256(policy.read_bytes()).hexdigest(),
         "experiments_sha256": runner.experiments.sha256,
+        "code_tree": {},  # outside git, and no registry.code_tree_paths
+        "code_tree_sha256": "",
         "executor": "FakeExecutor",
         "launcher": launcher_identity(config.root),
         "environment_variables": {**dict.fromkeys(recorded), "LD_LIBRARY_PATH": "/opt/lib"},

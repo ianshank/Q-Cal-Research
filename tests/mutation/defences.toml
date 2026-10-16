@@ -1108,3 +1108,45 @@ new = '''        return False'''
 tests = [
     "tests/integration/test_ci_signatures.py::test_adding_a_symlink_anywhere_needs_a_signature",
 ]
+
+[[mutant]]
+id = "S6-code-tree-dirty"
+file = "src/qcal/registry/gates.py"
+finding = "a code tree with uncommitted changes is refused (panel round 2)"
+old = '''        if status is None or status:'''
+new = '''        if False:'''
+tests = [
+    "tests/regression/test_registry_run_gates.py::test_s6_a_registered_run_refuses_code_git_does_not_describe",
+]
+
+[[mutant]]
+id = "S6-code-tree-gated"
+file = "src/qcal/registry/gates.py"
+finding = "the run gates include the code tree (panel round 2)"
+old = '''        problems += code_tree(config)[1]
+'''
+new = ''''''
+tests = [
+    "tests/regression/test_registry_run_gates.py::test_s6_the_run_gates_include_the_code_tree",
+]
+
+[[mutant]]
+id = "S6-code-tree-recorded"
+file = "src/qcal/registry/runner.py"
+finding = "the launcher records the code tree digest, not the program (panel round 2)"
+old = '''            CODE_TREE_COLUMN: code_tree_digest(trees),'''
+new = '''            CODE_TREE_COLUMN: "",'''
+tests = [
+    "tests/regression/test_registry_run_gates.py::test_s6_the_runner_records_the_code_tree",
+]
+
+[[mutant]]
+id = "S6-code-tree-indexed"
+file = "src/qcal/registry/records.py"
+finding = "code_tree_sha256 is an index column"
+old = '''            CODE_TREE_COLUMN: self.provenance.get(CODE_TREE_COLUMN),
+'''
+new = ''''''
+tests = [
+    "tests/regression/test_registry_run_gates.py::test_s6_the_runner_records_the_code_tree",
+]

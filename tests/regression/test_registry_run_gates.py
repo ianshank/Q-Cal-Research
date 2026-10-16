@@ -22,7 +22,7 @@ from qcal import cli
 from qcal.config import ConfigError, load_config
 from qcal.registry.gates import INPUTS_READ_KEY
 from qcal_lab.experiment import RunRequest, run_experiment
-from tests.conftest import REPO_ROOT, experiments_yaml, write
+from tests.conftest import REPO_ROOT, experiments_yaml, run_git, write
 from tests.lab_support import fixture_project
 
 pytestmark = pytest.mark.rule("C2", "C7")
@@ -317,3 +317,92 @@ def test_n12_hashed_input_is_membership_in_config_inputs(
     assert hashed_input(config, config.root / path) is hashed
     assert (path in config_inputs(config)) is hashed
     assert hashed_input(config, "/etc/passwd") is False
+
+
+# --- S6c: the launcher takes the code's identity from git, not from the program -------------
+
+
+@pytest.fixture
+def coded(git_repo: Path) -> Path:
+    """A repository whose policy names src/pkg as the code a run executes, committed."""
+    write(git_repo, "src/pkg/model.py", "WEIGHT = 1\n")
+    write(git_repo, "qcal.toml", '[registry]\ncode_tree_paths = ["src/pkg"]\n')
+    run_git(git_repo, "add", "-A")
+    run_git(git_repo, "commit", "-q", "-m", "code")
+    return git_repo
+
+
+def test_s6_the_code_tree_is_read_from_head(coded: Path) -> None:
+    from qcal.registry.gates import code_tree, code_tree_digest
+
+    config = load_config(coded, environ={})
+    trees, problems = code_tree(config)
+    assert problems == []
+    assert trees == {"src/pkg": run_git(coded, "rev-parse", "HEAD:src/pkg")}
+    assert len(code_tree_digest(trees)) == 64
+    assert code_tree_digest({}) == ""  # nothing configured: an empty identity, refused (S6b)
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (lambda root: write(root, "src/pkg/model.py", "WEIGHT = 2\n"), "uncommitted changes"),
+        (lambda root: write(root, "src/pkg/extra.py", "X = 1\n"), "uncommitted changes"),
+        (
+            lambda root: write(root, "qcal.toml", '[registry]\ncode_tree_paths = ["src/gone"]\n'),
+            "src/gone is not in HEAD",
+        ),
+    ],
+    ids=["edited", "untracked", "missing"],
+)
+def test_s6_a_registered_run_refuses_code_git_does_not_describe(
+    coded: Path, change: Any, message: str
+) -> None:
+    from qcal.registry.gates import code_tree
+
+    change(coded)
+    config = load_config(coded, environ={})
+    assert any(message in p for p in code_tree(config)[1])
+
+
+def test_s6_the_run_gates_include_the_code_tree(coded: Path) -> None:
+    from qcal.registry.experiments import load_experiments
+    from qcal.registry.gates import policy_state, run_input_problems
+    from tests.conftest import experiments_yaml
+
+    write(coded, "EXPERIMENTS.yaml", experiments_yaml([{"id": "C-a"}], seeds=[0]))
+    run_git(coded, "add", "-A")
+    run_git(coded, "commit", "-q", "-m", "pre-register")
+    config = load_config(coded, environ={})
+    experiments = load_experiments(config)
+    assert not [
+        p for p in run_input_problems(config, experiments, policy_state(config)) if "src/pkg" in p
+    ]
+    write(coded, "src/pkg/model.py", "WEIGHT = 3\n")
+    problems = run_input_problems(config, experiments, policy_state(config))
+    assert any("src/pkg has uncommitted changes" in p for p in problems)
+
+
+def test_s6_the_runner_records_the_code_tree(coded: Path) -> None:
+    from qcal.registry.experiments import load_experiments
+    from qcal.registry.gates import code_tree, code_tree_digest
+    from qcal.registry.runner import Runner
+    from qcal.registry.store import RegistryStore
+    from tests.conftest import FakeExecutor
+
+    write(coded, "EXPERIMENTS.yaml", experiments_yaml([{"id": "C-a"}], seeds=[0]))
+    run_git(coded, "add", "-A")
+    run_git(coded, "commit", "-q", "-m", "pre-register")
+    config = load_config(coded, environ={})
+    runner = Runner(
+        config,
+        load_experiments(config),
+        RegistryStore(config.path("registry_dir")),
+        FakeExecutor(),
+        collectors=[],
+    )
+    record = runner.run("C-a", 0)
+    trees = code_tree(config)[0]
+    assert record.provenance["code_tree"] == trees
+    assert record.provenance["code_tree_sha256"] == code_tree_digest(trees) != ""
+    assert record.flat({})["code_tree_sha256"] == code_tree_digest(trees)  # an index column

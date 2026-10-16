@@ -146,6 +146,7 @@ def run_input_problems(
             )
     if policy.committed:
         problems += uncommitted_inputs(config, config_inputs(config) if inputs is None else inputs)
+        problems += code_tree(config)[1]
     return problems
 
 
@@ -181,6 +182,37 @@ def code_location_problems(config: Config) -> list[str]:
             "repository's own code (registry.require_code_in_root)"
         )
     ]
+
+
+def code_tree(config: Config) -> tuple[dict[str, str], list[str]]:
+    """The tree id at ``HEAD`` of each ``registry.code_tree_paths`` entry, and why they do not
+    describe the code a run would execute (empty when they do, or outside git)."""
+    paths = config.str_list("registry.code_tree_paths")
+    root = config.root
+    if not paths or gitutil.git_marker(root) is None:
+        return {}, []
+    trees: dict[str, str] = {}
+    problems: list[str] = []
+    for path in paths:
+        oid = gitutil.try_git(["rev-parse", "--verify", "--quiet", f"HEAD:{path}"], root)
+        if not oid:
+            problems.append(f"{path} is not in HEAD (registry.code_tree_paths)")
+            continue
+        trees[path] = oid
+        status = gitutil.try_git(
+            ["status", "--porcelain", "--untracked-files=all", "--", path], root
+        )
+        if status is None or status:
+            problems.append(
+                f"{path} has uncommitted changes; registered runs execute committed code "
+                "(registry.code_tree_paths)"
+            )
+    return trees, problems
+
+
+def code_tree_digest(trees: Mapping[str, str]) -> str:
+    """``code_tree_sha256``: ``""`` when no code tree is configured (an empty identity)."""
+    return digest_of(trees) if trees else ""
 
 
 def config_inputs(config: Config) -> dict[str, str]:

@@ -185,6 +185,12 @@ lock_poll_s = 0.05
 # that writes the record is the repository's own. Off here (tests and throwaway projects
 # import an installed qcal); qcal.toml turns it on.
 require_code_in_root = false
+# Paths (relative to the root) whose committed git trees name the code a run executes. The
+# launcher records each tree id from HEAD (provenance.code_tree) and their digest
+# (code_tree_sha256, an index column), and refuses a registered run while one has
+# uncommitted changes, so the digest describes the code that ran. The program reports its
+# own code too, but a value the launcher takes from git cannot be self-reported.
+code_tree_paths = []
 # Environment variables that change how a program runs on a GPU, recorded verbatim in
 # provenance.environment_variables (null when unset).
 recorded_env_vars = [
@@ -199,7 +205,7 @@ core_columns = [
   "run_id", "cell_id", "seed", "seed_role", "status", "supersedes",
   "started_at", "finished_at", "duration_s", "git_sha", "git_dirty", "config_hash",
   "config_inputs_sha256", "definition_sha256", "policy_sha256", "experiments_sha256",
-  "batch_id", "failure_kind",
+  "code_tree_sha256", "batch_id", "failure_kind",
 ]
 # Index columns every run aggregated into one table value (or claim) must agree on: seeds
 # that differ here are not draws of one experiment. Each is a core column or a prefixed one
