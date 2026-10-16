@@ -35,7 +35,7 @@ file = "src/qcal/__init__.py"
 finding = "f returns one"
 old = "{old}"
 new = "{new}"
-tests = ["tests/test_f.py"]
+tests = ["tests/test_f.py::test_one"]
 """
 
 
@@ -53,7 +53,12 @@ def test_every_listed_defence_still_applies_to_the_repository() -> None:
         ('[[mutant]]\nid = "a"\n', "lacks"),
         (ENTRY.format(id="a", old="x", new="x"), "changes nothing"),
         (ENTRY.format(id="a", old="x", new="y") + ENTRY.format(id="a", old="x", new="z"), "dupl"),
-        (ENTRY.format(id="a", old="x", new="y").replace('["tests/test_f.py"]', "[]"), "list"),
+        (
+            ENTRY.format(id="a", old="x", new="y").replace('["tests/test_f.py::test_one"]', "[]"),
+            "list",
+        ),
+        # A whole file would let a broad test in it (a drift check) take credit for the mutant.
+        (ENTRY.format(id="a", old="x", new="y").replace("::test_one", ""), "test nodes"),
         ("[[mutant", "cannot read"),
     ],
 )
@@ -77,7 +82,10 @@ def test_an_entry_whose_text_moved_is_reported(tmp_path: Path) -> None:
     [
         (0, [], "SURVIVED"),
         (1, ["tests/test_f.py::test_one"], "KILLED"),
-        (1, ["tests/test_f/TestF.py::test_one"], "KILLED"),  # a test inside a class
+        (1, ["tests/test_f.py::test_one[case-1]"], "KILLED"),  # one parametrization
+        (1, ["tests/test_f.py::TestF::test_one"], "KILLED"),  # a test in a named class
+        (1, ["tests/test_f.py::test_drift"], "ERROR"),  # same file, a test not named
+        (1, ["tests/test_f.py::test_one_more"], "ERROR"),  # a prefix is not the node
         (1, ["tests/test_other.py::test_one"], "ERROR"),  # some other test broke
         (1, [], "ERROR"),
         (2, ["tests/test_f.py::test_one"], "ERROR"),  # interrupted or a collection error
@@ -85,10 +93,11 @@ def test_an_entry_whose_text_moved_is_reported(tmp_path: Path) -> None:
         (-1, [], "ERROR"),  # timed out
     ],
 )
-def test_only_a_named_failing_test_counts_as_a_kill(
+def test_only_a_named_failing_node_counts_as_a_kill(
     returncode: int, failed: list[str], verdict: str
 ) -> None:
-    assert mc.classify(returncode, failed, ["tests/test_f.py"]) == verdict
+    named = ["tests/test_f.py::test_one", "tests/test_f.py::TestF"]
+    assert mc.classify(returncode, failed, named) == verdict
 
 
 def test_failing_tests_are_read_from_the_junit_report(tmp_path: Path) -> None:
@@ -100,11 +109,13 @@ def test_failing_tests_are_read_from_the_junit_report(tmp_path: Path) -> None:
         '<testcase classname="tests.test_f.TestF" name="test_err"><error/></testcase>'
         "</testsuite></testsuites>",
     )
-    assert mc.failing_tests(report) == [
+    write(tmp_path, "tests/test_f.py", "")
+    assert mc.failing_tests(report, tmp_path) == [
         "tests/test_f.py::test_bad",
-        "tests/test_f/TestF.py::test_err",
+        "tests/test_f.py::TestF::test_err",  # the class is part of the node id
     ]
-    assert mc.failing_tests(tmp_path / "absent.xml") == []
+    assert mc.failing_tests(tmp_path / "absent.xml", tmp_path) == []
+    assert mc.node_id(tmp_path, "gone.mod", "t") == "gone/mod.py::t"  # no such file
 
 
 def _project(tmp_path: Path, entries: str) -> Path:
@@ -142,6 +153,26 @@ def test_a_defence_whose_tests_fail_unmutated_is_an_error(
     write(root, "src/qcal/__init__.py", "def f() -> int:\n    return 3  # one return 1\n")
     assert mc.main(["--root", str(root), "--only", "a"]) == 1
     assert capsys.readouterr().out.startswith("ERROR")
+
+
+@pytest.mark.integration
+def test_discovery_lists_every_failing_node_of_the_named_files(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _project(tmp_path, ENTRY.format(id="a", old="return 1", new="return 2"))
+    write(
+        root,
+        "tests/test_f.py",
+        "from qcal import f\n\n\ndef test_one():\n    assert f() == 1\n\n\n"
+        "def test_two():\n    assert f() > 0\n\n\ndef test_three():\n    assert f() < 2\n",
+    )
+    assert mc.main(["--root", str(root), "--discover"]) == 0
+    assert capsys.readouterr().out.split() == [
+        "DISCOVERED",
+        "a",
+        "tests/test_f.py::test_one",
+        "tests/test_f.py::test_three",
+    ]
 
 
 def test_listing_and_unknown_ids(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

@@ -3,7 +3,10 @@
 named tests to fail.
 
 Every entry of ``tests/mutation/defences.toml`` names one source edit (``old`` -> ``new``, which
-must match exactly once) and the tests that should catch it. For each entry the script:
+must match exactly once) and the test nodes (``file::test``, a class, or one parametrization)
+that should catch it. A whole file is not accepted: a broad test in the same file, such as a
+drift check over generated output, would then take credit for every mutant. For each entry the
+script:
 
 1. copies the working tree's tracked and new unignored files into a temporary directory
    (uncommitted edits included; the repository itself is never written);
@@ -11,13 +14,14 @@ must match exactly once) and the tests that should catch it. For each entry the 
 3. applies the edit and runs them again with that copy's ``src`` first on ``sys.path``
    (checked: ``qcal.__file__`` must lie inside the copy).
 
-A mutant counts as KILLED only when pytest exits 1 and the JUnit report shows a failing test
-from the named files. Exit 0 is SURVIVED. Anything else (a collection error, an import that
+A mutant counts as KILLED only when pytest exits 1 and the JUnit report shows one of the named
+nodes failing. Exit 0 is SURVIVED. Anything else (a collection error, an import that
 breaks, a timeout) is ERROR, never a kill.
 
     python3 scripts/mutation_check.py               # every entry
     python3 scripts/mutation_check.py --only S2-ctl  # one or more ids
     python3 scripts/mutation_check.py --list
+    python3 scripts/mutation_check.py --discover S2-ctl  # nodes of the named files that fail
     python3 scripts/mutation_check.py --json
 
 Report-only: it is not part of ``make check``. Exit status 1 when any entry is not KILLED.
@@ -44,10 +48,12 @@ DEFENCES: Final = Path("tests/mutation/defences.toml")
 KILLED: Final = "KILLED"
 SURVIVED: Final = "SURVIVED"
 ERROR: Final = "ERROR"
+DISCOVERED: Final = "DISCOVERED"
 #: pytest's exit code for "tests ran and some failed"; every other non-zero code is an error.
 TESTS_FAILED: Final = 1
 TIMEOUT_S: Final = 900
 REQUIRED: Final = ("id", "file", "old", "new", "tests", "finding")
+NODE: Final = "::"
 
 
 class DefenceError(ValueError):
@@ -86,7 +92,12 @@ def load(path: Path) -> list[Mutant]:
             raise DefenceError(f"{path}: mutant {i} lacks {missing}")
         tests = entry["tests"]
         if not isinstance(tests, list) or not tests or not all(isinstance(t, str) for t in tests):
-            raise DefenceError(f"{path}: mutant {entry['id']!r}: 'tests' must list test paths")
+            raise DefenceError(f"{path}: mutant {entry['id']!r}: 'tests' must list test nodes")
+        files = [t for t in tests if NODE not in t]
+        if files:
+            raise DefenceError(
+                f"{path}: mutant {entry['id']!r}: name test nodes (file::test), not {files}"
+            )
         if entry["old"] == entry["new"]:
             raise DefenceError(f"{path}: mutant {entry['id']!r} changes nothing")
         mutants.append(
@@ -116,11 +127,15 @@ def applicability_problems(root: Path, mutants: Sequence[Mutant]) -> list[str]:
             found = "file missing" if count < 0 else f"found {count} times"
             problems.append(f"{m.id}: 'old' must occur exactly once in {m.file} ({found})")
         problems.extend(
-            f"{m.id}: test file {test} does not exist"
+            f"{m.id}: test file {test_file(test)} does not exist"
             for test in m.tests
-            if not (root / test.split("::", 1)[0]).is_file()
+            if not (root / test_file(test)).is_file()
         )
     return problems
+
+
+def test_file(node: str) -> str:
+    return node.split(NODE, 1)[0]
 
 
 def tracked_files(root: Path) -> list[str]:
@@ -173,36 +188,46 @@ def imports_from(copy: Path, python: str) -> bool:
     return all(Path(line).resolve().is_relative_to(inside) for line in result.stdout.split())
 
 
-def failing_tests(junit: Path) -> list[str]:
-    """``file::name`` of every failed or errored test case in a JUnit report."""
+def node_id(root: Path, classname: str, name: str) -> str:
+    """The pytest node id of a JUnit test case: the longest classname prefix that is a file."""
+    parts = classname.split(".")
+    for i in range(len(parts), 0, -1):
+        module = "/".join(parts[:i]) + ".py"
+        if (root / module).is_file():
+            return NODE.join([module, *parts[i:], name])
+    return NODE.join(["/".join(parts) + ".py", name])
+
+
+def failing_tests(junit: Path, root: Path) -> list[str]:
+    """The node id of every failed or errored test case in a JUnit report."""
     try:
         tree = ET.parse(junit)  # noqa: S314 - pytest's own report, written in our temp dir
     except (OSError, ET.ParseError):
         return []
-    failed: list[str] = []
-    for case in tree.iter("testcase"):
-        if case.find("failure") is not None or case.find("error") is not None:
-            module = case.get("classname", "").replace(".", "/")
-            failed.append(f"{module}.py::{case.get('name', '')}")
-    return failed
+    return [
+        node_id(root, case.get("classname", ""), case.get("name", ""))
+        for case in tree.iter("testcase")
+        if case.find("failure") is not None or case.find("error") is not None
+    ]
+
+
+def named(failed: str, node: str) -> bool:
+    """``failed`` is ``node``, one of its parametrizations, or a test in the class ``node``."""
+    return failed == node or failed.startswith((node + "[", node + NODE))
 
 
 def classify(returncode: int, failed: Sequence[str], tests: Sequence[str]) -> str:
     if returncode == 0:
         return SURVIVED
-    files = {t.split("::", 1)[0] for t in tests}
-    named = any(f.split("::", 1)[0] in files or _within(f, files) for f in failed)
-    return KILLED if returncode == TESTS_FAILED and named else ERROR
+    hit = any(named(f, t) for f in failed for t in tests)
+    return KILLED if returncode == TESTS_FAILED and hit else ERROR
 
 
-def _within(failed: str, files: set[str]) -> bool:
-    """A failing test in a class (``a/b.py::C::t`` reported as ``a/b/C.py::t``)."""
-    module = failed.split("::", 1)[0].removesuffix(".py")
-    return any(module.startswith(f.removesuffix(".py") + "/") for f in files)
-
-
-def run_tests(copy: Path, python: str, tests: Sequence[str], junit: Path) -> tuple[int, str]:
-    cmd = [python, "-m", "pytest", "-q", "-p", "no:cacheprovider", "-x", f"--junitxml={junit}"]
+def run_tests(
+    copy: Path, python: str, tests: Sequence[str], junit: Path, *, first_failure: bool = True
+) -> tuple[int, str]:
+    cmd = [python, "-m", "pytest", "-q", "-p", "no:cacheprovider", f"--junitxml={junit}"]
+    cmd += ["-x"] if first_failure else []
     try:
         result = subprocess.run(
             [*cmd, *tests],
@@ -218,13 +243,18 @@ def run_tests(copy: Path, python: str, tests: Sequence[str], junit: Path) -> tup
     return result.returncode, (result.stdout + result.stderr)[-1500:]
 
 
-def check(root: Path, mutant: Mutant, python: str, files: Sequence[str]) -> Outcome:
+def check(
+    root: Path, mutant: Mutant, python: str, files: Sequence[str], *, discover: bool = False
+) -> Outcome:
+    """Break the defence in a copy and run its named nodes; with ``discover``, run every test
+    in the named files instead and report which nodes fail, for choosing the nodes to name."""
+    tests = sorted({test_file(t) for t in mutant.tests}) if discover else list(mutant.tests)
     with tempfile.TemporaryDirectory(prefix=f"mutant-{mutant.id}-") as tmp:
         copy = Path(tmp) / "repo"
         copy_tree(root, files, copy)
         if not imports_from(copy, python):
             return Outcome(mutant.id, ERROR, "qcal does not import from the copy")
-        code, out = run_tests(copy, python, mutant.tests, Path(tmp) / "baseline.xml")
+        code, out = run_tests(copy, python, tests, Path(tmp) / "baseline.xml")
         if code != 0:
             return Outcome(mutant.id, ERROR, f"the named tests fail unmutated:\n{out}")
         target = copy / mutant.file
@@ -233,8 +263,10 @@ def check(root: Path, mutant: Mutant, python: str, files: Sequence[str]) -> Outc
             return Outcome(mutant.id, ERROR, f"'old' does not occur exactly once in {mutant.file}")
         target.write_text(text.replace(mutant.old, mutant.new, 1), "utf-8")
         junit = Path(tmp) / "mutant.xml"
-        code, out = run_tests(copy, python, mutant.tests, junit)
-        failed = failing_tests(junit)
+        code, out = run_tests(copy, python, tests, junit, first_failure=not discover)
+        failed = failing_tests(junit, copy)
+        if discover:
+            return Outcome(mutant.id, DISCOVERED, "\n".join(failed))
         verdict = classify(code, failed, mutant.tests)
         detail = ", ".join(failed[:3]) if verdict == KILLED else f"pytest exit {code}\n{out}"
         return Outcome(mutant.id, verdict, detail)
@@ -246,6 +278,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--defences", type=Path, default=None)
     parser.add_argument("--only", nargs="+", default=None, metavar="ID")
     parser.add_argument("--list", action="store_true", help="list the entries and exit")
+    parser.add_argument(
+        "--discover",
+        action="store_true",
+        help="run every test in the named files under each mutant and print the failing nodes",
+    )
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--python", default=sys.executable)
     args = parser.parse_args(argv)
@@ -270,14 +307,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         sys.stderr.write("\n".join(problems) + "\n")
         return 2
     files = tracked_files(root)
-    outcomes = [check(root, m, args.python, files) for m in mutants]
+    outcomes = [check(root, m, args.python, files, discover=args.discover) for m in mutants]
     if args.json:
         sys.stdout.write(json.dumps([asdict(o) for o in outcomes], indent=2) + "\n")
+    elif args.discover:
+        for o in outcomes:
+            sys.stdout.write(f"{o.verdict:<10} {o.id}\n")
+            sys.stdout.writelines(f"    {line}\n" for line in o.detail.splitlines())
     else:
         for o in outcomes:
             first = o.detail.splitlines()[0] if o.detail else ""
             sys.stdout.write(f"{o.verdict:<9} {o.id:<14} {first}\n")
-    return 0 if all(o.verdict == KILLED for o in outcomes) else 1
+    good = DISCOVERED if args.discover else KILLED
+    return 0 if all(o.verdict == good for o in outcomes) else 1
 
 
 if __name__ == "__main__":
