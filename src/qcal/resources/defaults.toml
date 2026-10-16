@@ -25,6 +25,10 @@ table_specs_dir = "configs/tables"
 manifests_dir = "data/manifests"
 dataset_cards_dir = "docs/data"
 source_dir = "src"                    # where a registered run's own qcal must be imported from
+# Ian's declarations (qcal_lab.declarations): values only he sets, such as a detector sanity
+# check's expectation. Signed configuration names the file, so an agent cannot repoint it;
+# "" declares nothing.
+declarations = ""
 
 [logging]
 level = "INFO"
@@ -122,6 +126,9 @@ require_committer_match = true
 # Verify with this program regardless of the machine's git configuration.
 ssh_program = "ssh-keygen"
 immutable_dirs = ["runs/registry"]
+# A commit that adds or changes a symbolic link anywhere needs a signature: a link can make a
+# protected path read an agent-writable file without the protected path changing.
+protect_symlinks = true
 
 [review]
 # The cross-review merge rule (`qcal ci review-check`, run by integrity.yml).
@@ -178,6 +185,12 @@ lock_poll_s = 0.05
 # that writes the record is the repository's own. Off here (tests and throwaway projects
 # import an installed qcal); qcal.toml turns it on.
 require_code_in_root = false
+# Paths (relative to the root) whose committed git trees name the code a run executes. The
+# launcher records each tree id from HEAD (provenance.code_tree) and their digest
+# (code_tree_sha256, an index column), and refuses a registered run while one has
+# uncommitted changes, so the digest describes the code that ran. The program reports its
+# own code too, but a value the launcher takes from git cannot be self-reported.
+code_tree_paths = []
 # Environment variables that change how a program runs on a GPU, recorded verbatim in
 # provenance.environment_variables (null when unset).
 recorded_env_vars = [
@@ -192,12 +205,15 @@ core_columns = [
   "run_id", "cell_id", "seed", "seed_role", "status", "supersedes",
   "started_at", "finished_at", "duration_s", "git_sha", "git_dirty", "config_hash",
   "config_inputs_sha256", "definition_sha256", "policy_sha256", "experiments_sha256",
-  "batch_id", "failure_kind",
+  "code_tree_sha256", "batch_id", "failure_kind",
 ]
 # Index columns every run aggregated into one table value (or claim) must agree on: seeds
 # that differ here are not draws of one experiment. Each is a core column or a prefixed one
 # (env.<key>). The default keeps the configuration files; qcal.toml sets the repository's set.
 identity_columns = ["config_inputs_sha256"]
+# Identity columns a run may leave empty. Any other identity column that is empty in a row
+# refuses the aggregate: "" equal to "" would show nothing about two runs.
+identity_nullable = []
 
 [registry.column_prefixes]
 factors = "factor."
@@ -335,6 +351,9 @@ max_turns_limit = 100                 # an agent's maxTurns must be an integer f
 network_agent_deny_read = ["ian_only"]
 read_tools = ["Read", "Grep", "Glob"]
 hook_wrapper = "run_hook.sh"          # settings commands through it must name a real qcal hook
+# ...and start with exactly this text and then the wrapper, as written in the settings: no
+# command or NAME= before it, no other copy, no escaped or unquoted project directory.
+hook_wrapper_prefix = '"$CLAUDE_PROJECT_DIR"/.claude/hooks/'
 required_pretooluse_hooks = []        # qcal.toml lists the guards this repository must wire
 skill_required_keys = ["description"]
 builtin_agents = ["general-purpose", "Explore", "Plan", "statusline-setup", "claude-code-guide"]

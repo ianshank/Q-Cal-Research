@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from qcal.config import Config, ConfigError
 from qcal.integrity.leakage import check_leakage
@@ -20,6 +20,7 @@ from qcal_lab.evaluation import HandwrittenMissingError, load_eval_loop
 from qcal_lab.models import detector_problems
 from qcal_lab.parity import KINDS, ParityError, load_cases
 from qcal_lab.predictions import PredictionCache
+from qcal_lab.preflight import add_preflight
 
 
 @dataclass
@@ -46,6 +47,10 @@ class StatusReport:
             f"  {'ok ' if ok else 'TODO'} {name}: {detail}" for name, ok, detail in self.items
         ]
         return "\n".join(lines)
+
+
+#: The signing mode in which signatures are reported, not required (qcal.toml).
+BOOTSTRAP_MODE: Final = "bootstrap"
 
 
 def _setting_file(lab: LabConfig, dotted: str) -> tuple[bool, str]:
@@ -79,7 +84,7 @@ def _detectors(report: StatusReport, lab: LabConfig, qcal_config: Config) -> Non
         except ConfigError as exc:
             problems.append(str(exc))
         report.add(f"detector {name}", ok=not problems, detail="; ".join(problems) or "configured")
-        _sanity(report, name, qcal_config)
+        _sanity(report, lab, name, qcal_config)
 
 
 def _contract(report: StatusReport, lab: LabConfig, qcal_config: Config) -> None:
@@ -92,21 +97,26 @@ def _contract(report: StatusReport, lab: LabConfig, qcal_config: Config) -> None
     report.add("evaluation loop contract", ok=contract.passed, detail=detail)
 
 
-def _sanity(report: StatusReport, name: str, qcal_config: Config) -> None:
+def _sanity(report: StatusReport, lab: LabConfig, name: str, qcal_config: Config) -> None:
     """Ian's sanity-check declaration (D2) must precede a registered run, so the value cannot
-    be chosen after the fact. The item says "declared", not "passed": until D8 enables the
-    measurement the check itself stays NOT ASSESSED, and the detail says so."""
+    be chosen after the fact; a run refuses without it. The item says "declared", not
+    "passed": until D8 enables the measurement the check itself stays NOT ASSESSED, and the
+    detail says so. A declaration about another checkpoint or other settings is not one."""
     from qcal_lab.declarations import DeclarationsError, detector_declarations
-    from qcal_lab.sanity import SanityError, check_detector
+    from qcal_lab.sanity import SanityError, check_detector, configured
 
     item = f"detector sanity check {name} declared"
     try:
-        sanity = check_detector(name, detector_declarations(qcal_config, name))
-    except (DeclarationsError, SanityError) as exc:
+        declared = detector_declarations(qcal_config, name)
+        sanity = check_detector(name, declared, configured(lab, name))
+    except (ConfigError, DeclarationsError, SanityError) as exc:  # reported, never raised
         report.add(item, ok=False, detail=str(exc))
         return
     ok = sanity.declared and sanity.verdict != FAIL
-    report.add(item, ok=ok, detail=sanity.render_text())
+    detail = sanity.render_text()
+    if declared and qcal_config.str_value("signing.mode") == BOOTSTRAP_MODE:
+        detail += " (unverified: signing.mode is bootstrap, so its signer is not checked)"
+    report.add(item, ok=ok, detail=detail)
 
 
 def _quarantine(report: StatusReport, lab: LabConfig) -> None:
@@ -158,6 +168,7 @@ def build_status(qcal_config: Config, lab: LabConfig) -> StatusReport:
     except (ConfigError, ImportError) as exc:
         report.add("evaluation loop (Ian)", ok=False, detail=f"cannot load: {exc}")
     _detectors(report, lab, qcal_config)
+    add_preflight(report, qcal_config, lab)
     _quarantine(report, lab)
     try:
         cases = load_cases(lab.config.root / lab.text("parity.fixtures_dir"))

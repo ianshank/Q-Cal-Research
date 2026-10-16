@@ -14,6 +14,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -21,7 +22,7 @@ from qcal import cli
 from qcal.config import ConfigError, load_config
 from qcal.registry.gates import INPUTS_READ_KEY
 from qcal_lab.experiment import RunRequest, run_experiment
-from tests.conftest import REPO_ROOT, experiments_yaml, write
+from tests.conftest import REPO_ROOT, experiments_yaml, run_git, write
 from tests.lab_support import fixture_project
 
 pytestmark = pytest.mark.rule("C2", "C7")
@@ -175,7 +176,40 @@ def test_n4_a_stale_index_without_an_identity_column_is_refused() -> None:
     assert "no run in R1, R2 recorded env.raw_prediction_sha256" in str(typo)
     assert identity_problem(rows[:1], ["env.raw_prediction_sha256"], core=CORE) is None
     half = [{"run_id": "R1", "env.x": "a"}, {"run_id": "R2"}]  # one run did not report it
-    assert "different env.x values" in str(identity_problem(half, ["env.x"], core=CORE))
+    assert "runs R2 recorded no env.x" in str(identity_problem(half, ["env.x"], core=CORE))
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        [{"run_id": "R1", "env.x": ""}, {"run_id": "R2", "env.x": ""}],  # a CSV index: "" == ""
+        [{"run_id": "R1", "env.x": "a"}, {"run_id": "R2", "env.x": ""}],
+        [{"run_id": "R1", "env.x": None}, {"run_id": "R2", "env.x": None}],  # a short CSV row
+    ],
+)
+def test_s6_an_empty_identity_value_matches_nothing(rows: list[dict[str, Any]]) -> None:
+    """Panel round 2: index rows hold "" for a value a run did not record, so two runs that
+    both lack it compared equal, and the identity check passed on no evidence."""
+    from qcal.integrity.aggregates import identity_problem
+
+    problem = identity_problem(rows, ["env.x"], core=CORE)
+    assert "recorded no env.x" in str(problem)
+    assert identity_problem(rows[:1], ["env.x"], core=CORE) is None  # one run: nothing to compare
+    both_empty = rows[0].get("env.x") in ("", None) and rows[1].get("env.x") in ("", None)
+    allowed = identity_problem(rows, ["env.x"], core=CORE, nullable=["env.x"])
+    assert (allowed is None) is both_empty  # nullable: empty is a value, compared as such
+
+
+def test_s6_identity_nullable_must_name_identity_columns(make_config) -> None:
+    from qcal.config import config_key_problems
+    from qcal.integrity.aggregates import identity_nullable
+
+    config = make_config('[registry]\nidentity_nullable = ["env.handwriten_sha256"]\n')
+    with pytest.raises(ConfigError, match=r"env\.handwriten_sha256"):
+        identity_nullable(config)
+    problems = config_key_problems({"registry": {"identity_nullable": ["env.typo"]}})
+    assert any("env.typo" in p and "identity_nullable" in p for p in problems)
+    assert identity_nullable(make_config("")) == ()
 
 
 def test_n4_identity_columns_must_exist_in_an_index(make_config) -> None:
@@ -283,3 +317,182 @@ def test_n12_hashed_input_is_membership_in_config_inputs(
     assert hashed_input(config, config.root / path) is hashed
     assert (path in config_inputs(config)) is hashed
     assert hashed_input(config, "/etc/passwd") is False
+
+
+# --- S6c: the launcher takes the code's identity from git, not from the program -------------
+
+
+@pytest.fixture
+def coded(git_repo: Path) -> Path:
+    """A repository whose policy names src/pkg as the code a run executes, committed."""
+    write(git_repo, "src/pkg/model.py", "WEIGHT = 1\n")
+    write(git_repo, "qcal.toml", '[registry]\ncode_tree_paths = ["src/pkg"]\n')
+    run_git(git_repo, "add", "-A")
+    run_git(git_repo, "commit", "-q", "-m", "code")
+    return git_repo
+
+
+def test_s6_the_code_tree_is_read_from_head(coded: Path) -> None:
+    from qcal.registry.gates import code_tree, code_tree_digest
+
+    config = load_config(coded, environ={})
+    trees, problems = code_tree(config)
+    assert problems == []
+    assert trees == {"src/pkg": run_git(coded, "rev-parse", "HEAD:src/pkg")}
+    assert len(code_tree_digest(trees)) == 64
+    assert code_tree_digest({}) == ""  # nothing configured: an empty identity, refused (S6b)
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (lambda root: write(root, "src/pkg/model.py", "WEIGHT = 2\n"), "uncommitted changes"),
+        (lambda root: write(root, "src/pkg/extra.py", "X = 1\n"), "uncommitted changes"),
+        (
+            lambda root: write(root, "qcal.toml", '[registry]\ncode_tree_paths = ["src/gone"]\n'),
+            "src/gone is not in HEAD",
+        ),
+        # Panel round 3: what git status does not show, Python still imports.
+        (
+            lambda root: (
+                run_git(root, "update-index", "--skip-worktree", "src/pkg/model.py")
+                or write(root, "src/pkg/model.py", "WEIGHT = 2\n")
+            ),
+            "has edits the index hides: src/pkg/model.py",
+        ),
+        (
+            lambda root: (
+                run_git(root, "update-index", "--assume-unchanged", "src/pkg/model.py")
+                or write(root, "src/pkg/model.py", "WEIGHT = 2\n")
+            ),
+            "has edits the index hides",
+        ),
+        (
+            lambda root: (
+                write(root, ".gitignore", "*.pyc\nbuild/\n")
+                and write(root, "src/pkg/build/__init__.py", "X = 1\n")
+            ),
+            "holds ignored files Python may import: src/pkg/build/__init__.py",
+        ),
+        (
+            lambda root: (
+                write(root, ".gitignore", "*.pyc\n")
+                and (root / "src/pkg/sourceless.pyc").write_bytes(b"\0" * 16)
+            ),
+            "holds ignored files Python may import: src/pkg/sourceless.pyc",
+        ),
+    ],
+    ids=[
+        "edited",
+        "untracked",
+        "missing",
+        "skip-worktree",
+        "assume-unchanged",
+        "ignored-package",
+        "sourceless-pyc",
+    ],
+)
+def test_s6_a_registered_run_refuses_code_git_does_not_describe(
+    coded: Path, change: Any, message: str
+) -> None:
+    from qcal.registry.gates import code_tree
+
+    change(coded)
+    config = load_config(coded, environ={})
+    assert any(message in p for p in code_tree(config)[1])
+
+
+def test_s6_the_code_tree_ignores_the_users_git_configuration(
+    coded: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A global core.excludesFile must not hide an untracked module (git queried isolated)."""
+    from qcal.registry.gates import code_tree
+
+    excludes = write(tmp_path, "excludes", "helper.py\n")
+    write(tmp_path, "gitconfig", f"[core]\n\texcludesFile = {excludes}\n")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "gitconfig"))
+    write(coded, "src/pkg/helper.py", "X = 1\n")
+    assert any("uncommitted changes" in p for p in code_tree(load_config(coded, environ={}))[1])
+
+
+def test_s6_a_bytecode_cache_is_not_a_problem(coded: Path) -> None:
+    from qcal.registry.gates import code_tree
+
+    write(coded, ".gitignore", "__pycache__/\n")
+    run_git(coded, "add", ".gitignore")
+    run_git(coded, "commit", "-q", "-m", "ignore caches")
+    (coded / "src/pkg/__pycache__").mkdir()
+    (coded / "src/pkg/__pycache__/model.cpython-313.pyc").write_bytes(b"\0" * 16)
+    assert code_tree(load_config(coded, environ={}))[1] == []
+
+
+def test_s6_the_run_gates_include_the_code_tree(coded: Path) -> None:
+    from qcal.registry.experiments import load_experiments
+    from qcal.registry.gates import policy_state, run_input_problems
+    from tests.conftest import experiments_yaml
+
+    write(coded, "EXPERIMENTS.yaml", experiments_yaml([{"id": "C-a"}], seeds=[0]))
+    run_git(coded, "add", "-A")
+    run_git(coded, "commit", "-q", "-m", "pre-register")
+    config = load_config(coded, environ={})
+    experiments = load_experiments(config)
+    assert not [
+        p for p in run_input_problems(config, experiments, policy_state(config)) if "src/pkg" in p
+    ]
+    write(coded, "src/pkg/model.py", "WEIGHT = 3\n")
+    problems = run_input_problems(config, experiments, policy_state(config))
+    assert any("src/pkg has uncommitted changes" in p for p in problems)
+
+
+def test_s6_the_runner_records_the_code_tree(coded: Path) -> None:
+    from qcal.registry.experiments import load_experiments
+    from qcal.registry.gates import code_tree, code_tree_digest
+    from qcal.registry.runner import Runner
+    from qcal.registry.store import RegistryStore
+    from tests.conftest import FakeExecutor
+
+    write(coded, "EXPERIMENTS.yaml", experiments_yaml([{"id": "C-a"}], seeds=[0]))
+    run_git(coded, "add", "-A")
+    run_git(coded, "commit", "-q", "-m", "pre-register")
+    config = load_config(coded, environ={})
+    runner = Runner(
+        config,
+        load_experiments(config),
+        RegistryStore(config.path("registry_dir")),
+        FakeExecutor(),
+        collectors=[],
+    )
+    record = runner.run("C-a", 0)
+    trees = code_tree(config)[0]
+    assert record.provenance["code_tree"] == trees
+    assert record.provenance["code_tree_sha256"] == code_tree_digest(trees) != ""
+    assert record.flat({})["code_tree_sha256"] == code_tree_digest(trees)  # an index column
+
+
+def test_s6_code_changed_after_the_gates_is_refused_before_it_runs(
+    coded: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The trees are taken again under the pair lock; a change since the gates refuses."""
+    from qcal.registry import runner as runner_module
+    from qcal.registry.experiments import load_experiments
+    from qcal.registry.runner import Runner, RunRefusedError
+    from qcal.registry.store import RegistryStore
+    from tests.conftest import FakeExecutor
+
+    write(coded, "EXPERIMENTS.yaml", experiments_yaml([{"id": "C-a"}], seeds=[0]))
+    run_git(coded, "add", "-A")
+    run_git(coded, "commit", "-q", "-m", "pre-register")
+    config = load_config(coded, environ={})
+    monkeypatch.setattr(runner_module, "run_input_problems", lambda *_, **__: [])  # gates passed
+    write(coded, "src/pkg/model.py", "WEIGHT = 4\n")  # ...then the code changed
+    executor = FakeExecutor()
+    runner = Runner(
+        config,
+        load_experiments(config),
+        RegistryStore(config.path("registry_dir")),
+        executor,
+        collectors=[],
+    )
+    with pytest.raises(RunRefusedError, match="src/pkg has uncommitted changes"):
+        runner.run("C-a", 0)
+    assert executor.specs == []  # nothing ran

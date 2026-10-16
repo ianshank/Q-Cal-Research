@@ -46,6 +46,7 @@ CORE = [
     "definition_sha256",
     "policy_sha256",
     "experiments_sha256",
+    "code_tree_sha256",
     "batch_id",
     "failure_kind",
 ]
@@ -263,6 +264,7 @@ def test_render_csv_uses_configured_core_columns_and_prefixes(
         # flat fields that are not core columns still appear, after the groups, by name
         "batch_id",
         "cell_id",
+        "code_tree_sha256",
         "config_hash",
         "config_inputs_sha256",
         "definition_sha256",

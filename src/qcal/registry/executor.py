@@ -280,8 +280,16 @@ class SubprocessExecutor:
                 raise  # nothing started: nothing to end or read
             returncode, timed_out, interrupt = -1, False, exc
             usage = None
+        except BaseException:  # a launcher failure: the program must not outlive it
+            if proc is not None:
+                _kill_now(proc)
+            raise
         if interrupt is not None:
-            return self._after_interrupt(proc, spec, started, interrupt, usage=usage)
+            try:
+                return self._after_interrupt(proc, spec, started, interrupt, usage=usage)
+            except BaseException:  # another signal before every escalation handler was in place
+                _kill_now(proc)
+                raise
         measured = _resources(time.monotonic() - started, usage)
         result.resources = {**result.resources, **measured}  # measured values always win
         if timed_out:
@@ -311,7 +319,7 @@ class SubprocessExecutor:
                     )
                     return (*self._terminate(proc), True, None)
                 time.sleep(self.poll_interval_s)
-        except BaseException as exc:  # noqa: BLE001 - returned, recorded, then re-raised
+        except KeyboardInterrupt as exc:  # Ctrl-C or LauncherSignal: returned, re-raised later
             return -1, None, False, exc
 
     def _after_interrupt(
@@ -331,19 +339,26 @@ class SubprocessExecutor:
         The interrupt may also come after the program exited (while its stragglers are ended
         or its result is read): the leader is then already reaped, and ``usage`` is its own.
         """
-        _log.error(
-            "launcher interrupted (%s); terminating the program's process group",
-            type(interrupt).__name__,
-        )
-        with _escalation(proc.pid) as hurry:
+        with _escalation(proc.pid) as hurry:  # first: a signal while logging must not escape
+            _log.error(
+                "launcher interrupted (%s); terminating the program's process group",
+                type(interrupt).__name__,
+            )
             try:
                 returncode, reaped_usage = self._terminate(proc)
             except BaseException:  # noqa: BLE001 - interrupted again: already killed and reaped
                 returncode = proc.returncode if proc.returncode is not None else -signal.SIGKILL
                 reaped_usage = None
             usage = reaped_usage if reaped_usage is not None else usage
-            self._end_stragglers(proc.pid, hurry=hurry.is_set())
-            result = read_result(spec.result_path, self.root, returncode=-1)
+            try:
+                self._end_stragglers(proc.pid, hurry=hurry.is_set())
+                result = read_result(spec.result_path, self.root, returncode=-1)
+            except Exception as exc:  # noqa: BLE001 - the interrupt, not this, is what happened
+                _kill_now(proc)
+                _log.error("after the interrupt, reading the run failed: %s", exc)
+                result = ExecutionResult(
+                    -1, error=f"reading the interrupted run failed: {exc}", failure_kind=""
+                )
         result.resources = {**result.resources, **_resources(time.monotonic() - started, usage)}
         detail = f": {result.error}" if result.error else ""
         result.returncode, result.metrics = -1, {}
@@ -450,8 +465,19 @@ def _reap(proc: subprocess.Popen[bytes], *, block: bool) -> tuple[int, Any] | No
 
 
 def _signal_group(group: int, signum: int) -> None:
-    with contextlib.suppress(ProcessLookupError):  # the whole group has already exited
+    try:
         os.killpg(group, signum)
+    except ProcessLookupError:  # the whole group has already exited
+        pass
+    except PermissionError:  # a member we may not signal (setuid); the rest got it
+        _log.warning("process group %d: some members cannot be signalled (EPERM)", group)
+
+
+def _kill_now(proc: subprocess.Popen[bytes]) -> None:
+    """SIGKILL the program's whole group and reap its leader: nothing may outlive the launcher."""
+    _signal_group(proc.pid, signal.SIGKILL)
+    with contextlib.suppress(BaseException):  # already reaped, or interrupted again: killed
+        _reap(proc, block=True)
 
 
 def _group_alive(group: int) -> bool:

@@ -25,6 +25,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import pickle
 from collections.abc import Callable, Mapping, Sequence
 from importlib import import_module
 from pathlib import Path
@@ -289,7 +290,16 @@ def _build(context: DetectorContext) -> MMDetDetector:
     loader = _import(CHECKPOINT_MODULE, "the checkpoint's class names cannot be read")
     try:
         names = checkpoint_classes(loader, checkpoint)
-    except (OSError, RuntimeError, ValueError, KeyError, TypeError, AttributeError) as exc:
+    except (  # a truncated or foreign file: torch.load raises any of these
+        OSError,
+        EOFError,
+        pickle.UnpicklingError,
+        RuntimeError,
+        ValueError,
+        KeyError,
+        TypeError,
+        AttributeError,
+    ) as exc:
         raise DetectorError(f"cannot read checkpoint {checkpoint}: {exc}") from exc
     label_map = checkpoint_label_map(
         context.name,

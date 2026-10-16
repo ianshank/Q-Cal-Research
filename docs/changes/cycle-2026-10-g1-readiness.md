@@ -14,7 +14,7 @@ Progress on the agent branch (draft PR #4, base `civ`):
 | PR-D2 | interface proposal `docs/changes/evalloop-v2.md`; code after Ian accepts it |
 | PR-A2 | implemented; `docs/changes/registry-run-contract.md`; waits on Ian's signature (session 1) |
 | PR-D1 | implemented (agent-owned); `docs/changes/run-identity-and-formats.md`; D5 and F10 are Ian's |
-| PR-B, wave-2 follow-ups, PR-F-now | implemented on `claude/qcal-foundations-wip` (draft PR #5, CI only, base PR #4); S1-S5 await signing; `docs/changes/qcal-foundations.md`; minimal signed PR-B for session 2, the rest of PR-B moved to WP3b |
+| PR-B, wave-2 follow-ups, PR-F-now | implemented; PR #5 merged into PR #4's branch on Oct 16, so S1-S5 and follow-ups are signed with PR #4 (PR-B1/PR-B2 are signing ranges); rev. 3 follow-ups and S6 on `claude/qcal-foundations-r3`; `docs/changes/qcal-foundations.md`; minimal signed PR-B for session 2, the rest of PR-B moved to WP3b |
 | others | not started: PR-C waits on #3; PR-G, the rest of PR-F and PR-D2's code wait on session 1 and on D1–D10 |
 
 These six share draft PR #4 instead of one PR each, as the delivery plan below intends. They

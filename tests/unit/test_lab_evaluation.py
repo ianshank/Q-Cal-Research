@@ -26,7 +26,14 @@ from qcal_lab.fixture_eval import (
     poor_or_missed_share,
     smoke_metrics,
 )
-from tests.lab_support import det, fixture_ground_truth, ground_truth, image, lab_config
+from tests.lab_support import (
+    det,
+    fixture_ground_truth,
+    ground_truth,
+    ians_loop_absent,
+    image,
+    lab_config,
+)
 
 pytestmark = pytest.mark.rule("C4")
 
@@ -35,11 +42,29 @@ def _lab(root: Path, module: str, factory: str = "build", options: str = ""):
     return lab_config(root, f'[eval_loop]\nmodule = "{module}"\nfactory = "{factory}"\n{options}')
 
 
-def test_the_default_is_ians_handwritten_module_and_it_is_missing(config: Config) -> None:
+def test_the_default_is_ians_handwritten_module_and_it_is_missing(
+    config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
     lab = lab_config(config.root)
+    assert lab.text("eval_loop.module") == ians_loop_absent(monkeypatch)
     assert lab.text("eval_loop.module") == "qcal_lab.handwritten.eval_loop"
     with pytest.raises(HandwrittenMissingError, match="Ian's to write by hand"):
         load_eval_loop(lab, config)
+
+
+def test_the_missing_loop_path_stays_tested_after_ian_writes_it(
+    config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ian's commit makes the module importable; the helper still hides it for one test."""
+    import types
+
+    name = lab_config(config.root).text("eval_loop.module")
+    written = types.ModuleType(name)
+    written.__file__ = __file__
+    monkeypatch.setitem(sys.modules, name, written)  # as if Ian had committed his loop
+    ians_loop_absent(monkeypatch)
+    with pytest.raises(HandwrittenMissingError):
+        load_eval_loop(lab_config(config.root), config)
 
 
 @pytest.fixture

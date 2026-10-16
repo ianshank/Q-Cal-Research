@@ -25,7 +25,7 @@ from qcal_lab.parity import (
 from qcal_lab.predictions import write_predictions
 from qcal_lab.smoke import SmokeReport, expected_artifacts, run_smoke, smoke_settings
 from qcal_lab.status import build_status
-from tests.lab_support import det, image, lab_config, predictions_header
+from tests.lab_support import det, ians_loop_absent, image, lab_config, predictions_header
 
 ORACLE = {
     "repository": "fiveai/detection_calibration",
@@ -151,7 +151,9 @@ def test_status_of_an_empty_repository(repo: Path) -> None:
     assert report.to_dict()["ready"] is False
 
 
-def test_metric_cases_through_the_repository_loop(repo: Path) -> None:
+def test_metric_cases_through_the_repository_loop(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The path tests/parity uses for metric cases (it skips until oracle outputs exist)."""
     from qcal_lab.data.fixture import write_fixture
     from qcal_lab.evaluation import HandwrittenMissingError
@@ -172,12 +174,13 @@ def test_metric_cases_through_the_repository_loop(repo: Path) -> None:
                 "oracle": ORACLE,
                 "predictions": "p.jsonl",
                 "ground_truth": "gt.json",
-                "metric": "smoke_images",
-                "expected": 0.0,
+                "metric": "smoke_images",  # every image of the ground truth, listed or not
+                "expected": float(len(fixture_document()["images"])),
             },
         )
     )
     qcal_config = load_config(repo, environ={})
+    ians_loop_absent(monkeypatch)
     with pytest.raises(HandwrittenMissingError):
         check_metric_case_with_repository_loop(case, lab_config(repo), qcal_config)
     fixture_loop = lab_config(repo, '[eval_loop]\nmodule = "qcal_lab.fixture_eval"\n')
@@ -215,13 +218,23 @@ def test_status_checks_the_checkpoint_digest_and_the_images(repo: Path) -> None:
     assert {n: s for n, s, _ in report.items}["in-domain images"] is False
 
 
-def test_status_reports_a_detector_without_a_kind(repo: Path) -> None:
+def test_status_reports_a_detector_without_a_kind(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qcal_lab import declarations
+
     (repo / "configs").mkdir()
     (repo / "configs/lab.toml").write_text('[detectors.odd]\nconfig = "x.py"\n')
+    # Declarations that load, so the sanity item reaches the detector's own settings (Copilot)
+    monkeypatch.setattr(declarations, "detector_declarations", lambda *_: {})
     report = build_status(load_config(repo, environ={}), load_lab_config(repo))
-    state, detail = {n: (s, d) for n, s, d in report.items}["detector odd"]
+    items = {n: (s, d) for n, s, d in report.items}
+    state, detail = items["detector odd"]
     assert state is False
     assert "detectors.odd.kind must name a detector kind" in detail
+    sanity_state, sanity_detail = items["detector sanity check odd declared"]
+    assert sanity_state is False  # reported, not raised out of build_status
+    assert "detectors.odd.kind must name a detector kind" in sanity_detail
 
 
 def test_status_reports_broken_loops_and_cases(repo: Path) -> None:

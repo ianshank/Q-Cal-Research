@@ -146,6 +146,7 @@ def run_input_problems(
             )
     if policy.committed:
         problems += uncommitted_inputs(config, config_inputs(config) if inputs is None else inputs)
+        problems += code_tree(config)[1]
     return problems
 
 
@@ -181,6 +182,65 @@ def code_location_problems(config: Config) -> list[str]:
             "repository's own code (registry.require_code_in_root)"
         )
     ]
+
+
+def code_tree(config: Config) -> tuple[dict[str, str], list[str]]:
+    """The tree id at ``HEAD`` of each ``registry.code_tree_paths`` entry, and why they do not
+    describe the code a run would execute (empty when they do, or outside git).
+
+    Git is queried isolated from user configuration (a global ``core.excludesFile`` could
+    hide a file). Besides uncommitted changes, a path is refused when its index hides edits
+    (``--skip-worktree``, ``--assume-unchanged``) or it holds ignored files other than
+    ``__pycache__/`` (an ignored ``.py``, ``.pyc`` or ``build/`` package still imports).
+    """
+    paths = config.str_list("registry.code_tree_paths")
+    root = config.root
+    if not paths or gitutil.git_marker(root) is None:
+        return {}, []
+    trees: dict[str, str] = {}
+    problems: list[str] = []
+    for path in paths:
+        oid = gitutil.try_git(
+            ["rev-parse", "--verify", "--quiet", f"HEAD:{path}"], root, isolated=True
+        )
+        if not oid:
+            problems.append(f"{path} is not in HEAD (registry.code_tree_paths)")
+            continue
+        trees[path] = oid
+        problems += [f"{path} {p} (registry.code_tree_paths)" for p in _code_problems(root, path)]
+    return trees, problems
+
+
+def _code_problems(root: Path, path: str) -> list[str]:
+    """What makes ``path``'s working tree differ from what ``HEAD`` says it holds."""
+
+    def query(*args: str) -> str | None:
+        return gitutil.try_git([*args, "--", path], root, isolated=True)
+
+    status = query("status", "--porcelain", "--untracked-files=all")
+    flags = query("ls-files", "-v")
+    ignored = query("ls-files", "--others", "--ignored", "--exclude-standard")
+    if status is None or flags is None or ignored is None:
+        return ["cannot be described by git"]
+    problems: list[str] = []
+    if status:
+        problems.append("has uncommitted changes; registered runs execute committed code")
+    hidden = [line[2:] for line in flags.splitlines() if line[:1] == "S" or line[:1].islower()]
+    if hidden:
+        problems.append(f"has edits the index hides: {', '.join(sorted(hidden)[:3])}")
+    extra = [f for f in ignored.splitlines() if CODE_CACHE_DIR not in Path(f).parts]
+    if extra:
+        problems.append(f"holds ignored files Python may import: {', '.join(sorted(extra)[:3])}")
+    return problems
+
+
+#: Python's bytecode cache: ignored, written by every run, and read only beside its source.
+CODE_CACHE_DIR: Final = "__pycache__"
+
+
+def code_tree_digest(trees: Mapping[str, str]) -> str:
+    """``code_tree_sha256``: ``""`` when no code tree is configured (an empty identity)."""
+    return digest_of(trees) if trees else ""
 
 
 def config_inputs(config: Config) -> dict[str, str]:

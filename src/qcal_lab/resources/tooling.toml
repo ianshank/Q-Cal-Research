@@ -35,9 +35,20 @@ iou_threshold = 0.5
 max_detections = 100
 bin_count = 25
 
-[declarations]
-# Ian's declarations (D2; src/qcal_lab/declarations.py): the detector sanity check's zoo AP,
-# tolerance and source, and the attested label order of a checkpoint without class names.
-# The file must be one qcal.toml keeps edit tools out of and requires signed commits for
-# (here ian_data), or it is refused. Ian creates it; until then nothing is declared.
-file = "docs/reference/declarations.toml"
+[sanity]
+# A plausibility cap on the tolerance Ian declares for a detector sanity check
+# (qcal_lab.sanity), as a fraction of AP: it catches a value typed in the wrong units, and
+# does not choose the tolerance (that is Ian's, D2).
+max_tolerance_fraction = 0.05
+
+[preflight]
+# lab-status checks that lock and cache directories are not on these (qcal_lab.preflight):
+# flock there may refuse (ENOLCK) or lock nothing across hosts.
+network_filesystems = ["nfs", "nfs4", "cifs", "smb3", "smbfs", "fuse.sshfs", "9p", "afs", "ceph", "glusterfs", "lustre", "beegfs", "gpfs", "fuse.ceph-fuse", "fuse.glusterfs", "fuse.s3fs", "fuse.gcsfuse"]
+mounts_file = "/proc/mounts"
+
+[eval_contract]
+# The MUST "results do not depend on the image order" compares numbers up to rounding: a
+# sum over images taken in another order may differ in its last bits (qcal_lab.eval_contract).
+reorder_rel_tol = 1e-12
+reorder_abs_tol = 1e-15

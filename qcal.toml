@@ -5,6 +5,10 @@
 # is documented in src/qcal/resources/defaults.toml. Inspect the merged result
 # with `qcal config`.
 
+[paths]
+# Ian's declarations (D2): ian_data, so only his signed commits change it.
+declarations = "docs/reference/declarations.toml"
+
 [git]
 # `civ` is the current default branch; the plan recommends renaming it to `main`.
 protected_branches = ["main", "civ"]
@@ -40,6 +44,10 @@ config_hash_inputs = [
 ]
 # A registered run's qcal must be this repository's (src/), not an installed copy.
 require_code_in_root = true
+# The code a registered run executes, by its committed git trees: the launcher records them
+# (code_tree_sha256) and refuses a run while either has uncommitted changes. Whether
+# code_tree_sha256 joins identity_columns below is Ian's decision (qcal-foundations.md).
+code_tree_paths = ["src/qcal", "src/qcal_lab"]
 # What a table value (or claim) averaged over seeds must agree on: the run's definition
 # without its seed (cell, factors, command, configuration files), the lab code, Ian's loop
 # and LaECE0, the dataset, the splits and the raw predictions. All seed-invariant (checked

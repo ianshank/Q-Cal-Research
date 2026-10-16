@@ -27,7 +27,7 @@ from qcal.log import get_logger
 from qcal.protocols import ImageDetections
 from qcal.reports import FAIL, PASS
 from qcal_lab.calib.two_threshold import keep_class
-from qcal_lab.config import LabConfig
+from qcal_lab.config import LabConfig, load_tooling
 from qcal_lab.data.coco import GroundTruth, parse_coco
 from qcal_lab.data.fixture import build_fixture, fixture_bytes
 from qcal_lab.evaluation import (
@@ -46,6 +46,7 @@ CONTRACT_VERSION: Final = 1
 #: A threshold above every score: the objective must cope with a class that kept nothing.
 EMPTY_THRESHOLD: Final = 1.5
 NOT_ASSESSED: Final = "NOT ASSESSED"
+TOOLING_SECTION: Final = "eval_contract"
 
 
 def contract_fixture(settings: Mapping[str, Any]) -> GroundTruth:
@@ -84,17 +85,52 @@ def outputs(
     }
 
 
+def _plain(value: Any) -> Any:
+    """``value`` with numbers as Python floats (a loop may return numpy scalars)."""
+    if isinstance(value, dict):
+        return {str(k): _plain(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [_plain(v) for v in value]
+    if not isinstance(value, bool | int | float | str) and hasattr(value, "__float__"):
+        return float(value)
+    return value
+
+
 def canonical(data: Any) -> str:
     def encode(value: Any) -> Any:
         if isinstance(value, float) and not math.isfinite(value):
             return repr(value)  # NaN is allowed for an objective; JSON has no NaN
         if isinstance(value, dict):
-            return {str(k): encode(v) for k, v in value.items()}
-        if isinstance(value, list | tuple):
+            return {k: encode(v) for k, v in value.items()}
+        if isinstance(value, list):
             return [encode(v) for v in value]
         return value
 
-    return json.dumps(encode(data), sort_keys=True, separators=(",", ":"))
+    return json.dumps(encode(_plain(data)), sort_keys=True, separators=(",", ":"), default=repr)
+
+
+def reorder_tolerance(tooling: Mapping[str, Any] | None = None) -> tuple[float, float]:
+    """``(rel_tol, abs_tol)`` for comparing results on reordered images (``tooling.toml``)."""
+    section = (tooling if tooling is not None else load_tooling()).get(TOOLING_SECTION, {})
+    return float(section["reorder_rel_tol"]), float(section["reorder_abs_tol"])
+
+
+def close(first: Any, second: Any, rel_tol: float, abs_tol: float) -> bool:
+    """Equal in structure and text, numbers equal up to rounding (NaN equals NaN): a sum
+    taken in another order may differ in its last bits without the loop depending on it."""
+    a, b = _plain(first), _plain(second)
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a.keys() == b.keys() and all(close(a[k], b[k], rel_tol, abs_tol) for k in a)
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) == len(b) and all(
+            close(x, y, rel_tol, abs_tol) for x, y in zip(a, b, strict=True)
+        )
+    numbers = (int, float)
+    if isinstance(a, numbers) and isinstance(b, numbers) and not isinstance(a, bool):
+        if math.isnan(a) or math.isnan(b):
+            return math.isnan(a) and math.isnan(b)
+        return math.isclose(a, b, rel_tol=rel_tol, abs_tol=abs_tol)
+    return bool(a == b)
 
 
 class _Raised(Exception):
@@ -154,6 +190,12 @@ def _must(
     again = _probe("the loop's second call", lambda: outputs(loop, predictions, ground_truth))
     if canonical(again) != canonical(first):
         problems.append("two calls on the same loop disagree")
+    reordered = tuple(reversed(predictions))  # the same images, listed in another order
+    shuffled = _probe(
+        "the loop on reordered images", lambda: outputs(loop, reordered, ground_truth)
+    )
+    if not close(shuffled, first, *reorder_tolerance()):
+        problems.append("the loop's results depend on the order the images are listed in")
     second = _probe("the factory's second call", build)
     if not isinstance(second, EvalLoop):
         problems.append("the factory's second call did not return an EvalLoop")
@@ -163,16 +205,57 @@ def _must(
         problems.append("two loops from the same factory disagree")
 
 
+def _without_empty_images(
+    predictions: Sequence[ImageDetections],
+) -> tuple[tuple[ImageDetections, ...], tuple[ImageDetections, ...]]:
+    """The predictions with at least one image holding no detections, listed and left out."""
+    listed = tuple(predictions)
+    if listed and all(image.detections for image in listed):
+        listed = (ImageDetections(listed[0].image_id), *listed[1:])
+    return listed, tuple(image for image in listed if image.detections)
+
+
 def should_findings(
     loop: EvalLoop, predictions: Sequence[ImageDetections], ground_truth: GroundTruth
 ) -> list[str]:
-    """What the contract allows but Ian should know of: reported, never a failure."""
+    """What the contract allows but Ian should know of: reported, never a failure.
+
+    No value is printed: the inputs are synthetic, and a finding says what, not how much.
+    """
     findings: list[str] = []
     result = outputs(loop, predictions, ground_truth)
-    for key, value in result["objectives"].items():
+    objectives = result["objectives"]
+    for key, value in objectives.items():
         if key.endswith(":all") and isinstance(value, float) and not math.isfinite(value):
             findings.append(f"objective {key} is {value!r} on a class with detections")
+    for key, everything in objectives.items():
+        if not key.endswith(":all"):
+            continue
+        nothing = objectives[key.removesuffix(":all") + ":empty"]
+        if _finite(everything) and _finite(nothing) and nothing < everything:
+            findings.append(
+                f"objective {key.removesuffix(':all')}: keeping no detections scores better "
+                "than keeping them all, so a threshold search drifts to the top of its grid"
+            )
+    targets = [t for values in result["targets"].values() for t in values]
+    if targets and not any(targets):
+        findings.append("every target is 0: calibrators would learn to output 0")
+    listed, absent = _without_empty_images(predictions)
+    with_empty, without_empty = (outputs(loop, p, ground_truth) for p in (listed, absent))
+    if canonical(_scores(with_empty)) != canonical(_scores(without_empty)):
+        findings.append(
+            "objectives or metrics change when images without detections are left out: the "
+            "pipeline passes every image, so this matters only to a caller that does not"
+        )
     return findings
+
+
+def _finite(value: object) -> bool:
+    return isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _scores(result: Mapping[str, Any]) -> dict[str, Any]:
+    return {"objectives": result["objectives"], "metrics": result["metrics"]}
 
 
 @dataclass
@@ -255,9 +338,11 @@ __all__ = [
     "ContractReport",
     "canonical",
     "check_eval_loop",
+    "close",
     "contract_fixture",
     "fixture_inputs",
     "must_problems",
     "outputs",
+    "reorder_tolerance",
     "should_findings",
 ]

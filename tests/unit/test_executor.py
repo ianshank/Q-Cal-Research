@@ -805,6 +805,114 @@ def test_signals_while_the_program_shuts_down_cannot_lose_the_envelope(
 
 
 @pytest.mark.integration
+@pytest.mark.skipif(not Path("/proc").is_dir(), reason="needs /proc (Linux)")
+def test_a_launcher_failure_while_waiting_kills_the_program_and_propagates(
+    tmp_path: Path, config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only Ctrl-C and launcher signals are interrupts. Anything else raised while waiting
+    (here SystemExit) is not relabelled as one, and the program does not outlive it."""
+    program = script(tmp_path, SPAWNS_A_GRANDCHILD)
+    pid_file = tmp_path / "grandchild.pid"
+    executor = make_executor(config.root, [sys.executable, str(program), str(pid_file)])
+    real_sleep = time.sleep
+    fired = [False]
+
+    def fail_once_the_grandchild_exists(seconds: float) -> None:
+        if not fired[0] and pid_file.is_file() and pid_file.read_text():
+            fired[0] = True
+            raise SystemExit("launcher bug")
+        real_sleep(seconds)
+
+    monkeypatch.setattr(executor_module.time, "sleep", fail_once_the_grandchild_exists)
+    with pytest.raises(SystemExit, match="launcher bug"):
+        executor.execute(make_spec(config.root))
+    assert _wait_until_dead(int(pid_file.read_text()))
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not Path("/proc").is_dir(), reason="needs /proc (Linux)")
+def test_a_signal_before_the_escalation_handlers_are_in_place_still_kills_the_program(
+    tmp_path: Path, config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Panel round 3: a second SIGTERM while _escalation installs its handlers propagated
+    out of execute() with the program's group still running."""
+    import contextlib
+
+    program = script(tmp_path, SPAWNS_A_GRANDCHILD)
+    pid_file = tmp_path / "grandchild.pid"
+    executor = make_executor(config.root, [sys.executable, str(program), str(pid_file)])
+    real_sleep = time.sleep
+    fired = [False]
+
+    def interrupt_once_the_grandchild_exists(seconds: float) -> None:
+        if not fired[0] and pid_file.is_file() and pid_file.read_text():
+            fired[0] = True
+            raise KeyboardInterrupt
+        real_sleep(seconds)
+
+    @contextlib.contextmanager
+    def signalled_while_installing(_group: int) -> Any:
+        raise KeyboardInterrupt  # the second signal, before any handler is in place
+        yield  # pragma: no cover - never reached
+
+    monkeypatch.setattr(executor_module.time, "sleep", interrupt_once_the_grandchild_exists)
+    monkeypatch.setattr(executor_module, "_escalation", signalled_while_installing)
+    with pytest.raises(KeyboardInterrupt):
+        executor.execute(make_spec(config.root))
+    assert _wait_until_dead(int(pid_file.read_text()))
+
+
+@pytest.mark.integration
+def test_a_failure_reading_an_interrupted_run_keeps_the_interrupt(
+    tmp_path: Path, config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    executor, spec = _interrupted_once_ready(tmp_path, config, monkeypatch, "failed")
+
+    def unreadable(*_: Any, **__: Any) -> Any:
+        raise OSError("disk gone")
+
+    monkeypatch.setattr(executor_module, "read_result", unreadable)
+    result = _execute_or_fail(executor, spec)
+    assert isinstance(result.interrupted, KeyboardInterrupt)  # what happened, not the OSError
+    assert (result.failure_kind, result.metrics) == ("interrupted", {})
+    assert result.error is not None
+    assert "reading the interrupted run failed: disk gone" in result.error
+
+
+@pytest.mark.integration
+def test_a_signal_while_the_interrupt_is_logged_is_absorbed(
+    tmp_path: Path, config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The escalation handlers are installed before anything else runs, logging included."""
+    import os
+    import signal
+
+    executor, spec = _interrupted_once_ready(tmp_path, config, monkeypatch, "failed")
+    real_error = executor_module._log.error
+
+    def signalled_while_logging(message: str, *args: Any, **kwargs: Any) -> None:
+        if message.startswith("launcher interrupted"):
+            os.kill(os.getpid(), signal.SIGINT)
+        real_error(message, *args, **kwargs)
+
+    monkeypatch.setattr(executor_module._log, "error", signalled_while_logging)
+    result = _execute_or_fail(executor, spec)  # the second Ctrl-C did not escape
+    assert isinstance(result.interrupted, KeyboardInterrupt)
+    assert (result.failure_kind, result.metrics) == ("interrupted", {})
+
+
+def test_a_group_member_that_cannot_be_signalled_is_reported_not_raised(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    def refused(_group: int, _signum: int) -> None:
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(executor_module.os, "killpg", refused)
+    executor_module._signal_group(12345, 9)  # no exception: the rest of the group was signalled
+    assert "cannot be signalled (EPERM)" in caplog.text
+
+
+@pytest.mark.integration
 def test_execute_reports_what_the_program_cost(tmp_path: Path, config: Config) -> None:
     executor = make_executor(config.root, executor_command(experiment_script(tmp_path)))
     resources = executor.execute(make_spec(config.root)).resources

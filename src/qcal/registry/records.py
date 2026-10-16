@@ -62,6 +62,8 @@ CONFIG_INPUTS_COLUMN: Final = "config_inputs_sha256"
 DEFINITION_COLUMN: Final = "definition_sha256"
 POLICY_COLUMN: Final = "policy_sha256"
 EXPERIMENTS_COLUMN: Final = "experiments_sha256"
+#: The digest of the committed code trees the launcher ran (``registry.code_tree_paths``).
+CODE_TREE_COLUMN: Final = "code_tree_sha256"
 
 #: Why a run failed, as the executor result envelope and a failed record name it.
 FAILURE_KINDS: Final = (
@@ -232,6 +234,7 @@ class RunRecord:
             DEFINITION_COLUMN: self.provenance.get(DEFINITION_COLUMN),
             POLICY_COLUMN: self.provenance.get(POLICY_COLUMN),
             EXPERIMENTS_COLUMN: self.provenance.get(EXPERIMENTS_COLUMN),
+            CODE_TREE_COLUMN: self.provenance.get(CODE_TREE_COLUMN),
             "batch_id": self.provenance.get("batch_id"),
             "failure_kind": self.failure_kind,
         }

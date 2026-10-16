@@ -10,11 +10,11 @@ Rev. 2 of the plan, after a four-seat review (ML research, MLOps/reproducibility
 architecture, architecture/SDLC/security). Every seat blocked rev. 1; the findings that changed
 the plan are named in **Decisions**.
 
-The work sits on `claude/qcal-foundations-wip`, a draft pull request against PR #4's branch
-marked "CI only, do not merge". Its integrity check judges nothing: it runs PR #4's bootstrap
-policy, which has no signer keys. When PR #4 is on `civ`, the agent's own commits are rebased
-onto `civ` under a new name, `claude/qcal-foundations`, and the real pull request opens against
-`civ`, where the integrity check runs with `civ`'s policy.
+The work was developed on `claude/qcal-foundations-wip` (draft PR #5, "CI only"). On Oct 16
+PR #5 was merged into PR #4's branch, so wave 3 now rides PR #4 and is signed with it: PR-B1
+(S1, S4, S5 and their follow-ups) and PR-B2 (S2, S3 and the guard follow-ups) are signing
+ranges within PR #4, not separate pull requests. Rev. 3 follow-ups, including the signed S6,
+are on `claude/qcal-foundations-r3`, a CI-only draft against PR #4's branch.
 
 ## Gate served
 G1 (Nov 8; freeze Oct 31). The first registered run (Nov 1) must not:
@@ -204,11 +204,52 @@ Verified against `50efe97`:
 
     ```toml
     [detectors.atss_r50]
-    zoo_ap = 0.0          # pycocotools units: 39.4 AP is 0.394
-    tolerance = 0.0
-    source = ""           # where the zoo value is published
+    zoo_ap = ""             # the published value, in `units`
+    tolerance = ""          # in `units`
+    units = ""              # "fraction" (pycocotools) or "percent"
+    source = ""             # where the zoo value is published
+    checkpoint_sha256 = ""  # must equal detectors.atss_r50.checkpoint_sha256
+    image_set = ""          # the images the zoo value was measured on
+    test_cfg = {}           # must equal the configured score_threshold and max_per_image
+    on_fail = ""            # "stop": stop and debug; never swap the checkpoint
     label_order_attested_sha256 = ""   # only for a checkpoint without class names
     ```
+12. **The sanity declaration is enforced and bound** (panel round 2, rev. 3). A non-fixture
+    detector does not run until its declaration is complete, names the configured
+    checkpoint's sha256 and test-time settings, and states `on_fail = "stop"`; the refusal
+    comes before any detector work. Values are compared as written (decimal), in the declared
+    units, so 0.8 is within 0.1 of 0.7 and a percent value cannot pass as a fraction; a
+    tolerance above `[sanity] max_tolerance_fraction` (`tooling.toml`, a plausibility cap) is
+    refused. The declarations file's digest is recorded in `inputs_read`. *Alternative:*
+    enforcement only in `lab-status`, which a launch never consults.
+13. **Contract additions** (panel round 2, rev. 3).
+    - **MUST:** the loop's results do not depend on the order the images are listed in.
+    - **SHOULD** (reported, never a failure; the objective is Ian's):
+      - an objective under which keeping no detections beats keeping them all, which drifts
+        a threshold search to the top of its grid;
+      - all-zero targets;
+      - results that change when images without detections are left out.
+
+      The panel proposed the last one as a MUST. It is a SHOULD here because the pipeline
+      always passes every image (`keep_class`), so a loop that relies on that is correct
+      under the contract. Requiring it would test a call the pipeline never makes.
+    - The fixture loop now counts missed objects and images from the ground truth, so it
+      is clean under all three; its values on the smoke project are unchanged.
+14. **S6, signed follow-ups G1 needs** (panel round 2; branch `claude/qcal-foundations-r3`).
+    - **(a)** `paths.declarations` in signed `qcal.toml` names Ian's declarations file, so an
+      agent cannot repoint it. `qcal_lab.declarations` refuses a path through a symbolic link,
+      a `registry_only` category (machine-written, some untracked), and, in git, a file that
+      is not exactly what `HEAD` holds. `signing.protect_symlinks`: a commit that adds,
+      changes or removes a symbolic link anywhere needs a signature.
+    - **(b)** An identity value that is `""` (a run that did not record it) matches nothing,
+      unless the column is in `registry.identity_nullable` (default none).
+    - **(c)** `registry.code_tree_paths`: the launcher records the committed tree id of each
+      path (`provenance.code_tree`) and their digest (`code_tree_sha256`, a core index
+      column), and refuses a registered run while one has uncommitted changes. `qcal.toml`
+      names `src/qcal` and `src/qcal_lab`.
+    - **(d)** Executor windows: escalation before the interrupt is logged; a failure reading
+      an interrupted run keeps the interrupt; only Ctrl-C and launcher signals are
+      interrupts, anything else kills the group and propagates; EPERM is logged.
 
 ## Compatibility
 - **Exit codes.**
@@ -262,6 +303,22 @@ Verified against `50efe97`:
 - **N6.** A marker is created before it is locked, so an audit in that instant can report a
   live run as stale. The audit only reports; creating the marker as temp, lock, then link
   would close the window (WP3b).
+- **Panel round 3, not fixed here:**
+  - **Bootstrap signing.** While `signing.mode` is bootstrap, an agent's *unsigned* commit
+    of `docs/reference/declarations.toml` passes the "committed exactly as read" check;
+    `lab-status` says "unverified" until enforce. Switching to enforce closes it.
+  - **Symlink targets.** `signing.protect_symlinks` signs a link, not what it points to: a
+    signed link in a protected category pointing at an agent-owned file lets that file
+    change unsigned. No such link exists; refusing protected links whose targets leave
+    their category is a follow-up.
+  - **Bytecode.** A hand-made `__pycache__/*.pyc` that copies its source's mtime and size is
+    loaded instead of the source, and `code_tree` allows `__pycache__/`. Running with a
+    fresh `pycache_prefix` would close it.
+  - **`image_set`** is free text: a sanity measurement on val2017 would read evaluate-split
+    images. It only stops or continues a run, and `test_cfg` is bound; binding it to a
+    manifest digest is Ian's decision before D8. Requiring the declared `test_cfg` to equal
+    the run's means a zoo value measured with another score threshold cannot be declared
+    truthfully: also Ian's (D2, F10).
 
 ## Ian decisions requested
 1. **By Oct 24:** the identity set in `qcal.toml` (`registry.identity_columns`). Keep the
@@ -285,9 +342,17 @@ Verified against `50efe97`:
 4. **Oct 24:** file this branch's advisory review under `review/claude/` at the signing session.
    It is a `cross_review` path, so it is a signed commit.
 5. **After each session, until PR-G:** the interim artifact copy above.
+6. **By Oct 24 (S6):** whether `code_tree_sha256` joins `registry.identity_columns` (it
+   replaces trusting `env.qcal_lab_source_sha256`, which the program reports about itself),
+   and which identity columns, if any, may be empty (`registry.identity_nullable`; for
+   example `env.handwritten_sha256` before the loop exists). Commit
+   `docs/reference/declarations.toml` signed: it is read only as committed.
 
 ## Ian hours
 About 1.8: S1 0.2, S2 0.3, S3 0.2, S4 0.5, S5 0.2, agent-owned commits 0.25, signing 0.15.
+Measured after the review fixes: 874+/144- lines on the signed surface, about 1.6 h at
+~650 lines/h (PR-B1 about 1.1 h, PR-B2 about 0.5 h), plus S6: 176+/22- signed lines in four
+commits (`2bd8f98`, `a571a31`, `4ed2dca`, `434a6b0`), about 0.3 h. PR-B1 with S6: about 1.4 h.
 
 ## Acceptance
 - [ ] `make check` green with the anchored exclusion (coverage ≥ 95)

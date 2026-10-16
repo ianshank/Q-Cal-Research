@@ -134,6 +134,35 @@ fixture evaluation loop refuse every other dataset, and the loop's metric names 
 one cell with the cache off and checks that predictions, calibration and metrics are
 byte-identical.
 
+## Before the first registered run
+
+A checklist for the GPU host. Each item points to the setting it relies on and does not set
+any value for you: the values are Ian's decisions (`docs/changes/qcal-foundations.md`).
+
+1. **`make lab-status` shows nothing as TODO**, including the detector sanity declaration
+   (Ian's declarations file, `qcal_lab.declarations`), the evaluation loop contract, and the
+   preflight (`qcal_lab.preflight`): each MMDetection detector's runtime (`mmcv._ext` imports,
+   CUDA is available for a `cuda` device) and host-local lock directories (item 5).
+2. **GPUs are named stably.** Pin with `CUDA_VISIBLE_DEVICES` set to GPU UUIDs, or set
+   `CUDA_DEVICE_ORDER=PCI_BUS_ID`; otherwise CUDA's default ordering can differ from
+   `nvidia-smi`'s. Never use DDP across the two cards (CLAUDE.md, Compute).
+3. **One GPU per prediction pass (D9, recommended).** Cached raw predictions are keyed on the
+   code, settings and software stack, not on the card, so a cache entry written on one card
+   would be reused on the other. Until D9 is decided, run every prediction pass of one cell on
+   the same card, or clear `predictions.cache_dir` between cards.
+4. **Shutdown has time to finish.** On an interrupt or timeout the launcher sends SIGTERM,
+   waits `executor.kill_grace_s`, then SIGKILL, and then writes the record. A supervisor that
+   stops the launcher must allow longer than that plus the time to hash the artifacts. For
+   example, `docker run --init --stop-timeout <seconds>` with `<seconds>` above
+   `kill_grace_s`. Docker's default 10 s is shorter than the packaged `kill_grace_s`.
+5. **Locks are host-local.** `paths.inflight_dir` and `predictions.cache_dir` must be on a
+   local filesystem of the host that launches runs: `flock` on a network filesystem may
+   report `ENOLCK` (refused) or succeed without excluding another host.
+6. **Quarantined cache entries are looked at, not deleted.** Bytes that no registry record
+   vouches for, written by a producer that is no longer running, are moved to
+   `<predictions.cache_dir>/quarantine/<key>/` and the run recomputes them. `make lab-status`
+   lists them. Delete them only after reading the producer in the `.meta.json` beside them.
+
 ## Extending
 
 | To add | Do this |

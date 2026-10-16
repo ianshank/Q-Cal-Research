@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import pickle
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, ClassVar
@@ -686,11 +687,19 @@ def test_the_built_model_must_keep_the_checkpoints_classes(mmdet_setup) -> None:
         )
 
 
-def test_an_unreadable_checkpoint_is_a_detector_error(mmdet_setup) -> None:
+@pytest.mark.parametrize(
+    "error",
+    [
+        RuntimeError("bad zip"),
+        pickle.UnpicklingError("invalid load key"),  # a file that is not a checkpoint
+        EOFError("Ran out of input"),  # a truncated one
+    ],
+)
+def test_an_unreadable_checkpoint_is_a_detector_error(mmdet_setup, error: Exception) -> None:
     s = mmdet_setup
 
     def broken(path: str, **_: Any) -> None:
-        raise RuntimeError("bad zip")
+        raise error
 
     s.loader.load_checkpoint = broken  # type: ignore[method-assign]
     with pytest.raises(DetectorError, match="cannot read checkpoint"):

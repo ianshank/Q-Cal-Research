@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Sequence
 from pathlib import Path
@@ -12,7 +13,8 @@ import yaml
 
 from qcal.config import ConfigError, load_config
 from qcal.protocols import ImageDetections
-from qcal.registry.experiments import ExperimentsError
+from qcal.registry.experiments import ExperimentsError, load_experiments
+from qcal_lab import experiment
 from qcal_lab.calib.two_threshold import read_calibration
 from qcal_lab.config import load_lab_config
 from qcal_lab.data.coco import GroundTruth
@@ -34,7 +36,8 @@ from qcal_lab.experiment import (
 from qcal_lab.fixture_eval import FixtureEvalLoop
 from qcal_lab.models import KIND_SCORE_DEFINITIONS
 from qcal_lab.predictions import read_predictions
-from tests.lab_support import fixture_project, lab_config, register
+from tests.conftest import run_git, write
+from tests.lab_support import fixture_project, ians_loop_absent, lab_config, register
 
 pytestmark = pytest.mark.rule("C3")
 
@@ -553,6 +556,105 @@ def test_a_detector_missing_a_required_setting_is_refused_before_detector_work(
     assert not (root / "runs/cache").exists()
 
 
+ATSS_LAB = (
+    "[detectors.atss_r50]\n"
+    f'checkpoint_sha256 = "{"c" * 64}"\n'
+    "score_threshold = 0.5\nmax_per_image = 7\n"
+)
+BOUND_DECLARATION = (
+    "[detectors.atss_r50]\n"
+    'zoo_ap = 0.7\ntolerance = 0.04\nunits = "fraction"\nsource = "a model card"\n'
+    f'checkpoint_sha256 = "{"c" * 64}"\nimage_set = "a held-out set"\non_fail = "stop"\n'
+    "test_cfg = { score_threshold = 0.5, max_per_image = 7 }\n"
+)
+
+
+IAN_DATA_POLICY = """
+[paths]
+declarations = "docs/reference/declarations.toml"
+[signing]
+signed_categories = ["ian_only", "ian_data", "enforcement_surface", "registry_only"]
+[policy.categories]
+ian_data = ["docs/reference/**"]
+[policy.messages]
+ian_data = "is Ian's."
+[hooks]
+deny_categories = ["ian_only", "ian_data", "registry_only", "enforcement_surface"]
+"""
+
+
+def _declare(root: Path, text: str) -> Path:
+    """Ian's signed commit adding the declarations: read only as committed."""
+    path = write(root, "docs/reference/declarations.toml", text)
+    if (root / ".git").exists():
+        run_git(root, "add", "docs/reference/declarations.toml")
+        run_git(root, "commit", "-q", "-m", "declare")
+    return path
+
+
+def _atss_cell(root: Path) -> str:
+    """A cell on a real detector kind, in a project whose policy protects declarations."""
+    qcal_toml = root / "qcal.toml"
+    qcal_toml.write_text(qcal_toml.read_text() + IAN_DATA_POLICY)
+    lab_file = root / "configs/lab.toml"
+    lab_file.write_text(lab_file.read_text() + ATSS_LAB)
+    experiments = yaml.safe_load((root / "EXPERIMENTS.yaml").read_text())
+    experiments["cells"].append({"id": "C-atss", "detector": "atss_r50"})
+    (root / "EXPERIMENTS.yaml").write_text(yaml.safe_dump(experiments, sort_keys=False))
+    return "C-atss"
+
+
+@pytest.mark.parametrize(
+    ("declaration", "message"),
+    [
+        (None, "no complete sanity declaration"),  # Ian has not declared it
+        (BOUND_DECLARATION.replace("c" * 64, "d" * 64), "about another checkpoint"),
+        (BOUND_DECLARATION.replace("max_per_image = 7 }", "max_per_image = 8 }"), "other set"),
+    ],
+)
+def test_a_detector_runs_only_after_its_sanity_declaration(
+    project: tuple[Path, list[str]], declaration: str | None, message: str
+) -> None:
+    root, _ = project
+    cell = _atss_cell(root)
+    if declaration is not None:
+        _declare(root, declaration)
+    with pytest.raises(PlanError, match=message):
+        run_experiment(_request(root, cell))
+    assert not (root / "runs/cache").exists()
+
+
+def test_a_bound_declaration_lets_the_run_go_on_and_is_recorded_as_read(
+    project: tuple[Path, list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _ = project
+    cell = _atss_cell(root)
+    path = _declare(root, BOUND_DECLARATION)
+
+    class PastTheDeclaration(Exception):
+        pass
+
+    def next_step(*_: Any) -> Any:
+        raise PastTheDeclaration
+
+    monkeypatch.setattr(experiment, "split_roles", next_step)  # what runs after the check
+    with pytest.raises(PastTheDeclaration):
+        run_experiment(_request(root, cell))
+    qcal_config, lab = load_config(root), load_lab_config(root)
+    declarations_read, table = experiment._require_sanity_declaration(qcal_config, lab, "atss_r50")
+    assert table["on_fail"] == "stop"  # the same read the detector is given
+    read = experiment.inputs_read(
+        qcal_config, lab, load_experiments(qcal_config), declarations_read
+    )
+    assert read["docs/reference/declarations.toml"] == hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_the_fixture_detector_needs_no_declaration(project: tuple[Path, list[str]]) -> None:
+    root, _ = project
+    lab = load_lab_config(root)
+    assert experiment._require_sanity_declaration(load_config(root), lab, "fixture") == ({}, {})
+
+
 def test_code_from_outside_the_source_directory_is_refused(
     project: tuple[Path, list[str]],
 ) -> None:
@@ -593,9 +695,10 @@ def test_unregistered_seed_or_cell_is_refused(project: tuple[Path, list[str]]) -
 
 
 def test_a_missing_handwritten_loop_fails_before_any_detector_work(
-    project: tuple[Path, list[str]],
+    project: tuple[Path, list[str]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root, cells = project
+    ians_loop_absent(monkeypatch)
     (root / "configs/lab.toml").write_text(
         '[datasets.id]\nannotations = "data/fixture/annotations.json"\nimages_dir = ""\n'
     )

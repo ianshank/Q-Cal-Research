@@ -106,18 +106,26 @@ def _after_wrapper(config: Config, command: str) -> list[str] | None:
     """The words after the wrapper, split as the shell splits them; ``None`` without one.
 
     Quoting is kept: ``deny-read "ian_only ian_data"`` passes one argument at run time, so it
-    is one argument here. A command the shell cannot split, or one that is not a single
+    is one argument here. The wrapper must be the first word and lie under
+    ``agent_layer.hook_wrapper_prefix`` (the project directory): a word before it (``true``,
+    ``QCAL_PYTHON=/bin/true``) would decide what runs instead, and a wrapper elsewhere is not
+    the project's. Such a command, one the shell cannot split, or one that is not a single
     simple command (:func:`standalone`), yields ``[""]``: an unknown hook, guarding nothing.
     """
     wrapper = config.str_value("agent_layer.hook_wrapper")
+    prefix = config.str_value("agent_layer.hook_wrapper_prefix")
     try:
         words = shlex.split(command)
     except ValueError:
         return [""] if wrapper in command else None
-    for i, word in enumerate(words):
-        if word.endswith(wrapper):
-            return words[i + 1 :] if standalone(command) else [""]
-    return None
+    if not any(word.endswith(wrapper) for word in words):
+        return None
+    # Compared as written, before the shell's unquoting: `\$CLAUDE_PROJECT_DIR/...` unquotes
+    # to the same word but runs a literal path that does not exist, so the guard never runs.
+    leading = command.lstrip()
+    if leading.startswith(prefix + wrapper) and leading[len(prefix + wrapper) :][:1] in ("", " "):
+        return words[1:] if standalone(command) else [""]
+    return [""]
 
 
 def wrapped_hook_args(config: Config, command: str) -> list[str] | None:

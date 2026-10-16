@@ -28,6 +28,8 @@ from qcal.registry.experiments import Cell, Experiments, ExperimentsError
 from qcal.registry.gates import (
     INPUTS_READ_KEY,
     PolicyState,
+    code_tree,
+    code_tree_digest,
     config_inputs,
     digest_of,
     input_mismatches,
@@ -37,6 +39,7 @@ from qcal.registry.gates import (
     unverified_inputs,
 )
 from qcal.registry.records import (
+    CODE_TREE_COLUMN,
     SCHEMA_VERSION,
     RecordError,
     RunRecord,
@@ -319,6 +322,9 @@ class Runner:
             python=sys.executable,
         )
         launch = launch_digests(self.config, self.experiments, policy, inputs)
+        trees, changed = code_tree(self.config)  # again under the pair lock, right before it runs
+        if changed:
+            raise RunRefusedError(f"cannot run {cell.id}: " + "; ".join(changed))
         provenance = {
             "git_sha": gitutil.head_sha(root),
             "git_dirty": dirty,
@@ -330,6 +336,8 @@ class Runner:
             "policy_source": policy.source,
             "policy_sha256": policy.sha256,
             "experiments_sha256": self.experiments.sha256,
+            "code_tree": trees,
+            CODE_TREE_COLUMN: code_tree_digest(trees),
             "executor": type(self.executor).__name__,
             "launcher": launcher_identity(root),
             "environment_variables": recorded_variables(
