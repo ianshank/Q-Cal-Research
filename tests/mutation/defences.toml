@@ -968,3 +968,63 @@ new = ''''''
 tests = [
     "tests/unit/test_lab_models.py::test_an_unreadable_checkpoint_is_a_detector_error",
 ]
+
+[[mutant]]
+id = "S6-wait-only-interrupts"
+file = "src/qcal/registry/executor.py"
+finding = "only Ctrl-C and launcher signals are returned as interrupts (panel round 2)"
+old = '''        except KeyboardInterrupt as exc:  # Ctrl-C or LauncherSignal: returned, re-raised later'''
+new = '''        except BaseException as exc:  # Ctrl-C or LauncherSignal: returned, re-raised later'''
+tests = [
+    "tests/unit/test_executor.py::test_a_launcher_failure_while_waiting_kills_the_program_and_propagates",
+]
+
+[[mutant]]
+id = "S6-kill-on-escape"
+file = "src/qcal/registry/executor.py"
+finding = "the program never outlives a launcher failure (panel round 2)"
+old = '''            if proc is not None:
+                _kill_now(proc)
+            raise'''
+new = '''            raise'''
+tests = [
+    "tests/unit/test_executor.py::test_a_launcher_failure_while_waiting_kills_the_program_and_propagates",
+]
+
+[[mutant]]
+id = "S6-cleanup-keeps-interrupt"
+file = "src/qcal/registry/executor.py"
+finding = "a failure reading an interrupted run keeps the interrupt (panel round 2)"
+old = '''            except Exception as exc:  # noqa: BLE001 - the interrupt, not this, is what happened'''
+new = '''            except ZeroDivisionError as exc:  # noqa: BLE001 - the interrupt, not this, is what happened'''
+tests = [
+    "tests/unit/test_executor.py::test_a_failure_reading_an_interrupted_run_keeps_the_interrupt",
+]
+
+[[mutant]]
+id = "S6-escalate-before-log"
+file = "src/qcal/registry/executor.py"
+finding = "escalation handlers are installed before the interrupt is logged (panel round 2)"
+old = '''        with _escalation(proc.pid) as hurry:  # first: a signal while logging must not escape
+            _log.error(
+                "launcher interrupted (%s); terminating the program's process group",
+                type(interrupt).__name__,
+            )'''
+new = '''        _log.error(
+            "launcher interrupted (%s); terminating the program's process group",
+            type(interrupt).__name__,
+        )
+        with _escalation(proc.pid) as hurry:  # first: a signal while logging must not escape'''
+tests = [
+    "tests/unit/test_executor.py::test_a_signal_while_the_interrupt_is_logged_is_absorbed",
+]
+
+[[mutant]]
+id = "S6-eperm"
+file = "src/qcal/registry/executor.py"
+finding = "EPERM signalling a group is reported, not raised (panel round 2)"
+old = '''    except PermissionError:  # a member we may not signal (setuid); the rest got it'''
+new = '''    except ZeroDivisionError:  # a member we may not signal (setuid); the rest got it'''
+tests = [
+    "tests/unit/test_executor.py::test_a_group_member_that_cannot_be_signalled_is_reported_not_raised",
+]
