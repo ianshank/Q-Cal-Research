@@ -1175,3 +1175,63 @@ new = '''    if first.endswith(wrapper) and standalone(command):'''
 tests = [
     "tests/unit/test_agent_layer.py::test_the_wrapper_must_be_the_projects_and_come_first",
 ]
+
+[[mutant]]
+id = "PF-network"
+file = "src/qcal_lab/preflight.py"
+finding = "a lock directory on a network filesystem is reported (rev. 3 preflight)"
+old = '''        if kind in network:'''
+new = '''        if False:'''
+tests = [
+    "tests/unit/test_lab_preflight.py::test_directories_on_network_filesystems_are_reported",
+]
+
+[[mutant]]
+id = "PF-deepest"
+file = "src/qcal_lab/preflight.py"
+finding = "the deepest mount point containing a path decides its filesystem"
+old = '''        if inside and (best is None or len(point) >= best[0]):'''
+new = '''        if inside and best is None:'''
+tests = [
+    "tests/unit/test_lab_preflight.py::test_the_filesystem_is_the_deepest_mount_containing_the_path",
+]
+
+[[mutant]]
+id = "PF-component"
+file = "src/qcal_lab/preflight.py"
+finding = "a mount point contains a path only at a component boundary"
+old = '''        inside = resolved == point or resolved.startswith(point.rstrip("/") + "/")'''
+new = '''        inside = resolved.startswith(point)'''
+tests = [
+    "tests/unit/test_lab_preflight.py::test_the_filesystem_is_the_deepest_mount_containing_the_path",
+]
+
+[[mutant]]
+id = "PF-not-yet-created"
+file = "src/qcal_lab/preflight.py"
+finding = "a directory not created yet is judged by the mount it will be on"
+old = '''    resolved = str(Path(os.path.realpath(existing)).joinpath(*reversed(missing)))'''
+new = '''    resolved = os.path.realpath(existing)'''
+tests = [
+    "tests/unit/test_lab_preflight.py::test_the_filesystem_is_the_deepest_mount_containing_the_path",
+]
+
+[[mutant]]
+id = "PF-cuda"
+file = "src/qcal_lab/preflight.py"
+finding = "a cuda device without CUDA is reported (rev. 3 preflight)"
+old = '''            if not available:'''
+new = '''            if False:'''
+tests = [
+    "tests/unit/test_lab_preflight.py::test_a_detector_runtime_is_checked",
+]
+
+[[mutant]]
+id = "PF-mmcv"
+file = "src/qcal_lab/preflight.py"
+finding = "mmcv._ext that does not import is reported (rev. 3 preflight)"
+old = '''        importer(MMCV_EXT)'''
+new = '''        pass'''
+tests = [
+    "tests/unit/test_lab_preflight.py::test_a_detector_runtime_is_checked",
+]

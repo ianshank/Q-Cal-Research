@@ -20,6 +20,7 @@ from qcal_lab.evaluation import HandwrittenMissingError, load_eval_loop
 from qcal_lab.models import detector_problems
 from qcal_lab.parity import KINDS, ParityError, load_cases
 from qcal_lab.predictions import PredictionCache
+from qcal_lab.preflight import add_preflight
 
 
 @dataclass
@@ -167,6 +168,7 @@ def build_status(qcal_config: Config, lab: LabConfig) -> StatusReport:
     except (ConfigError, ImportError) as exc:
         report.add("evaluation loop (Ian)", ok=False, detail=f"cannot load: {exc}")
     _detectors(report, lab, qcal_config)
+    add_preflight(report, qcal_config, lab)
     _quarantine(report, lab)
     try:
         cases = load_cases(lab.config.root / lab.text("parity.fixtures_dir"))

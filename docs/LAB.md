@@ -140,7 +140,9 @@ A checklist for the GPU host. Each item points to the setting it relies on and d
 any value for you: the values are Ian's decisions (`docs/changes/qcal-foundations.md`).
 
 1. **`make lab-status` shows nothing as TODO**, including the detector sanity declaration
-   (Ian's declarations file, `qcal_lab.declarations`) and the evaluation loop contract.
+   (Ian's declarations file, `qcal_lab.declarations`), the evaluation loop contract, and the
+   preflight (`qcal_lab.preflight`): each MMDetection detector's runtime (`mmcv._ext` imports,
+   CUDA is available for a `cuda` device) and host-local lock directories (item 5).
 2. **GPUs are named stably.** Pin with `CUDA_VISIBLE_DEVICES` set to GPU UUIDs, or set
    `CUDA_DEVICE_ORDER=PCI_BUS_ID`; otherwise CUDA's default ordering can differ from
    `nvidia-smi`'s. Never use DDP across the two cards (CLAUDE.md, Compute).
