@@ -14,6 +14,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -175,7 +176,40 @@ def test_n4_a_stale_index_without_an_identity_column_is_refused() -> None:
     assert "no run in R1, R2 recorded env.raw_prediction_sha256" in str(typo)
     assert identity_problem(rows[:1], ["env.raw_prediction_sha256"], core=CORE) is None
     half = [{"run_id": "R1", "env.x": "a"}, {"run_id": "R2"}]  # one run did not report it
-    assert "different env.x values" in str(identity_problem(half, ["env.x"], core=CORE))
+    assert "runs R2 recorded no env.x" in str(identity_problem(half, ["env.x"], core=CORE))
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        [{"run_id": "R1", "env.x": ""}, {"run_id": "R2", "env.x": ""}],  # a CSV index: "" == ""
+        [{"run_id": "R1", "env.x": "a"}, {"run_id": "R2", "env.x": ""}],
+        [{"run_id": "R1", "env.x": None}, {"run_id": "R2", "env.x": None}],  # a short CSV row
+    ],
+)
+def test_s6_an_empty_identity_value_matches_nothing(rows: list[dict[str, Any]]) -> None:
+    """Panel round 2: index rows hold "" for a value a run did not record, so two runs that
+    both lack it compared equal, and the identity check passed on no evidence."""
+    from qcal.integrity.aggregates import identity_problem
+
+    problem = identity_problem(rows, ["env.x"], core=CORE)
+    assert "recorded no env.x" in str(problem)
+    assert identity_problem(rows[:1], ["env.x"], core=CORE) is None  # one run: nothing to compare
+    both_empty = rows[0].get("env.x") in ("", None) and rows[1].get("env.x") in ("", None)
+    allowed = identity_problem(rows, ["env.x"], core=CORE, nullable=["env.x"])
+    assert (allowed is None) is both_empty  # nullable: empty is a value, compared as such
+
+
+def test_s6_identity_nullable_must_name_identity_columns(make_config) -> None:
+    from qcal.config import config_key_problems
+    from qcal.integrity.aggregates import identity_nullable
+
+    config = make_config('[registry]\nidentity_nullable = ["env.handwriten_sha256"]\n')
+    with pytest.raises(ConfigError, match=r"env\.handwriten_sha256"):
+        identity_nullable(config)
+    problems = config_key_problems({"registry": {"identity_nullable": ["env.typo"]}})
+    assert any("env.typo" in p and "identity_nullable" in p for p in problems)
+    assert identity_nullable(make_config("")) == ()
 
 
 def test_n4_identity_columns_must_exist_in_an_index(make_config) -> None:

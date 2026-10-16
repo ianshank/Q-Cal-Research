@@ -329,7 +329,7 @@ def config_key_problems(
 
 def _identity_problems(data: Mapping[str, Any], defaults: Mapping[str, Any]) -> list[str]:
     """``registry.identity_columns`` entries that no index row can hold."""
-    from qcal.integrity.aggregates import identity_column_problems
+    from qcal.integrity.aggregates import identity_column_problems, nullable_column_problems
 
     def merged(key: str) -> Any:
         section = data.get("registry", {})
@@ -343,9 +343,13 @@ def _identity_problems(data: Mapping[str, Any], defaults: Mapping[str, Any]) -> 
     )
     if not (isinstance(columns, list) and isinstance(core, list) and isinstance(prefixes, Mapping)):
         return []  # mistyped: reported by the type check
-    return identity_column_problems(
+    problems = identity_column_problems(
         [str(c) for c in columns], [str(c) for c in core], [str(v) for v in prefixes.values()]
     )
+    nullable = merged("identity_nullable")
+    if isinstance(nullable, list):
+        problems += nullable_column_problems([str(c) for c in nullable], [str(c) for c in columns])
+    return problems
 
 
 def _check_table(

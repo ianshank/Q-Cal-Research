@@ -186,6 +186,9 @@ def make_record(run_id: str = "R1", **overrides: Any) -> RunRecord:
         "factors": {"detector": "atss", "precision": "fp32"},
         "metrics": {"LaECE0": 12.5, "AP": 41.0},
     }
+    # Every runner record names its configuration files; tables refuse an empty identity.
+    # A test that passes its own provenance gets exactly that.
+    fields["provenance"] = {"config_inputs_sha256": "c" * 64}
     fields.update(overrides)
     return RunRecord(**fields)
 

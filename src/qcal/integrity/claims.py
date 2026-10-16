@@ -29,6 +29,7 @@ from qcal.integrity.aggregates import (
     aggregate,
     format_value,
     identity_columns,
+    identity_nullable,
     unsound_aggregate,
 )
 from qcal.log import get_logger
@@ -64,6 +65,7 @@ class _Context:
     environment_prefix: str = "env."
     identity: tuple[str, ...] = ("config_inputs_sha256",)
     core: tuple[str, ...] = ("config_inputs_sha256",)
+    nullable: tuple[str, ...] = ()
 
 
 class _RefError(ValueError):
@@ -149,6 +151,7 @@ def verify_reference(ref: str, displayed: str, ctx: _Context) -> str | None:
             environment_prefix=ctx.environment_prefix,
             identity=ctx.identity,
             core=ctx.core,
+            nullable=ctx.nullable,
         )
         if problem:
             raise _RefError(f"{ref}: {problem}")
@@ -192,6 +195,7 @@ def check_claims(config: Config) -> list[Finding]:
         environment_prefix=str(config.get("registry.column_prefixes.environment")),
         identity=identity_columns(config),
         core=tuple(config.str_list("registry.core_columns")),
+        nullable=identity_nullable(config),
     )
     adjacent = (
         re.compile(config.str_value("claims.value_prefix_pattern")),

@@ -304,7 +304,7 @@ tests = ["tests/unit/test_runner.py::test_the_log_is_vouched_for_by_its_digest"]
 id = "S5-identity-skip"
 file = "src/qcal/integrity/aggregates.py"
 finding = "tables and claims refuse runs that differ in an identity column"
-old = '''    problem = identity_problem(rows, identity, core=core)'''
+old = '''    problem = identity_problem(rows, identity, core=core, nullable=nullable)'''
 new = '''    problem = None'''
 tests = [
     "tests/regression/test_registry_run_gates.py::test_n4_tables_compare_the_configured_identity",
@@ -1027,4 +1027,34 @@ old = '''    except PermissionError:  # a member we may not signal (setuid); the
 new = '''    except ZeroDivisionError:  # a member we may not signal (setuid); the rest got it'''
 tests = [
     "tests/unit/test_executor.py::test_a_group_member_that_cannot_be_signalled_is_reported_not_raised",
+]
+
+[[mutant]]
+id = "S6-empty-identity"
+file = "src/qcal/integrity/aggregates.py"
+finding = "an empty identity value matches nothing (panel round 2)"
+old = '''        if empty and column not in nullable:'''
+new = '''        if False:'''
+tests = [
+    "tests/regression/test_registry_run_gates.py::test_s6_an_empty_identity_value_matches_nothing",
+]
+
+[[mutant]]
+id = "S6-nullable-honoured"
+file = "src/qcal/integrity/aggregates.py"
+finding = "a nullable identity column may be empty"
+old = '''        if empty and column not in nullable:'''
+new = '''        if empty:'''
+tests = [
+    "tests/regression/test_registry_run_gates.py::test_s6_an_empty_identity_value_matches_nothing",
+]
+
+[[mutant]]
+id = "S6-nullable-validated"
+file = "src/qcal/integrity/aggregates.py"
+finding = "registry.identity_nullable names identity columns only"
+old = '''    problems = nullable_column_problems(nullable, identity_columns(config))'''
+new = '''    problems: list[str] = []'''
+tests = [
+    "tests/regression/test_registry_run_gates.py::test_s6_identity_nullable_must_name_identity_columns",
 ]

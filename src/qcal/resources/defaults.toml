@@ -198,6 +198,9 @@ core_columns = [
 # that differ here are not draws of one experiment. Each is a core column or a prefixed one
 # (env.<key>). The default keeps the configuration files; qcal.toml sets the repository's set.
 identity_columns = ["config_inputs_sha256"]
+# Identity columns a run may leave empty. Any other identity column that is empty in a row
+# refuses the aggregate: "" equal to "" would show nothing about two runs.
+identity_nullable = []
 
 [registry.column_prefixes]
 factors = "factor."
