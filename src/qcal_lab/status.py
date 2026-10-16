@@ -109,7 +109,7 @@ def _sanity(report: StatusReport, lab: LabConfig, name: str, qcal_config: Config
     try:
         declared = detector_declarations(qcal_config, name)
         sanity = check_detector(name, declared, configured(lab, name))
-    except (DeclarationsError, SanityError) as exc:
+    except (ConfigError, DeclarationsError, SanityError) as exc:  # reported, never raised
         report.add(item, ok=False, detail=str(exc))
         return
     ok = sanity.declared and sanity.verdict != FAIL

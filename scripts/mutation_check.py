@@ -21,7 +21,7 @@ breaks, a timeout) is ERROR, never a kill.
     python3 scripts/mutation_check.py               # every entry
     python3 scripts/mutation_check.py --only S2-ctl  # one or more ids
     python3 scripts/mutation_check.py --list
-    python3 scripts/mutation_check.py --discover S2-ctl  # nodes of the named files that fail
+    python3 scripts/mutation_check.py --discover --only S2-ctl  # failing nodes of its files
     python3 scripts/mutation_check.py --json
 
 Report-only: it is not part of ``make check``. Exit status 1 when any entry is not KILLED.

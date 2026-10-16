@@ -218,13 +218,23 @@ def test_status_checks_the_checkpoint_digest_and_the_images(repo: Path) -> None:
     assert {n: s for n, s, _ in report.items}["in-domain images"] is False
 
 
-def test_status_reports_a_detector_without_a_kind(repo: Path) -> None:
+def test_status_reports_a_detector_without_a_kind(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qcal_lab import declarations
+
     (repo / "configs").mkdir()
     (repo / "configs/lab.toml").write_text('[detectors.odd]\nconfig = "x.py"\n')
+    # Declarations that load, so the sanity item reaches the detector's own settings (Copilot)
+    monkeypatch.setattr(declarations, "detector_declarations", lambda *_: {})
     report = build_status(load_config(repo, environ={}), load_lab_config(repo))
-    state, detail = {n: (s, d) for n, s, d in report.items}["detector odd"]
+    items = {n: (s, d) for n, s, d in report.items}
+    state, detail = items["detector odd"]
     assert state is False
     assert "detectors.odd.kind must name a detector kind" in detail
+    sanity_state, sanity_detail = items["detector sanity check odd declared"]
+    assert sanity_state is False  # reported, not raised out of build_status
+    assert "detectors.odd.kind must name a detector kind" in sanity_detail
 
 
 def test_status_reports_broken_loops_and_cases(repo: Path) -> None:
