@@ -608,3 +608,22 @@ finding = "an attested nameless checkpoint must build the dataset's number of cl
 old = '''            if count != ground_truth.num_classes:'''
 new = '''            if False:'''
 tests = ["tests/unit/test_lab_models.py"]
+
+[[mutant]]
+id = "F3-envelope-write-guarded"
+file = "src/qcal_lab/cli.py"
+finding = "the success envelope is written under the SIGTERM handler (Copilot, PR #4)"
+old = '''            write_result(args.result_path, result)
+    except BaseException as exc:'''
+new = '''            signal.signal(signal.SIGTERM, signal.SIG_DFL)  # the old, unguarded write
+            write_result(args.result_path, result)
+    except BaseException as exc:'''
+tests = ["tests/unit/test_lab_cli.py"]
+
+[[mutant]]
+id = "F3-current-cuda-device"
+file = "src/qcal_lab/numerics.py"
+finding = "a bare cuda device records torch's current GPU, not GPU 0 (Copilot, PR #4)"
+old = '''    return int(index) if index.isdigit() else int(torch.cuda.current_device())'''
+new = '''    return int(index) if index.isdigit() else 0'''
+tests = ["tests/unit/test_lab_numerics.py"]

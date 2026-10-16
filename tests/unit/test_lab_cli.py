@@ -243,3 +243,24 @@ def test_a_failed_run_reports_the_artifacts_it_wrote(
         {"path": "runs/results/R1/raw_val.jsonl", "kind": "predictions_raw_val"}
     ]
     assert data["environment"]["handwritten_sha256"] == "h" * 64
+
+
+def test_a_sigterm_while_the_envelope_is_written_still_writes_one(
+    project: tuple[Path, list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The result is written under the SIGTERM handler, so a signal during the write ends in
+    a failed, interrupted envelope rather than none (Copilot, PR #4)."""
+    root, cells = project
+
+    def terminated_mid_write(path: Path, result: object) -> None:
+        handler = signal.getsignal(signal.SIGTERM)
+        assert callable(handler), "the write ran without the run's SIGTERM handler"
+        handler(signal.SIGTERM, None)  # what the kernel would deliver here
+
+    monkeypatch.setattr(cli, "write_result", terminated_mid_write)
+    result = root / "runs/results/R1.json"
+    args = ["--root", str(root), "run", "--run-id", "R1", "--cell-id", cells[0], "--seed", "0"]
+    assert lab(*args, "--result-path", str(result))[0] == cli.EXIT_FAILED
+    data = json.loads(result.read_text())
+    assert (data["status"], data["failure_kind"]) == ("failed", "interrupted")
+    assert data["artifacts"]  # what the run had written is still reported

@@ -169,6 +169,9 @@ def _cmd_run(args: argparse.Namespace, root: Path) -> int:
     try:
         with _sigterm_interrupts():
             result = run_experiment(request, progress=progress, partial_environment=partial)
+            # Written under the handler too: a SIGTERM while the envelope is written still
+            # ends in write_failure, never in a program that died without one.
+            write_result(args.result_path, result)
     except BaseException as exc:
         kind = failure_kind(exc)
         write_failure(
@@ -184,7 +187,6 @@ def _cmd_run(args: argparse.Namespace, root: Path) -> int:
         if kind != "unknown" or isinstance(exc, RUN_FAILURES):
             return EXIT_FAILED
         raise  # an unexpected error: the envelope says "unknown"; the traceback goes to the log
-    write_result(args.result_path, result)
     _log.info(
         "run %s: %d metric(s), %d artifact(s)",
         args.run_id,
